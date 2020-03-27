@@ -1,0 +1,1185 @@
+---
+title: "Get the list of species to use for the biodiversity component of the analysis"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r setup, message=F,warning=F}
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',message = FALSE, warning = FALSE)
+
+library(raster)
+library(tidyverse)
+library(sf)
+library(rredlist)
+library(future)
+library(furrr)
+library(parallel)
+
+Sys.setenv(IUCN_REDLIST_KEY = "0b64bc7473e4e6dd698b42d5d239ff12786d3007a30aa4aa30064ae139d79bbe")
+
+emLab_project_dir <- "~/Google Drive File Stream/Shared drives/emlab/projects/current-projects/ocean-conservation-priorities/data/"
+
+emLab_shrd_data_dir <- "~/Google Drive File Stream/Shared drives/emlab/data/"
+```
+
+The list of species to be included in our analysis includes exploited species (RAM + FAO + Watson's), and those that have been assessed by IUCN having fishing and habitat destruction as a threat. 
+
+# Get individual lists
+
+## IUCN 
+
+Get all IUCN species and their habitats
+```{r}
+plan(multiprocess)
+
+boot_df <- function(x) x[sample(nrow(x), replace = T), ]
+rsquared <- function(mod) summary(mod)$r.squared
+boot_lm <- function(i) {
+  rsquared(lm(mpg ~ wt + disp, data = boot_df(mtcars)))
+}
+
+system.time(future_map(1:500, boot_lm))
+
+system.time(parallel::mclapply(1:500, boot_lm, mc.cores = 4))
+```
+
+```{r}
+all_sp <- rl_sp(all = TRUE)
+
+all_sp <- do.call(rbind, lapply(all_sp, "[[", "result"))
+
+get_habitat_codes <- function(sci_name){paste(rl_habitats(sci_name)$result$code, collapse = ",")}
+
+habitats <- parallel::mclapply(all_sp$scientific_name, get_habitat_codes, mc.cores = 10)
+```
+
+
+
+```{r, eval = F}
+all_sp <- rl_sp(all = TRUE)
+
+all_sp <- do.call(rbind, lapply(all_sp, "[[", "result"))
+
+get_habitat_codes <- function(sci_name){paste(rl_habitats(sci_name)$result$code, collapse = ",")}
+
+plan(multiprocess)
+
+all_sp <- all_sp %>% 
+  mutate(habitats = furrr::future_map_chr(scientific_name, 
+                                          get_habitat_codes))
+
+saveRDS(all_sp, 
+        file.path(emLab_project_dir, "01_raw", "IUCN_spp_list_with_habitats.rds"))
+```
+
+
+```{r, eval = F}
+all_sp <- read_rds(file.path(DIR_GCS, "Biodiversity/data/preprocessed/IUCN_spp_list_with_habitats.rds"))
+```
+
+### classify as marine
+
+Based on their habitat classification, which of these is marine?
+
+```{r, eval = F}
+iucn_habs <- read_csv(file.path(DIR_GCS, "Biodiversity/data/raw/species-list/iucn_habitat_codes.csv"))
+```
+
+The full list of iucn habitats was manually assigned as marine or not marine, as follows:
+
+```{r, eval = F}
+iucn_habs
+```
+
+```{r, eval = F}
+(marine_hab_codes <- iucn_habs$code[iucn_habs$marine == T])
+```
+
+```{r, eval = F}
+all_sp <- all_sp %>% 
+  mutate(habitats = if_else(habitats == "", NA_character_, habitats)) %>% 
+  rowwise() %>% 
+  mutate(marine_habs = if_else(is.na(habitats), NA, any(unlist(strsplit(habitats, ",")) %in% marine_hab_codes)))
+```
+
+For how many species we have no habitat info for? `r nrow(filter(all_sp, is.na(habitats)))` 
+
+```{r, eval = F}
+all_sp %>% 
+  filter(is.na(habitats)) %>% 
+  group_by(class_name) %>% 
+  summarize(n = n()) %>% 
+  arrange(desc(n))
+```
+
+For how many species we have Unknown habitat info for? `r nrow(filter(all_sp, habitats %in% c("17","18")))` 
+
+```{r, eval = F}
+all_sp %>% 
+  filter(category != "EX") %>% 
+  filter(habitats ==  "17" | habitats == "18") %>% 
+  group_by(class_name) %>% 
+  summarize(n = n()) %>% 
+  arrange(desc(n))
+```
+
+Most of these species with missing or unknown habitat are definitely not marine. So we need to apply an additional filter. For this, we download a list from IUCN of species cataloged as Marine systems. This list contains 13414 records and was downloaded from IUCN on December 9th 2018. 
+
+```{r, eval = F}
+iucn_marine_system <- read_csv(file.path(DIR_GCS, "Biodiversity/data/raw/species-list/iucn_website_marine_spp.csv"))
+
+all_sp <- all_sp %>% 
+  rowwise() %>% 
+  mutate(marine_system = taxonid  %in% iucn_marine_system$internalTaxonId) 
+```
+
+What species are marine system but not marine habitat?
+
+```{r, eval = F}
+all_sp %>% 
+  filter(marine_system & marine_habs == F & !is.na(habitats))
+```
+
+Now what species have marine, missing or unknow habitats AND are classified as marine systems?
+
+```{r, eval = F}
+all_sp %>% 
+  filter((is.na(habitats) | marine_habs) & marine_system)
+```
+
+We include species that are listed as "Marine System" AND their habitat is of a marine type or unknown. 
+
+```{r, eval = F}
+marine_spp <- all_sp %>% 
+  filter((is.na(habitats) | marine_habs) & marine_system)
+```
+
+In total our sample of marine species is `r nrow(marine_spp)`
+
+```{r, eval = F}
+marine_spp %>% 
+  group_by(phylum_name,class_name) %>% 
+  summarize(n = n()) %>% 
+  arrange(desc(n))
+```
+
+Now, how many of these have fishing and/or habitat destruction as a threat?
+
+### get threats
+
+```{r, eval = F}
+get_threats_codes <- function(sci_name){paste(rl_threats(sci_name)$result$code, collapse = ",")}
+```
+
+```{r eval = F}
+plan(multiprocess)
+
+tictoc::tic()
+marine_spp <- marine_spp %>% 
+  mutate(threats = furrr::future_map(scientific_name, 
+                                get_threats_codes))
+tictoc::toc()
+
+saveRDS(marine_spp, file.path(DIR_GCS, "Biodiversity/data/preprocessed/marine_spp_with_habitats_and_threats.rds"))
+```
+
+#### what threats are there?
+
+```{r}
+marine_spp <- read_rds(file.path(DIR_GCS, "Biodiversity/data/preprocessed/marine_spp_with_habitats_and_threats.rds"))
+```
+
+```{r, eval = F}
+iucn_threats <- read_csv(file.path(DIR_GCS, "Biodiversity/data/raw/species-list/iucn_threat_codes.csv"))
+
+iucn_threats$code <- str_trim(iucn_threats$code)
+
+iucn_threats
+```
+
+##### Abatable threats 
+
+```{r}
+detect_threat <- function(threat_list, threat_code){
+  
+  threat_vector <- unlist(threat_list)
+  
+  code <- paste0("^", threat_code, collapse = "|")
+  
+  split_v <- str_split(threat_vector, ",")
+  
+  detected_vector <- split_v %>% 
+    map(str_detect, code) %>% 
+    unlist()
+  
+  detected <- sum(detected_vector) > 0
+  
+  detected
+}
+```
+
+```{r}
+marine_spp_abatable_threats <- marine_spp %>% 
+  mutate(threat_group = case_when(
+    detect_threat(threats, 5.4) ~ "fishing",
+    detect_threat(threats, 2.4) ~ "aquaculture",
+    detect_threat(threats, 3.1) ~ "oil_and_gas",
+    detect_threat(threats, 3.2) ~ "mining",
+    detect_threat(threats, 5.3) ~ "logging",
+    detect_threat(threats, c(1.1, 1.2)) ~ "development"
+  )) %>% 
+  filter(!is.na(threat_group))
+```
+
+```{r}
+marine_spp_abatable_threats %>% 
+  group_by(threat_group) %>% 
+  summarize(n_spp = n()) %>% 
+  arrange(desc(n_spp))
+```
+
+```{r}
+IUCN_spp_list <- marine_spp_abatable_threats %>% 
+  rename(kingdom = kingdom_name, phylum = phylum_name, class = class_name, order = order_name, family = family_name, genus = genus_name) %>% 
+  mutate_at(vars(kingdom, phylum, class, order, family), stringr::str_to_title)
+```
+
+### Resolve scientific names
+
+```{r}
+sources <- c(worms = 9, fishbase = 155, eol = 12, col = 1, gbif = 11)
+
+IUCN_resolved_names <- sources %>% 
+  map(~ taxize::gnr_resolve(data_source_ids = .x, 
+                            names = IUCN_spp_list$scientific_name,
+                            best_match_only = T, 
+                            fields = c("all"), 
+                            canonical = T ))
+
+IUCN_resolved_names_df <- IUCN_resolved_names %>% 
+  map(~ .x %>% 
+        filter(!match_value %in% c("Could only match genus") & str_count(matched_name2, "\\w+") >= 2) %>% 
+        select(user_supplied_name, matched_name2, taxon_id)) %>% 
+  reduce(full_join, by = "user_supplied_name") %>% 
+  set_names(c("user_supplied_name", "worms_sci_name", "worms_id", "fishbase_sci_name", "fishbase_id", "eol_sci_name", "eol_id", "col_sci_name", "col_id","gbif_sci_name", "gbif_id"))
+
+IUCN_resolved_names <- IUCN_resolved_names_df %>% 
+  mutate(resolved_scientific_name = case_when(
+    !is.na(worms_sci_name) ~ worms_sci_name,
+    !is.na(fishbase_sci_name) ~ fishbase_sci_name,
+    !is.na(eol_sci_name) ~ eol_sci_name,
+    !is.na(col_sci_name) ~ col_sci_name,
+    TRUE ~ user_supplied_name
+  )) %>% 
+  select(user_supplied_name, resolved_scientific_name, everything()) 
+```
+
+```{r}
+IUCN_spp_list <- IUCN_spp_list %>% 
+  select(iucn_sci_name = scientific_name, iucn_id = taxonid, iucn_category = category, habitats, threats, threat_group) %>% 
+  left_join(IUCN_resolved_names %>% 
+              select(user_supplied_name, resolved_sci_name = resolved_scientific_name), 
+            by = c("iucn_sci_name" = "user_supplied_name")) %>% 
+  select(iucn_sci_name, resolved_sci_name, everything())
+```
+
+```{r}
+IUCN_spp_list %>% 
+  filter(iucn_sci_name != resolved_sci_name)
+
+IUCN_spp_list %>% map_df(~sum(is.na(.)))
+```
+
+```{r}
+IUCN_spp_list <- IUCN_spp_list %>% 
+  mutate(resolved_sci_name = coalesce(resolved_sci_name, iucn_sci_name)) 
+
+IUCN_spp_list$resolved_sci_name[IUCN_spp_list$iucn_sci_name == "Pagrus auratus"] <- 'Chrysophrys auratus'
+```
+
+### validate names and get taxonomic info from WoRMS
+
+```{r}
+get_worms_info <- function(sci_name){
+  
+  worrms::wm_records_name(name = sci_name) %>% 
+    mutate(provided_sci_name = sci_name) %>% 
+    select(provided_sci_name, scientificname, status, valid_name, kingdom, phylum, class, order, family, genus)
+  
+}
+```
+
+```{r}
+plan(multiprocess)
+
+IUCN_worms_info <- IUCN_spp_list %>%
+  pull(resolved_sci_name) %>% 
+  furrr::future_map(safely(get_worms_info)) %>% 
+  transpose()
+
+IUCN_worms_info <- IUCN_worms_info$result %>% 
+  compact() %>% 
+  bind_rows()
+```
+
+Lets take those entries that have no NAs, where the name queried matches the name supplied, and when there are only one valid name per entry
+
+```{r}
+valid_IUCN_worms_info <- IUCN_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) == 1) %>%  # get those for which there is only one valid name
+  ungroup() %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+Now, from those with multiple valid names per row, lets get only the row for which status == "accepted", which means that the supplied name was already valid
+
+```{r}
+accepted_IUCN_worms_info <- IUCN_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) > 1) %>% 
+  filter(status == "accepted") %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+Lets now add the WoRMS valid name to the dataset
+
+```{r}
+IUCN_spp_list <- IUCN_spp_list %>% 
+  left_join(bind_rows(accepted_IUCN_worms_info,
+                      valid_IUCN_worms_info),
+            by = c("resolved_sci_name" = "provided_sci_name")
+)
+
+IUCN_spp_list %>% 
+  filter(iucn_sci_name != valid_name)
+```
+
+```{r}
+IUCN_spp_list <- IUCN_spp_list %>% 
+  mutate(valid_sci_name = coalesce(valid_name, resolved_sci_name)) %>% 
+  select(iucn_sci_name, resolved_sci_name,  valid_sci_name, everything(), -valid_name)
+```
+
+### fill taxonomic gaps
+
+```{r}
+get_taxonomy <- function (sci_name, db) {
+  
+  taxize::classification(sci_name, db, accepted = T, ask = F)[[1]] %>% 
+    select(-id) %>% 
+    mutate(rank = stringr::str_to_lower(rank)) %>% 
+    filter(rank %in% c("genus","family",  "order", "class","phylum","kingdom")) %>% 
+    spread(rank, name) %>% 
+    mutate(sci_name = sci_name) %>% 
+    janitor::clean_names() %>% 
+    select(sci_name, genus, family, order, class, phylum, kingdom)
+  
+}
+```
+
+```{r}
+taxonomy_gaps_IUCN <- IUCN_spp_list %>% 
+  filter(is.na(kingdom)) %>% 
+  select(valid_sci_name)
+```
+
+#### COL
+
+```{r}
+plan(multiprocess)
+
+IUCN_taxonomy_col <- taxonomy_gaps_IUCN %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "col") %>% 
+  transpose()
+
+IUCN_taxonomy_col <- bind_rows(IUCN_taxonomy_col$result)
+```
+
+#### ITIS
+
+```{r}
+plan(multiprocess)
+
+IUCN_taxonomy_itis <- taxonomy_gaps_IUCN %>% 
+  filter(!valid_sci_name %in% IUCN_taxonomy_col$sci_name) %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "itis") %>% 
+  transpose()
+
+IUCN_taxonomy_itis <- bind_rows(IUCN_taxonomy_itis$result)
+```
+
+#### GBIF
+
+```{r}
+plan(multiprocess)
+
+IUCN_taxonomy_gbif <- taxonomy_gaps_IUCN %>% 
+  filter(!valid_sci_name %in% IUCN_taxonomy_col$sci_name) %>% 
+  filter(!valid_sci_name %in% IUCN_taxonomy_itis$sci_name) %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "gbif") %>% 
+  transpose()
+
+IUCN_taxonomy_gbif <- bind_rows(IUCN_taxonomy_gbif$result)
+```
+
+```{r}
+filled_taxonomy_gaps_IUCN <- bind_rows(IUCN_taxonomy_col, IUCN_taxonomy_itis, IUCN_taxonomy_gbif)
+
+filled_taxonomy_gaps_IUCN <- filled_taxonomy_gaps_IUCN %>% 
+  mutate(valid_sci_name = sci_name) %>% 
+  group_by(valid_sci_name) %>% 
+  summarise_at(vars(kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+```{r}
+IUCN_spp_list <- IUCN_spp_list %>% 
+  left_join(filled_taxonomy_gaps_IUCN, by = c("valid_sci_name" = "valid_sci_name")) %>% 
+  mutate(genus = coalesce(genus.x, genus.y),
+         family = coalesce(family.x, family.y),
+         order = coalesce(order.x, order.y),
+         class = coalesce(class.x, class.y),
+         phylum = coalesce(phylum.x, phylum.y),
+         kingdom = coalesce(kingdom.x, kingdom.y)
+         ) %>% 
+  select(-contains(".x"), -contains(".y"))
+
+IUCN_spp_list %>% filter(is.na(kingdom))
+```
+
+#### IUCN
+
+```{r}
+iucn_last_missing_taxonomy_spp_ids <- IUCN_spp_list %>% 
+  filter(is.na(kingdom)) %>% 
+  pull(iucn_id)
+
+iucn_last_missing_taxonomy <- marine_spp %>% 
+  filter(taxonid %in% iucn_last_missing_taxonomy_spp_ids) %>% 
+  select(kingdom = kingdom_name, phylum = phylum_name, class = class_name, order = order_name, family = family_name, genus = genus_name, taxonid) %>% 
+  mutate_at(vars(kingdom, phylum, class, order, family), stringr::str_to_title)
+
+IUCN_spp_list <- IUCN_spp_list %>% 
+  left_join(iucn_last_missing_taxonomy, by = c("iucn_id" = "taxonid")) %>% 
+  mutate(genus = coalesce(genus.x, genus.y),
+         family = coalesce(family.x, family.y),
+         order = coalesce(order.x, order.y),
+         class = coalesce(class.x, class.y),
+         phylum = coalesce(phylum.x, phylum.y),
+         kingdom = coalesce(kingdom.x, kingdom.y)
+         ) %>% 
+  select(-contains(".x"), -contains(".y")) 
+```
+
+## FAO
+
+FAO makes available complete timeseries data of exploited species via FishStatJ. This is the most comprehensive list of exploited species but it is a pain to obtain. Accessed via Tyler Clavelle on December 11th 2018. 
+
+```{r, eval = F}
+load(file.path(DIR_GCS, "Biodiversity/data/raw/species-list/fao_fish.rda")) # this loads a dataframe called fish
+
+FAO_capture_list <- fish %>% 
+  filter(waters == 'Marine areas') %>% 
+  distinct(common_name, scientific_name, fao_code = taxo_code) %>% 
+  arrange(scientific_name)
+```
+
+This list contains records at multiple taxonomic levels: some are species, other are genus, other families. Lets deal with spp first
+
+```{r, eval = F}
+# Get species records
+FAO_spp_list <- FAO_capture_list %>% 
+  filter(!str_detect(fao_code, "X")) 
+```
+
+### Resolve scientific names
+
+```{r}
+FAO_resolved_names <- sources %>% 
+  map(~ taxize::gnr_resolve(data_source_ids = .x, 
+                            names = FAO_spp_list$scientific_name,
+                            best_match_only = T, 
+                            fields = c("all"), 
+                            canonical = T ))
+
+FAO_resolved_names_df <- FAO_resolved_names %>% 
+  map(~ .x %>% 
+        filter(!match_value %in% c("Could only match genus") & str_count(matched_name2, "\\w+") >= 2) %>% 
+        select(user_supplied_name, matched_name2, taxon_id)) %>% 
+  reduce(full_join, by = "user_supplied_name") %>% 
+  set_names(c("user_supplied_name", "worms_sci_name", "worms_id", "fishbase_sci_name", "fishbase_id", "eol_sci_name", "eol_id", "col_sci_name", "col_id","gbif_sci_name", "gbif_id"))
+
+FAO_resolved_names <- FAO_resolved_names_df %>% 
+  mutate(resolved_scientific_name = case_when(
+    !is.na(worms_sci_name) ~ worms_sci_name,
+    !is.na(fishbase_sci_name) ~ fishbase_sci_name,
+    !is.na(eol_sci_name) ~ eol_sci_name,
+    !is.na(col_sci_name) ~ col_sci_name,
+    TRUE ~ user_supplied_name
+  )) %>% 
+  select(user_supplied_name, resolved_scientific_name, everything()) 
+```
+
+```{r}
+FAO_spp_list <- FAO_spp_list %>% 
+  select(fao_sci_name = scientific_name, fao_id = fao_code)
+
+FAO_spp_list <- FAO_spp_list %>%
+  left_join(FAO_resolved_names %>% 
+              select(user_supplied_name, resolved_sci_name = resolved_scientific_name), 
+            by = c("fao_sci_name" = "user_supplied_name")) %>% 
+  select(fao_sci_name, resolved_sci_name, everything())
+
+FAO_spp_list <- FAO_spp_list %>% 
+  mutate(resolved_sci_name = coalesce(resolved_sci_name, fao_sci_name)) 
+```
+
+```{r}
+FAO_spp_list$resolved_sci_name[FAO_spp_list$fao_sci_name == "Pagrus auratus"] <- 'Chrysophrys auratus'
+```
+
+### validate names and get taxonomic info from WoRMS
+
+```{r}
+plan(multiprocess)
+
+FAO_worms_info <- FAO_spp_list %>%
+  pull(resolved_sci_name) %>% 
+  furrr::future_map(safely(get_worms_info)) %>% 
+  transpose()
+
+FAO_worms_info <- FAO_worms_info$result %>% 
+  compact() %>% 
+  bind_rows()
+```
+Lets take those entries that have no NAs, where the name queried matches the name supplied, and when there are only one valid name per entry
+
+```{r}
+valid_FAO_worms_info <- FAO_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) == 1) %>%  # get those for which there is only one valid name
+  ungroup() %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+Now, from those with multiple valid names per row, lets get only the row for which status == "accepted", which means that the supplied name was already valid
+
+```{r}
+accepted_FAO_worms_info <- FAO_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) > 1) %>% 
+  filter(status == "accepted") %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+```{r}
+FAO_spp_list <- FAO_spp_list %>% 
+  left_join(bind_rows(accepted_FAO_worms_info,
+                      valid_FAO_worms_info),
+            by = c("resolved_sci_name" = "provided_sci_name")
+)
+
+FAO_spp_list <- FAO_spp_list %>% 
+  mutate(valid_sci_name = coalesce(valid_name, resolved_sci_name)) %>% 
+  select(fao_sci_name, resolved_sci_name,  valid_sci_name, everything(), -valid_name)
+
+FAO_spp_list %>% filter(is.na(kingdom))
+```
+
+### fill taxonomic  gaps
+
+```{r}
+taxonomy_gaps_FAO <- FAO_spp_list %>% 
+  filter(is.na(kingdom)) %>% 
+  select(valid_sci_name)
+```
+
+#### COL
+
+```{r}
+plan(multiprocess)
+
+FAO_taxonomy_col <- taxonomy_gaps_FAO %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "col") %>% 
+  transpose()
+
+FAO_taxonomy_col <- bind_rows(FAO_taxonomy_col$result)
+```
+
+#### ITIS
+
+```{r}
+plan(multiprocess)
+
+FAO_taxonomy_itis <- taxonomy_gaps_FAO %>% 
+  filter(!valid_sci_name %in% FAO_taxonomy_col$sci_name) %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "itis") %>% 
+  transpose()
+
+FAO_taxonomy_itis <- bind_rows(FAO_taxonomy_itis$result)
+```
+
+#### GBIF
+
+```{r}
+plan(multiprocess)
+
+FAO_taxonomy_gbif <- taxonomy_gaps_FAO %>% 
+  filter(!valid_sci_name %in% FAO_taxonomy_col$sci_name) %>% 
+  filter(!valid_sci_name %in% FAO_taxonomy_itis$sci_name) %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "gbif") %>% 
+  transpose()
+
+FAO_taxonomy_gbif <- bind_rows(FAO_taxonomy_gbif$result)
+```
+
+```{r}
+filled_taxonomy_gaps_FAO <- bind_rows(FAO_taxonomy_col, FAO_taxonomy_itis, FAO_taxonomy_gbif)
+
+filled_taxonomy_gaps_FAO <- filled_taxonomy_gaps_FAO %>% 
+  mutate(valid_sci_name = sci_name) %>% 
+  group_by(valid_sci_name) %>% 
+  summarise_at(vars(kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+```{r}
+FAO_spp_list <- FAO_spp_list %>% 
+  left_join(filled_taxonomy_gaps_FAO, by = c("valid_sci_name" = "valid_sci_name")) %>% 
+  mutate(genus = coalesce(genus.x, genus.y),
+         family = coalesce(family.x, family.y),
+         order = coalesce(order.x, order.y),
+         class = coalesce(class.x, class.y),
+         phylum = coalesce(phylum.x, phylum.y),
+         kingdom = coalesce(kingdom.x, kingdom.y)
+         ) %>% 
+  select(-contains(".x"), -contains(".y")) 
+
+FAO_spp_list %>% filter(is.na(kingdom))
+```
+
+### nei
+
+```{r}
+FAO_nei_resolved <- FAO_capture_list %>% 
+  filter(str_detect(fao_code, "X")) %>% 
+  mutate(fao_nei = stringr::word(scientific_name, 1)) %>% 
+  pull(fao_nei) %>% 
+  taxize::gnr_resolve(data_source_ids = 9, 
+                      best_match_only = T, 
+                      fields = c("all"), 
+                      canonical = T)
+
+FAO_nei_genus <- FAO_nei_resolved %>%
+  mutate(matched_rank = str_extract(classification_path_ranks, "([^|]+$)")) %>% 
+  filter(matched_rank == "genus") %>% 
+  select(nei_genus = matched_name2) %>% 
+  write_csv(file.path(DIR_GCS, "Biodiversity/data/preprocessed/FAO_nei_genus.csv"))
+```
+
+## RAM
+
+```{r, eval = F}
+load(file.path(DIR_GCS, "Biodiversity/data/raw/species-list/ram.rda")) # this loads a dataframe called ram
+
+RAM_spp_list <- ram$taxonomy[[1]] %>% 
+  filter(!is.na(species)) %>% 
+  select(ram_sci_name = scientificname, ram_id = tsn, genus, family, order = ordername, class = classname, phylum, kingdom)
+```
+
+### Resolve scientific names
+
+```{r}
+RAM_resolved_names <- sources %>% 
+  map(~ taxize::gnr_resolve(data_source_ids = .x, 
+                            names = RAM_spp_list$ram_sci_name,
+                            best_match_only = T, 
+                            fields = c("all"), 
+                            canonical = T ))
+
+RAM_resolved_names_df <- RAM_resolved_names %>% 
+  map(~ .x %>% 
+        filter(!match_value %in% c("Could only match genus") & str_count(matched_name2, "\\w+") >= 2) %>% 
+        select(user_supplied_name, matched_name2, taxon_id)) %>% 
+  reduce(full_join, by = "user_supplied_name") %>% 
+  set_names(c("user_supplied_name", "worms_sci_name", "worms_id", "fishbase_sci_name", "fishbase_id", "eol_sci_name", "eol_id", "col_sci_name", "col_id","gbif_sci_name", "gbif_id"))
+
+RAM_resolved_names <- RAM_resolved_names_df %>% 
+  mutate(resolved_scientific_name = case_when(
+    !is.na(worms_sci_name) ~ worms_sci_name,
+    !is.na(fishbase_sci_name) ~ fishbase_sci_name,
+    !is.na(eol_sci_name) ~ eol_sci_name,
+    !is.na(col_sci_name) ~ col_sci_name,
+    TRUE ~ user_supplied_name
+  )) %>% 
+  select(user_supplied_name, resolved_scientific_name, everything()) 
+```
+
+```{r}
+RAM_spp_list <- RAM_spp_list %>% 
+  select(ram_sci_name, ram_id)
+
+RAM_spp_list <- RAM_spp_list %>%
+  left_join(RAM_resolved_names %>% 
+              select(user_supplied_name, resolved_sci_name = resolved_scientific_name), 
+            by = c("ram_sci_name" = "user_supplied_name")) %>% 
+  select(ram_sci_name, resolved_sci_name, everything())
+
+RAM_spp_list <- RAM_spp_list %>% 
+  mutate(resolved_sci_name = coalesce(resolved_sci_name, ram_sci_name)) 
+```
+
+```{r}
+RAM_spp_list$resolved_sci_name[RAM_spp_list$ram_sci_name == "Pagrus auratus"] <- 'Chrysophrys auratus'
+```
+
+### validate names and get taxonomic info from WoRMS
+
+```{r}
+plan(multiprocess)
+
+RAM_worms_info <- RAM_spp_list %>%
+  pull(resolved_sci_name) %>% 
+  furrr::future_map(safely(get_worms_info)) %>% 
+  transpose()
+
+RAM_worms_info <- RAM_worms_info$result %>% 
+  compact() %>% 
+  bind_rows()
+```
+Lets take those entries that have no NAs, where the name queried matches the name supplied, and when there are only one valid name per entry
+
+```{r}
+valid_RAM_worms_info <- RAM_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) == 1) %>%  # get those for which there is only one valid name
+  ungroup() %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+Now, from those with multiple valid names per row, lets get only the row for which status == "accepted", which means that the supplied name was already valid
+
+```{r}
+accepted_RAM_worms_info <- RAM_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) > 1) %>% 
+  filter(status == "accepted") %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+```{r}
+RAM_spp_list <- RAM_spp_list %>% 
+  left_join(bind_rows(accepted_RAM_worms_info,
+                      valid_RAM_worms_info),
+            by = c("resolved_sci_name" = "provided_sci_name")
+)
+
+RAM_spp_list <- RAM_spp_list %>% 
+  mutate(valid_sci_name = coalesce(valid_name, resolved_sci_name)) %>% 
+  select(ram_sci_name, resolved_sci_name,  valid_sci_name, everything(), -valid_name)
+
+RAM_spp_list %>% filter(is.na(kingdom))
+```
+
+### nei
+
+```{r}
+RAM_nei_genus <- ram$taxonomy[[1]] %>% 
+  filter(is.na(species)) %>% 
+  select(nei_genus = genus) %>% 
+  write_csv(file.path(DIR_GCS, "Biodiversity/data/preprocessed/RAM_nei_genus.csv"))
+```
+
+## Watson
+
+```{r}
+Watson_data <- read_csv(file.path(DIR_GCS_data, 'Watson-catch-data-v4.0/taxa_codes.csv'))
+
+Watson_spp_list <- Watson_data %>% 
+  filter(str_count(TaxonName, '\\w+') == 2) %>% 
+  filter(!TaxonName %in% c("Marine animals", "Shrimps, prawns", "Homaridae/Palinuridae"))
+```
+
+### Resolve scientific names
+
+```{r}
+Watson_resolved_names <- sources %>% 
+  map(~ taxize::gnr_resolve(data_source_ids = .x, 
+                            names = Watson_spp_list$TaxonName,
+                            best_match_only = T, 
+                            fields = c("all"), 
+                            canonical = T ))
+
+Watson_resolved_names_df <- Watson_resolved_names %>% 
+  map(~ .x %>% 
+        filter(!match_value %in% c("Could only match genus") & str_count(matched_name2, "\\w+") >= 2) %>% 
+        select(user_supplied_name, matched_name2, taxon_id)) %>% 
+  reduce(full_join, by = "user_supplied_name") %>% 
+  set_names(c("user_supplied_name", "worms_sci_name", "worms_id", "fishbase_sci_name", "fishbase_id", "eol_sci_name", "eol_id", "col_sci_name", "col_id","gbif_sci_name", "gbif_id"))
+
+Watson_resolved_names <- Watson_resolved_names_df %>% 
+  mutate(resolved_scientific_name = case_when(
+    !is.na(worms_sci_name) ~ worms_sci_name,
+    !is.na(fishbase_sci_name) ~ fishbase_sci_name,
+    !is.na(eol_sci_name) ~ eol_sci_name,
+    !is.na(col_sci_name) ~ col_sci_name,
+    TRUE ~ user_supplied_name
+  )) %>% 
+  select(user_supplied_name, resolved_scientific_name, everything()) 
+```
+
+```{r}
+Watson_spp_list <- Watson_spp_list %>% 
+  select(watson_sci_name = TaxonName, watson_id = TaxonKey)
+
+Watson_spp_list <- Watson_spp_list %>%
+  left_join(Watson_resolved_names %>% 
+              distinct(user_supplied_name, resolved_sci_name = resolved_scientific_name), 
+            by = c("watson_sci_name" = "user_supplied_name")) %>% 
+  select(watson_sci_name, resolved_sci_name, everything())
+
+Watson_spp_list <- Watson_spp_list %>% 
+  mutate(resolved_sci_name = coalesce(resolved_sci_name, watson_sci_name)) 
+```
+
+```{r}
+Watson_spp_list$resolved_sci_name[Watson_spp_list$watson_sci_name == "Pagrus auratus"] <- 'Chrysophrys auratus'
+```
+
+### validate names and get taxonomic info from WoRMS
+
+```{r}
+plan(multiprocess)
+
+Watson_worms_info <- Watson_spp_list %>%
+  pull(resolved_sci_name) %>% 
+  furrr::future_map(safely(get_worms_info)) %>% 
+  transpose()
+
+Watson_worms_info <- Watson_worms_info$result %>% 
+  compact() %>% 
+  bind_rows()
+```
+
+Lets take those entries that have no NAs, where the name queried matches the name supplied, and when there are only one valid name per entry
+
+```{r}
+valid_Watson_worms_info <- Watson_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) == 1) %>%  # get those for which there is only one valid name
+  ungroup() %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+Now, from those with multiple valid names per row, lets get only the row for which status == "accepted", which means that the supplied name was already valid
+
+```{r}
+accepted_Watson_worms_info <- Watson_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) > 1) %>% 
+  filter(status == "accepted") %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+```{r}
+Watson_spp_list <- Watson_spp_list %>% 
+  left_join(bind_rows(accepted_Watson_worms_info,
+                      valid_Watson_worms_info),
+            by = c("resolved_sci_name" = "provided_sci_name")
+)
+
+Watson_spp_list <- Watson_spp_list %>% 
+  mutate(valid_sci_name = coalesce(valid_name, resolved_sci_name)) %>% 
+  select(watson_sci_name, resolved_sci_name,  valid_sci_name, everything(), -valid_name)
+
+Watson_spp_list %>% filter(is.na(kingdom))
+```
+
+### nei
+
+```{r}
+Watson_resolved_nei <- Watson_data %>% 
+  filter(str_count(TaxonName, '\\w+') == 1) %>% 
+  pull(TaxonName) %>% 
+  taxize::gnr_resolve(data_source_ids = 9, 
+                      best_match_only = T, 
+                      fields = c("all"), 
+                      canonical = T)
+
+Watson_nei_genus <- Watson_resolved_nei %>%
+  mutate(matched_rank = str_extract(classification_path_ranks, "([^|]+$)")) %>% 
+  filter(matched_rank == "genus") %>% 
+  select(nei_genus = matched_name2) %>% 
+  write_csv(file.path(DIR_GCS, "Biodiversity/data/preprocessed/Watson_nei_genus.csv"))
+```
+
+
+# Master list
+
+Now we need to combine all 3 lists into a final master list of all species to be included in the analysis. When doing this, we need to be careful to avoid duplication of species. 
+
+### exploited species
+
+```{r}
+RAM_spp_list %>% 
+  filter(!valid_sci_name %in% FAO_spp_list$valid_sci_name)
+```
+
+```{r}
+exploited_spp_list <- bind_rows(FAO_spp_list %>% 
+                                  mutate(list = "FAO") %>% 
+                                  select(valid_sci_name, list, list_id = fao_id, list_sci_name = fao_sci_name, everything()),
+                                RAM_spp_list %>% 
+                                  filter(!valid_sci_name %in% FAO_spp_list$valid_sci_name) %>%
+                                  mutate(list = "RAM") %>% 
+                                  select(valid_sci_name, list, list_id = ram_id, list_sci_name = ram_sci_name, everything()))
+```
+
+#### add Watson
+
+```{r}
+Watson_spp_list %>% 
+  filter(!valid_sci_name %in% exploited_spp_list$valid_sci_name)
+```
+
+```{r}
+exploited_spp_list <- bind_rows(exploited_spp_list,
+                                Watson_spp_list %>% 
+                                  filter(!valid_sci_name %in% exploited_spp_list$valid_sci_name) %>% 
+                                  mutate(list = "Watson",
+                                         watson_id = as.character(watson_id)) %>% 
+                                  select(valid_sci_name, list, list_id = watson_id, list_sci_name = watson_sci_name, everything()))
+```
+
+```{r}
+exploited_spp_list %>% 
+  janitor::get_dupes(valid_sci_name) 
+```
+
+### Union of exploited and IUCN
+
+```{r}
+complete_spp_list <- bind_rows(exploited_spp_list %>% 
+                                 mutate(exploited = T,
+                                        threat_group = "fishing"),
+                               IUCN_spp_list %>% 
+                                 filter(!valid_sci_name %in% exploited_spp_list$valid_sci_name) %>%
+                                 mutate(iucn_id = as.character(iucn_id),
+                                        list = "IUCN",
+                                        exploited = F) %>% 
+                                 select(valid_sci_name, list, list_id = iucn_id, list_sci_name = iucn_sci_name, everything(),
+                                        exploited, threat_group))
+```
+
+### trim characters
+
+```{r}
+complete_spp_list <- complete_spp_list %>% 
+  map_df(~ if(class(.x) == "character"){stringr::str_trim(.x)} else (.x))
+```
+
+### Fill IUCN status
+
+```{r}
+complete_spp_list <- complete_spp_list %>% 
+  left_join(IUCN_spp_list %>% 
+              distinct(iucn_category, iucn_sci_name), 
+            by = c("list_sci_name" = "iucn_sci_name")) %>% 
+  mutate(iucn_category = coalesce(iucn_category.x, iucn_category.y)) %>% 
+  select(-contains(".x"), -contains(".y"))
+```
+
+```{r}
+plan(multiprocess)
+
+missing_iucn <- complete_spp_list %>% 
+  filter(is.na(iucn_category)) %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(rl_search)) %>% 
+  transpose()
+
+missing_iucn <- missing_iucn$result %>% 
+  map("result") %>% 
+  compact() %>% 
+  map(~ .x %>% 
+        select(scientific_name, category)) %>% 
+  bind_rows()
+```
+
+```{r}
+complete_spp_list <- complete_spp_list %>% 
+  left_join(missing_iucn %>% 
+              distinct(scientific_name, category), by = c("valid_sci_name" = "scientific_name")) %>% 
+  mutate(iucn_category = ifelse(!is.na(iucn_category), iucn_category, category)) %>% 
+  select(-category)
+```
+
+```{r}
+complete_spp_list <- complete_spp_list %>% 
+  filter(!iucn_category %in% c("EX", "EW")) %>% 
+  mutate(iucn_category = if_else(iucn_category %in% c("LR/lc"), "LC", 
+                                 if_else(iucn_category == "LR/nt", 'NT', iucn_category)))
+
+complete_spp_list %>% 
+  group_by(iucn_category) %>% 
+  summarize(n_spp = n()) %>% 
+  arrange(desc(n_spp))
+```
+
+```{r}
+complete_spp_list %>% filter(is.na(kingdom))
+```
+
+```{r}
+complete_spp_list %>% 
+  janitor::get_dupes(valid_sci_name) %>% 
+  summarize(n_distinct(valid_sci_name))
+```
+
+
+```{r}
+saveRDS(complete_spp_list, 
+        file.path(DIR_GCS, "Biodiversity/data/preprocessed/complete_spp_list_with_taxonomy.rds"))
+```
+
+# Final Inspection
+
+```{r}
+complete_spp_list <- read_rds(file.path(DIR_GCS, "Biodiversity/data/preprocessed/complete_spp_list_with_taxonomy.rds"))
+```
+
+```{r}
+complete_spp_list %>% 
+  group_by(kingdom) %>% 
+  summarize(n_spp = n_distinct(valid_sci_name))
+```
+
+
+```{r}
+complete_spp_list %>% 
+  group_by(iucn_category) %>% 
+  summarize(n_spp = n_distinct(valid_sci_name)) %>% 
+  arrange(desc(n_spp))
+```
+
+## exploited + fishing 
+
+```{r}
+complete_spp_list %>% 
+  filter(threat_group %in% c("fishing")) %>% 
+  group_by(exploited) %>% 
+  summarize(n_spp = n_distinct(valid_sci_name))
+```
+
+```{r}
+complete_spp_list %>% 
+  filter(threat_group %in% c("fishing")) %>% 
+  group_by(class) %>% 
+  summarize(n_spp = n_distinct(valid_sci_name)) %>% 
+  arrange(desc(n_spp))
+```
+
+## Other threats
+
+```{r}
+complete_spp_list %>% 
+  group_by(threat_group) %>% 
+  summarize(n_spp = n_distinct(valid_sci_name),
+            n_threatened = sum(iucn_category %in% c("CR", "EN", "VU")))
+```
+
+### + aquaculture
+
+```{r}
+complete_spp_list %>% 
+  filter(iucn_category %in% c("VU", "CR", "EN")) %>% 
+  filter(threat_group %in% c("aquaculture")) %>% 
+  group_by(class) %>% 
+  summarize(n_spp = n_distinct(valid_sci_name)) %>% 
+  arrange(desc(n_spp))
+```
+
+We would get more birds (mostly shorebirds) and plants
+
+### + oil and gas
+
+```{r}
+complete_spp_list %>% 
+  filter(iucn_category %in% c("VU", "CR", "EN")) %>% 
+  filter(threat_group %in% c("oil_and_gas")) %>% 
+  group_by(class) %>% 
+  summarize(n_spp = n_distinct(valid_sci_name)) %>% 
+  arrange(desc(n_spp))
+```
+
+### + mining
+
+```{r}
+complete_spp_list %>% 
+  filter(iucn_category %in% c("VU", "CR", "EN")) %>% 
+  filter(threat_group %in% c("mining")) %>% 
+  group_by(class) %>% 
+  summarize(n_spp = n_distinct(valid_sci_name)) %>% 
+  arrange(desc(n_spp))
+```
+
+
+### + logging
+
+```{r}
+complete_spp_list %>% 
+  filter(iucn_category %in% c("VU", "CR", "EN")) %>% 
+  filter(threat_group %in% c("logging")) %>% 
+  group_by(class) %>% 
+  summarize(n_spp = n_distinct(valid_sci_name)) %>% 
+  arrange(desc(n_spp))
+```
+
+### + development
+
+```{r}
+complete_spp_list %>% 
+  filter(iucn_category %in% c("VU", "CR", "EN")) %>% 
+  filter(threat_group %in% c("development")) %>% 
+  group_by(class) %>% 
+  summarize(n_spp = n_distinct(valid_sci_name)) %>% 
+  arrange(desc(n_spp))
+```
+
