@@ -1,0 +1,899 @@
+---
+title: "Functional & Evolutionary Distinctiveness"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r setup, message=F,warning=F}
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',message = FALSE, warning = FALSE)
+
+library(raster)
+library(sf)
+library(tidyverse)
+library(rredlist)
+library(furrr)
+library(taxize)
+library(treemap)
+
+source(here::here("common.R"))
+```
+
+Let's examine the data compiled by David Moulliot of Functional and Evolutionary Distinctiveness of vertebrates
+
+# Evolutionary Distinctiveness
+
+David complied phylogenetic distinctiveness for bony fishes. It includes mean and SD values for 14,200 marine bony fish and 1192 sharks and rays. Uncertainty is due to the phylogenetic resolution that produces many Trees with the same likelihood.
+
+## load datasets
+
+```{r read data}
+load(file.path(emLab_project_dir, "data", "01_raw", "Res_ED_isaac_fish"))
+
+ED_bony_fish <- Res_ED_isaac %>% 
+  rownames_to_column(var = "sci_name") %>% 
+  rename("ED_mean" = "ED_isaac_mean",
+         "ED_sd" = "ED_isaac_sd")
+
+load(file.path(emLab_project_dir, "data", "01_raw", "Res_ED_shark"))
+
+ED_shark <- Res_ED_shark %>% 
+  rownames_to_column(var = "sci_name") %>% 
+  rename("ED_mean" = "ED_shark_mean",
+         "ED_sd" = "ED_shark_sd")
+
+load(file.path(emLab_project_dir, "data", "01_raw", "Res_ED_isaac_corals"))
+
+ED_corals <- Res_ED_isaac_corals %>% 
+  rownames_to_column(var = "sci_name") %>% 
+  rename("ED_mean" = "ED_isaac_mean",
+         "ED_sd" = "ED_isaac_sd") %>% 
+  mutate(sci_name = str_replace_all(sci_name, "_", " ")) %>% 
+  mutate(sci_name = word(sci_name, 2,3))
+
+load(file.path(emLab_project_dir, "data", "01_raw", "Res_ED_isaac_MMs"))
+
+ED_mammals <- Res_ED_isaac_MMs %>% 
+  rownames_to_column(var = "sci_name") %>% 
+  rename("ED_mean" = "ED_isaac_mean",
+         "ED_sd" = "ED_isaac_sd") %>% 
+  mutate(sci_name = str_replace_all(sci_name, "_", " "))
+
+load(file.path(emLab_project_dir, "data", "01_raw", "Res_ED_isaac_seabirds"))
+
+ED_seabirds <- Res_ED_isaac_seabirds %>% 
+  rownames_to_column(var = "sci_name") %>% 
+  rename("ED_mean" = "ED_isaac_mean",
+         "ED_sd" = "ED_isaac_sd") %>% 
+  mutate(sci_name = str_replace_all(sci_name, "_", " "))
+```
+
+```{r}
+ED_dataset <- bind_rows(ED_shark, ED_bony_fish, ED_corals, ED_mammals, ED_seabirds) %>% 
+  mutate(sci_name = str_replace_all(sci_name, "_", " ")) %>% 
+  arrange(sci_name)
+```
+
+### resolve scientific names
+
+This fixes misspellings 
+
+```{r}
+sources <- c(worms = 9, fishbase = 155, eol = 12, col = 1, gbif = 11)
+
+ED_resolved_names <- sources %>% 
+  map(~ taxize::gnr_resolve(data_source_ids = .x, 
+                            names = ED_dataset$sci_name,
+                            best_match_only = T, 
+                            fields = c("all"), 
+                            canonical = T ))
+
+ED_resolved_names_df <- ED_resolved_names %>% 
+  map(~ .x %>% 
+        filter(!match_value %in% c("Could only match genus") & str_count(matched_name2, "\\w+") >= 2) %>% 
+        select(user_supplied_name, matched_name2, taxon_id)) %>% 
+  reduce(full_join, by = "user_supplied_name") %>% 
+  set_names(c("user_supplied_name", "worms_sci_name", "worms_id", "fishbase_sci_name", "fishbase_id", "eol_sci_name", "eol_id", 
+              "col_sci_name", "col_id","gbif_sci_name", "gbif_id"))
+
+ED_resolved_names <- ED_resolved_names_df %>% 
+  mutate(resolved_scientific_name = case_when(
+    !is.na(worms_sci_name) ~ worms_sci_name,
+    !is.na(fishbase_sci_name) ~ fishbase_sci_name,
+    !is.na(eol_sci_name) ~ eol_sci_name,
+    !is.na(col_sci_name) ~ col_sci_name,
+    TRUE ~ user_supplied_name
+  )) %>% 
+  select(user_supplied_name, resolved_scientific_name, everything()) 
+```
+
+```{r}
+ED_dataset <- ED_dataset %>% 
+  left_join(ED_resolved_names %>% 
+              select(user_supplied_name, resolved_sci_name = resolved_scientific_name),
+            by = c("sci_name" = "user_supplied_name"))
+
+ED_dataset$resolved_sci_name[ED_dataset$sci_name == "Glaucostegus spinosus"] <- "Rhinobatos spinosus"
+ED_dataset$resolved_sci_name[ED_dataset$sci_name == "Okamejei porosa"] <- "Okamejei kenojei"
+
+ED_dataset <- ED_dataset %>%   
+  mutate(resolved_sci_name = coalesce(resolved_sci_name, sci_name))
+```
+
+### validate names and get taxonomic info from WoRMS
+
+```{r}
+get_worms_info <- function(sci_name){
+  
+  worrms::wm_records_name(name = sci_name) %>% 
+    mutate(provided_sci_name = sci_name) %>% 
+    select(provided_sci_name, scientificname, status, valid_name, kingdom, phylum, class, order, family, genus)
+  
+}
+```
+
+```{r}
+plan(multiprocess)
+
+ED_worms_info <- ED_dataset %>%
+  pull(resolved_sci_name) %>% 
+  furrr::future_map(safely(get_worms_info)) %>% 
+  transpose()
+
+ED_worms_info <- ED_worms_info$result %>% 
+  compact() %>% 
+  bind_rows()
+```
+
+Lets take those entries that have no NAs, where the name queried matches the name supplied, and when there are only one valid name per entry
+
+```{r}
+valid_ED_worms_info <- ED_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) == 1) %>%  # get those for which there is only one valid name
+  ungroup() %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+Now, from those with multiple valid names per row, lets get only the row for which status == "accepted", which means that the supplied name was already valid
+
+```{r}
+accepted_ED_worms_info <- ED_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) > 1) %>% 
+  filter(status == "accepted") %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+```{r}
+ED_dataset <- ED_dataset %>% 
+  left_join(bind_rows(accepted_ED_worms_info,
+                      valid_ED_worms_info),
+            by = c("resolved_sci_name" = "provided_sci_name")
+)
+
+ED_dataset <- ED_dataset %>% 
+  mutate(valid_sci_name = coalesce(valid_name, resolved_sci_name)) %>% 
+  select(sci_name, resolved_sci_name,  valid_sci_name, everything(), -valid_name)
+```
+
+### fill taxonomic  gaps
+
+```{r}
+get_taxonomy <- function (sci_name, db) {
+  
+  taxize::classification(sci_name, db, accepted = T, ask = F)[[1]] %>% 
+    select(-id) %>% 
+    mutate(rank = stringr::str_to_lower(rank)) %>% 
+    filter(rank %in% c("genus","family",  "order", "class","phylum","kingdom")) %>% 
+    spread(rank, name) %>% 
+    mutate(sci_name = sci_name) %>% 
+    janitor::clean_names() %>% 
+    select(sci_name, genus, family, order, class, phylum, kingdom)
+  
+}
+```
+
+```{r}
+taxonomy_gaps_ED <- ED_dataset %>% 
+  filter(is.na(kingdom)) %>% 
+  select(valid_sci_name)
+```
+
+#### COL
+
+```{r}
+plan(multiprocess)
+
+ED_taxonomy_col <- taxonomy_gaps_ED %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "col") %>% 
+  transpose()
+
+ED_taxonomy_col <- bind_rows(ED_taxonomy_col$result)
+```
+
+#### ITIS
+
+```{r}
+plan(multiprocess)
+
+ED_taxonomy_itis <- taxonomy_gaps_ED %>% 
+  filter(!valid_sci_name %in% ED_taxonomy_col$sci_name) %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "itis") %>% 
+  transpose()
+
+ED_taxonomy_itis <- bind_rows(ED_taxonomy_itis$result)
+```
+
+#### GBIF
+
+```{r}
+plan(multiprocess)
+
+ED_taxonomy_gbif <- taxonomy_gaps_ED %>% 
+  filter(!valid_sci_name %in% ED_taxonomy_col$sci_name) %>% 
+  filter(!valid_sci_name %in% ED_taxonomy_itis$sci_name) %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "gbif") %>% 
+  transpose()
+
+ED_taxonomy_gbif <- bind_rows(ED_taxonomy_gbif$result)
+```
+
+```{r}
+filled_taxonomy_gaps_ED <- bind_rows(ED_taxonomy_col, ED_taxonomy_itis, ED_taxonomy_gbif)
+
+filled_taxonomy_gaps_ED <- filled_taxonomy_gaps_ED %>% 
+  mutate(valid_sci_name = sci_name) %>% 
+  group_by(valid_sci_name) %>% 
+  summarise_at(vars(kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+```{r}
+ED_dataset <- ED_dataset %>% 
+  left_join(filled_taxonomy_gaps_ED, by = c("valid_sci_name" = "valid_sci_name")) %>% 
+  mutate(genus = coalesce(genus.x, genus.y),
+         family = coalesce(family.x, family.y),
+         order = coalesce(order.x, order.y),
+         class = coalesce(class.x, class.y),
+         phylum = coalesce(phylum.x, phylum.y),
+         kingdom = coalesce(kingdom.x, kingdom.y)
+         ) %>% 
+  select(-contains(".x"), -contains(".y")) 
+```
+
+
+```{r}
+ED_dataset %>% 
+  group_by(class) %>% 
+  summarise(n = n()) %>% 
+  arrange(desc(n))
+```
+
+Fix classes 
+
+```{r}
+ED_dataset <- ED_dataset %>% 
+  mutate(class = case_when(
+    class == "Holocephali" ~ "Chondrichthyes",
+    class == "Elasmobranchii" ~ "Chondrichthyes",
+    class == "Teleostei" ~ "Actinopterygii",
+    TRUE  ~ class
+  ))
+```
+
+```{r}
+ED_dataset %>% 
+  write_csv(file.path(emLab_project_dir, "data", "02_processed", "distinctiveness" ,"ED_dataset_with_taxonomy.csv"))
+```
+
+# Functional distinctiveness
+
+David has also calculated Ecological Distinctiveness, for 3871 species. He used the function distinctiveness from the funrar package, which basically estimates the functional distance between each species and the rest of the species pool. The traits used for classification are: 
+
+  - Loo (cm)	asymptotic maximum length
+  - K (yr-1)	individual growth
+  - Winfinity (g)	asymptotic maximum mass
+  - tmax (yr)	maximum age
+  - tm (yr)	age at maturity
+  - M (yr-1)	natural mortality rate
+  - Lm (cm)	length at maturity
+
+## load datasets
+
+```{r}
+fish_FD <- read.table(file.path(emLab_project_dir, "data", "01_raw", "fishes_FD.txt"), header = T)
+
+fish_FD <- fish_FD %>% 
+  set_names(c("sci_name", "FD")) %>% 
+  mutate(sci_name = str_replace(sci_name, "_", " ")) %>% 
+  arrange(sci_name) %>% 
+  select(sci_name, FD)
+```
+
+```{r}
+corals_FD <- read.table(file.path(emLab_project_dir, "data", "01_raw", "corals_FD.txt")) %>% 
+  rownames_to_column()
+
+corals_FD <- corals_FD %>% 
+  set_names(c("sci_name", "FD")) %>% 
+  mutate(sci_name = as.character(sci_name))
+```
+
+```{r}
+seabirds_FD <- read.table(file.path(emLab_project_dir, "data", "01_raw", "seabirds_FD.txt"), header = T) %>% 
+  rownames_to_column()
+
+seabirds_FD <- seabirds_FD %>% 
+  set_names(c("sci_name", "FD")) %>% 
+  mutate(sci_name = str_replace(sci_name, "_", " ")) 
+```
+
+```{r}
+mammals_FD <- read.table(file.path(emLab_project_dir, "data", "01_raw", "mammals_FD.txt"), header = T)
+
+mammals_FD <- mammals_FD %>% 
+  set_names(c("sci_name", "FD")) %>% 
+  mutate(sci_name = str_replace(sci_name, "_", " "))
+```
+
+```{r}
+FD_dataset <- bind_rows(fish_FD, seabirds_FD, corals_FD, mammals_FD) %>% 
+  filter(!is.na(FD))
+```
+
+### resolve scientific names
+
+This fixes misspellings 
+
+```{r}
+sources <- c(worms = 9, fishbase = 155, eol = 12, col = 1, gbif = 11)
+
+FD_resolved_names <- sources %>% 
+  map(~ taxize::gnr_resolve(data_source_ids = .x, 
+                            names = FD_dataset$sci_name,
+                            best_match_only = T, 
+                            fields = c("all"), 
+                            canonical = T ))
+
+FD_resolved_names_df <- FD_resolved_names %>% 
+  map(~ .x %>% 
+        filter(!match_value %in% c("Could only match genus") & str_count(matched_name2, "\\w+") >= 2) %>% 
+        select(user_supplied_name, matched_name2, taxon_id)) %>% 
+  reduce(full_join, by = "user_supplied_name") %>% 
+  set_names(c("user_supplied_name", "worms_sci_name", "worms_id", "fishbase_sci_name", "fishbase_id", "eol_sci_name", "eol_id", "col_sci_name", "col_id","gbif_sci_name", "gbif_id"))
+
+FD_resolved_names <- FD_resolved_names_df %>% 
+  mutate(resolved_scientific_name = case_when(
+    !is.na(worms_sci_name) ~ worms_sci_name,
+    !is.na(fishbase_sci_name) ~ fishbase_sci_name,
+    !is.na(eol_sci_name) ~ eol_sci_name,
+    !is.na(col_sci_name) ~ col_sci_name,
+    TRUE ~ user_supplied_name
+  )) %>% 
+  select(user_supplied_name, resolved_scientific_name, everything()) 
+```
+
+```{r}
+FD_dataset <- FD_dataset %>% 
+  left_join(FD_resolved_names %>% 
+              select(user_supplied_name, resolved_sci_name = resolved_scientific_name),
+            by = c("sci_name" = "user_supplied_name"))
+
+FD_dataset <- FD_dataset %>%   
+  mutate(resolved_sci_name = coalesce(resolved_sci_name, sci_name)) %>% 
+  filter(!is.na(FD))
+```
+
+```{r}
+FD_dataset$resolved_sci_name[FD_dataset$sci_name == "Pagrus auratus"] <- 'Chrysophrys auratus'
+```
+
+### validate names and get taxonomic info from WoRMS
+
+```{r}
+plan(multiprocess)
+
+FD_worms_info <- FD_dataset %>%
+  pull(resolved_sci_name) %>% 
+  furrr::future_map(safely(get_worms_info)) %>% 
+  transpose()
+
+FD_worms_info <- FD_worms_info$result %>% 
+  compact() %>% 
+  bind_rows()
+```
+
+Lets take those entries that have no NAs, where the name queried matches the name supplied, and when there are only one valid name per entry
+
+```{r}
+valid_FD_worms_info <- FD_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) == 1) %>%  # get those for which there is only one valid name
+  ungroup() %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+Now, from those with multiple valid names per row, lets get only the row for which status == "accepted", which means that the supplied name was already valid
+
+```{r}
+accepted_FD_worms_info <- FD_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) > 1) %>% 
+  filter(status == "accepted") %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+```{r}
+FD_dataset <- FD_dataset %>% 
+  left_join(bind_rows(accepted_FD_worms_info,
+                      valid_FD_worms_info),
+            by = c("resolved_sci_name" = "provided_sci_name")
+)
+
+FD_dataset <- FD_dataset %>% 
+  mutate(valid_sci_name = coalesce(valid_name, resolved_sci_name)) %>% 
+  select(sci_name, resolved_sci_name,  valid_sci_name, everything(), -valid_name)
+```
+
+### fill taxonomic  gaps
+
+```{r}
+taxonomy_gaps_FD <- FD_dataset %>% 
+  filter(is.na(kingdom)) %>% 
+  select(valid_sci_name)
+```
+
+#### COL
+
+```{r}
+plan(multiprocess)
+
+FD_taxonomy_col <- taxonomy_gaps_FD %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "col") %>% 
+  transpose()
+
+FD_taxonomy_col <- bind_rows(FD_taxonomy_col$result)
+```
+
+#### ITIS
+
+```{r}
+plan(multiprocess)
+
+FD_taxonomy_itis <- taxonomy_gaps_FD %>% 
+  filter(!valid_sci_name %in% FD_taxonomy_col$sci_name) %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "itis") %>% 
+  transpose()
+
+FD_taxonomy_itis <- bind_rows(FD_taxonomy_itis$result)
+```
+
+#### GBIF
+
+```{r}
+plan(multiprocess)
+
+FD_taxonomy_gbif <- taxonomy_gaps_FD %>% 
+  filter(!valid_sci_name %in% FD_taxonomy_col$sci_name) %>% 
+  filter(!valid_sci_name %in% FD_taxonomy_itis$sci_name) %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "gbif") %>% 
+  transpose()
+
+FD_taxonomy_gbif <- bind_rows(FD_taxonomy_gbif$result)
+```
+
+```{r}
+filled_taxonomy_gaps_FD <- bind_rows(FD_taxonomy_col, FD_taxonomy_itis, FD_taxonomy_gbif)
+
+filled_taxonomy_gaps_FD <- filled_taxonomy_gaps_FD %>% 
+  mutate(valid_sci_name = sci_name) %>% 
+  group_by(valid_sci_name) %>% 
+  summarise_at(vars(kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+```{r}
+FD_dataset <- FD_dataset %>% 
+  left_join(filled_taxonomy_gaps_FD, by = c("valid_sci_name" = "valid_sci_name")) %>% 
+  mutate(genus = coalesce(genus.x, genus.y),
+         family = coalesce(family.x, family.y),
+         order = coalesce(order.x, order.y),
+         class = coalesce(class.x, class.y),
+         phylum = coalesce(phylum.x, phylum.y),
+         kingdom = coalesce(kingdom.x, kingdom.y)
+         ) %>% 
+  select(-contains(".x"), -contains(".y")) 
+```
+
+```{r}
+FD_dataset %>% 
+  group_by(class) %>% 
+  summarise(n = n()) %>% 
+  arrange(desc(n))
+```
+
+```{r}
+FD_dataset %>% 
+  write_csv(file.path(emLab_project_dir, "data", "02_processed", "distinctiveness" ,"FD_dataset_with_taxonomy.csv"))
+```
+
+# Coverage
+
+```{r}
+FD_dataset <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "distinctiveness" ,"FD_dataset_with_taxonomy.csv"))
+
+ED_dataset <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "distinctiveness" ,"ED_dataset_with_taxonomy.csv"))
+
+included_aquamaps_spp_info <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list","included_aquamaps_spp_list.csv"))
+
+included_seabirds_spp_info <-  read_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list","included_birdlife_spp_list.csv"))
+```
+
+```{r}
+full_included_spp_list <- bind_rows(included_aquamaps_spp_info %>% 
+                                      select(valid_sci_name, genus, order, family, class, phylum, kingdom, iucn_category, file_id = aquamaps_id),
+                                    included_seabirds_spp_info %>% 
+                                      mutate(birdlife_id = as.character(birdlife_id)) %>% 
+                                      select(valid_sci_name, genus, order, family, class, phylum, kingdom, iucn_category, file_id = birdlife_id))
+```
+
+##  Join ED info
+
+```{r}
+full_included_spp_list <- full_included_spp_list %>% 
+  left_join(ED_dataset %>% 
+              group_by(valid_sci_name) %>% 
+              filter(n_distinct(ED_mean) == 1) %>% 
+              ungroup() %>% 
+              distinct(valid_sci_name, ED_mean, ED_sd), by = "valid_sci_name")
+
+ED_dupes <- ED_dataset %>% 
+  group_by(valid_sci_name) %>% 
+  filter(n_distinct(ED_mean) > 1) %>% 
+  ungroup() %>% 
+  filter(sci_name == valid_sci_name) %>% 
+  distinct(valid_sci_name, ED_mean, ED_sd)
+
+full_included_spp_list <- full_included_spp_list %>% 
+  left_join(ED_dupes, 
+            by = "valid_sci_name") %>% 
+  mutate(ED_mean = coalesce(ED_mean.x, ED_mean.y),
+         ED_sd = coalesce(ED_sd.x, ED_sd.y)) %>% 
+  select(-contains(".x"), -contains(".y"))
+```
+
+##  Join FD info
+
+```{r}
+full_included_spp_list <- full_included_spp_list %>% 
+  left_join(FD_dataset %>% 
+              group_by(valid_sci_name) %>% 
+              filter(n_distinct(FD) == 1) %>% 
+              ungroup() %>% 
+              distinct(valid_sci_name, FD))
+
+FD_dupes <- FD_dataset %>% 
+  group_by(valid_sci_name) %>% 
+  filter(n_distinct(FD) > 1) %>% 
+  ungroup() %>% 
+  filter(sci_name == valid_sci_name) %>% 
+  distinct(valid_sci_name, FD)
+
+full_included_spp_list <- full_included_spp_list %>% 
+  left_join(FD_dupes, 
+            by = "valid_sci_name") %>% 
+  mutate(FD = coalesce(FD.x, FD.y)) %>% 
+  select(-contains(".x"), -contains(".y"))
+```
+
+Of included species, what % have FD and ED info?
+
+```{r}
+full_included_spp_list %>%
+  summarize(n_spp = n(),
+            spp_with_ED = sum(!is.na(ED_mean))/n_spp,
+            spp_with_FD = sum(!is.na(FD))/n_spp)
+```
+
+Of vertebrates, what % have FD and ED info?
+
+```{r}
+full_included_spp_list %>% 
+  filter(phylum == "Chordata") %>% 
+  summarize(n_spp = n(),
+            spp_with_ED = sum(!is.na(ED_mean))/n_spp,
+            spp_with_FD = sum(!is.na(FD))/n_spp)
+```
+
+Of vertebrates, what is our covergae by class?
+
+```{r}
+full_included_spp_list %>% 
+  filter(phylum == "Chordata") %>% 
+  group_by(class) %>% 
+  summarize(n_spp = n(),
+            spp_wit_ED = sum(!is.na(ED_mean))/n_spp,
+            spp_wit_FD = sum(!is.na(FD))/n_spp) %>% 
+  arrange(desc(n_spp))
+```
+
+For which groups are we missing the most?
+
+```{r}
+full_included_spp_list %>%
+  group_by(class) %>% 
+  summarize(n_spp = n(),
+            fraction_spp_sans_ED = sum(is.na(ED_mean))/n_spp,
+            fraction_spp_sans_FD = sum(is.na(FD))/n_spp) %>% 
+  arrange(desc(n_spp)) 
+```
+
+
+```{r}
+full_included_spp_list %>%
+  filter(phylum != "Chordata") %>% 
+  group_by(class) %>% 
+  summarize(n_spp = n(),
+            fraction_spp_sans_ED = sum(is.na(ED_mean))/n_spp,
+            fraction_spp_sans_FD = sum(is.na(FD))/n_spp) %>% 
+  arrange(desc(n_spp))
+```
+
+# Distributions
+
+```{r}
+tmp <- full_included_spp_list %>% 
+  filter(!is.na(FD)| !is.na(ED_mean)) %>% 
+  group_by(class) %>% 
+  summarise(n = n()) %>% 
+  filter(n > 1, !is.na(class)) %>% 
+  arrange(desc(n))
+
+cols <- c('#a6cee3','#1f78b4','#b2df8a','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6','#6a3d9a','#ffff99')
+cols <- c('#7F3C8D','#11A579','#3969AC','#F2B701','#E73F74','#80BA5A','#E68310','#008695','#CF1C90','#f97b72','#4b4b8f')
+names(cols) <- tmp$class
+```
+
+
+```{r}
+full_included_spp_list %>% 
+  filter(!is.na(class)) %>% 
+  ggplot()+
+  geom_density(aes(x = ED_mean, col = class))+
+  scale_color_manual(values = cols)+
+  theme_minimal()+
+  labs(title = "Evolutionary distinctiveness by class")+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "exploratory", "ED_distributions_by_taxa.png"),
+          dpi = 300, width = 8, height = 4)
+```
+
+```{r}
+full_included_spp_list %>% 
+  ggplot()+
+  geom_density(aes(x = FD, col = class))+
+  scale_color_manual(values = cols)+
+  theme_minimal()+
+  labs(title = "Functional distinctiveness by class")+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "exploratory", "FD_distributions_by_taxa.png"),
+         dpi = 300, width = 8, height = 4)
+```
+
+```{r}
+full_included_spp_list %>% 
+  ggplot()+
+  geom_density(aes(x = FD, col = class))+
+  scale_color_manual(values = cols)+
+  theme_minimal()+
+  scale_x_log10()+
+  labs(title = "Functional distinctiveness by class")+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "exploratory", "FD_distributions_by_taxa_log.png"),
+         dpi = 300, width = 8, height = 4)
+```
+
+# Fill in gaps
+
+```{r}
+full_included_spp_list_gf <- full_included_spp_list %>% 
+  mutate(class = case_when(
+    class == "Holocephali" ~ "Chondrichthyes",
+    class == "Elasmobranchii" ~ "Chondrichthyes",
+    class == "Teleostei" ~ "Actinopterygii",
+    TRUE  ~ class
+  )) %>%  
+  group_by(class) %>% 
+  mutate(class_ED = mean(ED_mean, na.rm = T),
+         class_FD = mean(FD, na.rm = T)) %>% 
+  mutate(ED = coalesce(ED_mean, class_ED),
+         FD = coalesce(FD, class_FD)) %>% 
+  ungroup() %>% 
+  mutate(ED = if_else(is.na(ED), mean(ED, na.rm = T), ED),
+         FD = if_else(is.na(FD), mean(FD, na.rm = T), FD)) %>% 
+  select(-ED_mean, -ED_sd, -class_ED, -class_FD)
+```
+
+# Rescale 
+
+```{r}
+full_included_spp_list_gf %>% 
+  arrange(desc(FD))
+```
+
+```{r}
+full_included_spp_list_gf <- full_included_spp_list_gf %>% 
+  ungroup() %>% 
+  mutate(ED = scales::rescale(ED, to = c(0,1)),
+         FD = scales::rescale(FD, to = c(0,1)))
+```
+
+## Export files
+
+```{r}
+included_aquamaps_spp_info %>% 
+  left_join(full_included_spp_list_gf %>% 
+              select(valid_sci_name, ED, FD),
+            by =  "valid_sci_name") %>% 
+  write_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list", "included_aquamaps_spp_list_with_ED_FD.csv"))
+```
+
+```{r}
+included_seabirds_spp_info %>% 
+  left_join(full_included_spp_list_gf %>% 
+              select(valid_sci_name, ED, FD), 
+            by = "valid_sci_name")  %>% 
+    write_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list", "included_birdlife_spp_list_with_ED_FD.csv"))
+```
+
+# Visualize Weights
+
+```{r}
+included_aquamaps_spp_info <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list", "included_aquamaps_spp_list_with_ED_FD.csv"))
+
+included_seabirds_spp_info <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list", "included_birdlife_spp_list_with_ED_FD.csv"))
+
+full_included_spp_list <- bind_rows(included_aquamaps_spp_info %>% 
+                                      select(valid_sci_name, genus, order, family, class, phylum, kingdom, iucn_category, ED, FD),
+                                    included_seabirds_spp_info %>% 
+                                      select(valid_sci_name, genus, order, family, class, phylum, kingdom, iucn_category,  ED, FD))
+```
+
+```{r}
+full_included_spp_list <- full_included_spp_list %>% 
+  mutate(iucn_weight = case_when(
+    iucn_category == "CR" ~ 1,
+    iucn_category == "EN" ~ .75,
+    iucn_category == "VU" ~ .5, 
+    iucn_category == "NT" ~ .25, 
+    iucn_category == "DD" ~ .25,
+    iucn_category == "LC" ~ .125,
+    is.na(iucn_category) ~ .25
+  )) %>% 
+  mutate(full_weight = iucn_weight*(ED + FD))
+```
+
+```{r}
+full_included_spp_list %>% 
+  arrange(desc(full_weight))
+```
+
+```{r}
+n <- n_distinct(full_included_spp_list$class)
+
+col_25 <- c("#396735",
+           "#ba45de",
+           "#57b946",
+           "#5b33c4",
+           "#9eb03b",
+           "#8369e1",
+           "#d3953b",
+           "#543492",
+           "#db4f2b",
+           "#6681d5",
+           "#954c27",
+           "#d13fb5",
+           "#64b58d",
+           "#d94a82",
+           "#58a6c3",
+           "#cc4450",
+           "#3f5883",
+           "#a09859",
+           "#d47ac9",
+           "#605126",
+           "#933277",
+           "#d38b86",
+           "#613766",
+           "#b290c2",
+           "#773039")
+```
+
+```{r}
+png(filename =  file.path(emLab_project_dir, "figures","supplement", "included_spp_treemap.png"),
+    width = 800, height=800)
+full_included_spp_list %>% 
+  filter(!is.na(class)) %>% 
+  group_by(class) %>% 
+  summarise(weight = n()) %>% 
+  mutate(label = paste(class, weight, sep = "\n")) %>% 
+  treemap(
+    index = c("label"),
+    vSize = "weight",
+    type = "index",
+    title = "",
+    palette = col_25,
+    fontsize.labels = c(12)
+  ) 
+dev.off()
+```
+
+```{r}
+png(filename =  file.path(emLab_project_dir, "figures","exploratory", "included_spp_treemap_iucn_weights.png"),
+    width = 800, height = 800)
+full_included_spp_list %>% 
+  filter(!is.na(class)) %>% 
+  group_by(class) %>% 
+  summarise(weight = sum(iucn_weight)) %>% 
+  mutate(f_weight = paste(round(100*weight/sum(weight), 1), "%", sep = " "),
+         label = paste(class, f_weight, sep = "\n")) %>% 
+  treemap(
+    index = c("label"),
+    vSize = "weight",
+    type = "index",
+    title = "",
+    palette = col_25,
+    fontsize.labels=c(12)
+  ) 
+dev.off()
+```
+
+```{r}
+full_included_spp_list %>% 
+  filter(!is.na(class)) %>% 
+  group_by(class) %>% 
+  summarise(weight = sum(iucn_weight)) %>% 
+  mutate(f_weight = round(100*weight/sum(weight)))
+```
+
+
+```{r}
+png(filename = file.path(emLab_project_dir, "figures","supplement", "included_spp_treemap_full_weights.png"),
+    width = 800, height=800)
+full_included_spp_list %>% 
+  filter(!is.na(class)) %>% 
+  group_by(class) %>% 
+  summarise(weight = sum(full_weight)) %>% 
+  mutate(f_weight = paste(round(100*weight/sum(weight), 1), "%", sep = " "),
+         label = paste(class, f_weight, sep = "\n")) %>% 
+  treemap(
+    index = c("label"),
+    vSize = "weight",
+    type = "index",
+    title = "",
+    palette = col_25,
+    fontsize.labels=c(12)
+  ) 
+dev.off()
+```
+

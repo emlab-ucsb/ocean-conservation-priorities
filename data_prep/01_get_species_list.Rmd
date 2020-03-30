@@ -25,9 +25,9 @@ library(parallel)
 
 Sys.setenv(IUCN_REDLIST_KEY = "0b64bc7473e4e6dd698b42d5d239ff12786d3007a30aa4aa30064ae139d79bbe")
 
-emLab_project_dir <- "~/Google Drive File Stream/Shared drives/emlab/projects/current-projects/ocean-conservation-priorities/data/"
+emLab_project_dir <- "~/Google Drive File Stream/Shared drives/emlab/projects/current-projects/ocean-conservation-priorities"
 
-emLab_shrd_data_dir <- "~/Google Drive File Stream/Shared drives/emlab/data/"
+emLab_shrd_data_dir <- "~/Google Drive File Stream/Shared drives/emlab/data"
 ```
 
 The list of species to be included in our analysis includes exploited species (RAM + FAO + Watson's), and those that have been assessed by IUCN having fishing and habitat destruction as a threat. 
@@ -37,31 +37,6 @@ The list of species to be included in our analysis includes exploited species (R
 ## IUCN 
 
 Get all IUCN species and their habitats
-```{r}
-plan(multiprocess)
-
-boot_df <- function(x) x[sample(nrow(x), replace = T), ]
-rsquared <- function(mod) summary(mod)$r.squared
-boot_lm <- function(i) {
-  rsquared(lm(mpg ~ wt + disp, data = boot_df(mtcars)))
-}
-
-system.time(future_map(1:500, boot_lm))
-
-system.time(parallel::mclapply(1:500, boot_lm, mc.cores = 4))
-```
-
-```{r}
-all_sp <- rl_sp(all = TRUE)
-
-all_sp <- do.call(rbind, lapply(all_sp, "[[", "result"))
-
-get_habitat_codes <- function(sci_name){paste(rl_habitats(sci_name)$result$code, collapse = ",")}
-
-habitats <- parallel::mclapply(all_sp$scientific_name, get_habitat_codes, mc.cores = 10)
-```
-
-
 
 ```{r, eval = F}
 all_sp <- rl_sp(all = TRUE)
@@ -74,15 +49,14 @@ plan(multiprocess)
 
 all_sp <- all_sp %>% 
   mutate(habitats = furrr::future_map_chr(scientific_name, 
-                                          get_habitat_codes))
+                                get_habitat_codes))
 
 saveRDS(all_sp, 
-        file.path(emLab_project_dir, "01_raw", "IUCN_spp_list_with_habitats.rds"))
+        file.path(emLab_project_dir, "data", "01_raw", "iucn_spp_list_with_habitats.rds"))
 ```
 
-
 ```{r, eval = F}
-all_sp <- read_rds(file.path(DIR_GCS, "Biodiversity/data/preprocessed/IUCN_spp_list_with_habitats.rds"))
+all_sp <- read_rds(file.path(emLab_project_dir, "data", "01_raw", "iucn_spp_list_with_habitats.rds"))
 ```
 
 ### classify as marine
@@ -90,14 +64,10 @@ all_sp <- read_rds(file.path(DIR_GCS, "Biodiversity/data/preprocessed/IUCN_spp_l
 Based on their habitat classification, which of these is marine?
 
 ```{r, eval = F}
-iucn_habs <- read_csv(file.path(DIR_GCS, "Biodiversity/data/raw/species-list/iucn_habitat_codes.csv"))
+iucn_habs <- read_csv(file.path(emLab_project_dir, "data", "01_raw", "iucn_habitat_codes.csv"))
 ```
 
 The full list of iucn habitats was manually assigned as marine or not marine, as follows:
-
-```{r, eval = F}
-iucn_habs
-```
 
 ```{r, eval = F}
 (marine_hab_codes <- iucn_habs$code[iucn_habs$marine == T])
@@ -125,7 +95,7 @@ For how many species we have Unknown habitat info for? `r nrow(filter(all_sp, ha
 ```{r, eval = F}
 all_sp %>% 
   filter(category != "EX") %>% 
-  filter(habitats ==  "17" | habitats == "18") %>% 
+  filter(habitats ==  "17" | habitats == "18") %>% #Unknown habitats
   group_by(class_name) %>% 
   summarize(n = n()) %>% 
   arrange(desc(n))
@@ -134,7 +104,7 @@ all_sp %>%
 Most of these species with missing or unknown habitat are definitely not marine. So we need to apply an additional filter. For this, we download a list from IUCN of species cataloged as Marine systems. This list contains 13414 records and was downloaded from IUCN on December 9th 2018. 
 
 ```{r, eval = F}
-iucn_marine_system <- read_csv(file.path(DIR_GCS, "Biodiversity/data/raw/species-list/iucn_website_marine_spp.csv"))
+iucn_marine_system <- read_csv(file.path(emLab_project_dir, "data","01_raw", "iucn_marine_system_spp.csv"))
 
 all_sp <- all_sp %>% 
   rowwise() %>% 
@@ -175,11 +145,9 @@ Now, how many of these have fishing and/or habitat destruction as a threat?
 
 ### get threats
 
-```{r, eval = F}
-get_threats_codes <- function(sci_name){paste(rl_threats(sci_name)$result$code, collapse = ",")}
-```
-
 ```{r eval = F}
+get_threats_codes <- function(sci_name){paste(rl_threats(sci_name)$result$code, collapse = ",")}
+
 plan(multiprocess)
 
 tictoc::tic()
@@ -188,24 +156,23 @@ marine_spp <- marine_spp %>%
                                 get_threats_codes))
 tictoc::toc()
 
-saveRDS(marine_spp, file.path(DIR_GCS, "Biodiversity/data/preprocessed/marine_spp_with_habitats_and_threats.rds"))
+write_rds(marine_spp, 
+          file.path(emLab_project_dir, "data", "02_processed", "species_list", "iucn_marine_spp_with_habitats_and_threats.rds"))
 ```
 
 #### what threats are there?
 
 ```{r}
-marine_spp <- read_rds(file.path(DIR_GCS, "Biodiversity/data/preprocessed/marine_spp_with_habitats_and_threats.rds"))
-```
+marine_spp <- read_rds(file.path(emLab_project_dir, "data", "02_processed", "species_list", "iucn_marine_spp_with_habitats_and_threats.rds"))
 
-```{r, eval = F}
-iucn_threats <- read_csv(file.path(DIR_GCS, "Biodiversity/data/raw/species-list/iucn_threat_codes.csv"))
+iucn_threats <- read_csv(file.path(emLab_project_dir, "data", "01_raw", "iucn_threat_codes.csv"))
 
 iucn_threats$code <- str_trim(iucn_threats$code)
 
 iucn_threats
 ```
 
-##### Abatable threats 
+##### filter for abatable threats 
 
 ```{r}
 detect_threat <- function(threat_list, threat_code){
@@ -252,7 +219,9 @@ IUCN_spp_list <- marine_spp_abatable_threats %>%
   mutate_at(vars(kingdom, phylum, class, order, family), stringr::str_to_title)
 ```
 
-### Resolve scientific names
+### resolve scientific names
+
+Let's make sure we fix possible taxonomic spelling errors
 
 ```{r}
 sources <- c(worms = 9, fishbase = 155, eol = 12, col = 1, gbif = 11)
@@ -315,9 +284,7 @@ get_worms_info <- function(sci_name){
     select(provided_sci_name, scientificname, status, valid_name, kingdom, phylum, class, order, family, genus)
   
 }
-```
 
-```{r}
 plan(multiprocess)
 
 IUCN_worms_info <- IUCN_spp_list %>%
@@ -493,7 +460,7 @@ IUCN_spp_list <- IUCN_spp_list %>%
 FAO makes available complete timeseries data of exploited species via FishStatJ. This is the most comprehensive list of exploited species but it is a pain to obtain. Accessed via Tyler Clavelle on December 11th 2018. 
 
 ```{r, eval = F}
-load(file.path(DIR_GCS, "Biodiversity/data/raw/species-list/fao_fish.rda")) # this loads a dataframe called fish
+load(file.path(emLab_project_dir, "01_raw", "fao_fish.rda")) # this loads a dataframe called fish
 
 FAO_capture_list <- fish %>% 
   filter(waters == 'Marine areas') %>% 
@@ -699,13 +666,13 @@ FAO_nei_genus <- FAO_nei_resolved %>%
   mutate(matched_rank = str_extract(classification_path_ranks, "([^|]+$)")) %>% 
   filter(matched_rank == "genus") %>% 
   select(nei_genus = matched_name2) %>% 
-  write_csv(file.path(DIR_GCS, "Biodiversity/data/preprocessed/FAO_nei_genus.csv"))
+  write_csv(file.path(emLab_project_dir, "data","02_processed", "species_list", "FAO_nei_genus.csv"))
 ```
 
 ## RAM
 
 ```{r, eval = F}
-load(file.path(DIR_GCS, "Biodiversity/data/raw/species-list/ram.rda")) # this loads a dataframe called ram
+load(file.path(emLab_project_dir, "data","01_raw","ram.rda"))
 
 RAM_spp_list <- ram$taxonomy[[1]] %>% 
   filter(!is.na(species)) %>% 
@@ -818,13 +785,16 @@ RAM_spp_list %>% filter(is.na(kingdom))
 RAM_nei_genus <- ram$taxonomy[[1]] %>% 
   filter(is.na(species)) %>% 
   select(nei_genus = genus) %>% 
-  write_csv(file.path(DIR_GCS, "Biodiversity/data/preprocessed/RAM_nei_genus.csv"))
+  write_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list","RAM_nei_genus.csv"))
 ```
 
 ## Watson
 
 ```{r}
-Watson_data <- read_csv(file.path(DIR_GCS_data, 'Watson-catch-data-v4.0/taxa_codes.csv'))
+Watson_data <- readxl::read_xlsx(file.path(emLab_shrd_data_dir, 
+                                           "reg-watson-global-marine-capture", "global_fisheries_landing_v4", "Codes.xlsx"),
+                                 sheet = "Taxa")
+
 
 Watson_spp_list <- Watson_data %>% 
   filter(str_count(TaxonName, '\\w+') == 2) %>% 
@@ -947,9 +917,8 @@ Watson_nei_genus <- Watson_resolved_nei %>%
   mutate(matched_rank = str_extract(classification_path_ranks, "([^|]+$)")) %>% 
   filter(matched_rank == "genus") %>% 
   select(nei_genus = matched_name2) %>% 
-  write_csv(file.path(DIR_GCS, "Biodiversity/data/preprocessed/Watson_nei_genus.csv"))
+  write_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list", "Watson_nei_genus.csv"))
 ```
-
 
 # Master list
 
@@ -1076,13 +1045,13 @@ complete_spp_list %>%
 
 ```{r}
 saveRDS(complete_spp_list, 
-        file.path(DIR_GCS, "Biodiversity/data/preprocessed/complete_spp_list_with_taxonomy.rds"))
+        file.path(emLab_project_dir, "data", "02_processed", "species_list", "complete_spp_list_with_taxonomy.rds"))
 ```
 
 # Final Inspection
 
 ```{r}
-complete_spp_list <- read_rds(file.path(DIR_GCS, "Biodiversity/data/preprocessed/complete_spp_list_with_taxonomy.rds"))
+complete_spp_list <- read_rds(file.path(emLab_project_dir, "data", "02_processed", "species_list", "complete_spp_list_with_taxonomy.rds"))
 ```
 
 ```{r}

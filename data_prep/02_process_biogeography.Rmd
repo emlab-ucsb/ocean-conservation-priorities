@@ -1,0 +1,311 @@
+---
+title: "Biogeographic Provinces"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r setup, message=F, warning=F}
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',message = FALSE, warning = FALSE)
+
+library(raster)
+library(tidyverse)
+library(sf)
+library(rredlist)
+library(furrr)
+library(doParallel)
+library(parallel)
+library(foreach)
+library(paletteer)
+
+emLab_project_dir <- "~/Google Drive File Stream/Shared drives/emlab/projects/current-projects/ocean-conservation-priorities"
+
+emLab_shrd_data_dir <- "~/Google Drive File Stream/Shared drives/emlab/data/"
+```
+
+# Create ocean and land masks
+
+Here we use a 1km2 resolution raster in Mollweide projection provided by NCEAS. We resample this file to a lower resolution (50x50km) and also create a unprojected (WGS84) version. 
+
+```{r, eval = F}
+## Get 1km2 resolution ocean raster in Mollweide projection from NCEAS and resample to 50x50km
+
+ocean <- raster(file.path(emLab_shrd_data_dir, "ohi-supplement", "ocean.tif"))
+
+empty_lr_raster <- raster(crs = crs(ocean), 
+                          ext = extent(ocean),
+                          res = 50000)
+
+ocean_low_res_moll <- projectRaster(ocean, empty_lr_raster, method = 'ngb', over = T)
+
+#Remove cells with 100% land
+
+land_50 <- rnaturalearth::ne_download(scale = 50, type = 'land', category = 'physical', returnclass = "sf")
+
+land_50_moll <- land_50 %>% 
+  st_transform(crs = projection(ocean_low_res_moll))
+
+land_50_raster_moll <- rasterize(land_50_moll, ocean_low_res_moll, getCover = T)
+
+ocean_low_res_moll <- ocean_low_res_moll %>% 
+  mask(land_50_raster_moll, maskvalue = 1)
+
+# make wgs84 versions
+
+empty_wgs84_raster <- raster(crs = crs(land_50), 
+                             ext = extent(land_50),
+                             res = 0.5)
+
+ocean_low_res_wgs84 <- projectRaster(ocean_low_res_moll, empty_wgs84_raster, method = "ngb", over = T)
+
+land_50_raster_wgs84 <- rasterize(land_50, empty_wgs84_raster, getCover = T)
+
+ocean_low_res_wgs84 <- ocean_low_res_wgs84 %>% 
+  mask(land_50_raster_wgs84, maskvalue = 1) 
+```
+
+```{r, eval = F}
+writeRaster(ocean_low_res_moll, 
+            file.path(emLab_project_dir, "data","02_processed", "masks", "ocean_low_res_moll.tif"), overwrite = T)
+
+writeRaster(ocean_low_res_wgs84, 
+            file.path(emLab_project_dir, "data","02_processed", "masks", "ocean_low_res_wgs84.tif"), overwrite = T)
+
+writeRaster(land_50_raster_wgs84, 
+            file.path(emLab_project_dir, "data","02_processed", "masks", "land_low_res_wgs84.tif"), overwrite = T)
+
+writeRaster(land_50_raster_moll, 
+            file.path(emLab_project_dir, "data","02_processed", "masks", "land_low_res_moll.tif"), overwrite = T)
+
+sf::st_write(land_50_moll,
+             file.path(emLab_project_dir,"data", "02_processed", "masks", "land_50_moll.shp"))
+
+sf::st_write(land_50,
+             file.path(emLab_project_dir, "data", "02_processed", "masks", "land_50.shp"))
+```
+
+# Biogeographic provinces
+
+## MEOW - PPOW
+
+Marine ecoregions and pelagic provinces of the world (Spalding 2007, 2012)
+
+```{r}
+meow <- sf::st_read(file.path(emLab_shrd_data_dir, "marine-ecoregions-and-provinces", "01_Data", "WCMC-036-MEOW-PPOW-2007-2012-NoCoast.shp"))
+```
+
+```{r manual_fix}
+# There is a regions that is not a valid polygons and need manual fixing
+
+manual_fix <- sf::st_read(file.path(emLab_shrd_data_dir, "marine-ecoregions-and-provinces", "01_Data", "fixed_ecoregion.shp"))
+
+meow <- meow %>% 
+  filter(PROVINC != "North Central Pacific Gyre") 
+
+meow <- rbind(meow, manual_fix %>% select(-fid))
+```
+
+```{r simplify_meows}
+#simplify shapefile and make valid
+meow_simpler <- rmapshaper::ms_simplify(meow, keep = 0.1)
+
+valid <- meow_simpler[sf::st_is_valid(meow_simpler), ]
+
+invalid <- meow_simpler[sf::st_is_valid(meow_simpler) == FALSE, ]
+
+fixed_invalid <- invalid %>% 
+  lwgeom::st_make_valid()
+
+meow_simpler <- rbind(valid, 
+                   fixed_invalid) 
+```
+
+### Group at provinces level
+
+```{r group_meows}
+#group at the province level
+provinces <- meow_simpler %>% 
+  dplyr::rename("PROVINCE" = PROVINC) %>% 
+  group_by(PROVINCE, TYPE, BIOME, REALM) %>% 
+  summarise() %>% 
+  ungroup() %>% 
+  mutate(ID = as.factor(row_number())) %>% 
+  select(ID, everything())
+
+provinces_moll <- provinces %>% 
+  st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  st_transform("+proj=moll")
+```
+
+```{r }
+color = grDevices::colors()[grep('gr(a|e)y', grDevices::colors(), invert = T)]
+
+cols = sample(color, 99)
+
+(provinces_plot <- provinces %>% 
+  st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  st_transform("+proj=moll") %>%
+  st_cast("MULTIPOLYGON") %>% 
+  ggplot()+
+  geom_sf(aes(fill = ID, label1 = REALM, label2= PROVINCE), col = 'transparent', show.legend = F) +
+  scale_fill_manual(values = cols)+
+  geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
+  my_theme_map())
+
+ggsave(provinces_plot, 
+       filename = file.path(emLab_project_dir, "figures", "supplement", "coastal_and_pelagic_provinces.png"),
+       dpi = 300,  height = 4, width = 8)
+```
+
+```{r, eval = F}
+provinces %>% 
+  st_set_geometry(NULL) %>% 
+  group_by(TYPE) %>% 
+  count() # 62 coastal provinces + 37 pelagic provinces
+```
+
+#### rasterize'em
+
+```{r, eval = F}
+# Calculate the number of cores
+no_cores <- detectCores() - 1
+
+# Split features in n parts
+n <- nrow(provinces_moll)
+
+# Initiate cluster (after loading all the necessary object to R environment
+cl <- makeCluster(no_cores, type = "FORK")
+
+print(cl)
+
+clusterExport(cl, varlist = c("ocean_low_res_moll", "provinces_moll", "n"), envir=environment())
+
+prov_rasters <- parLapply(cl = cl, X = 1:n, 
+                          fun = function(x) mask(rasterize(provinces_moll[x,],
+                                                           ocean_low_res_moll, getCover = T), 
+                                                 ocean_low_res_moll))
+
+stopCluster(cl)
+
+# Merge all raster parts
+
+provinces_stack <- stack(prov_rasters)
+
+names(provinces_stack) <- provinces_moll$PROVINCE
+
+write_rds(provinces_stack, path = file.path(emLab_project_dir, "data", "02_processed", "biogeography", "provinces_stack.rds"))
+```
+
+```{r}
+names(provinces_stack) <- str_replace_all(names(provinces_stack), "\\.", "_")
+
+unstacked_provs <- raster::unstack(provinces_stack) 
+
+output_paths <- file.path(emLab_project_dir, "data", "02_processed", "biogeography", paste0(names(provinces_stack), ".tif"))
+
+for(i in seq_along(unstacked_provs)){
+  writeRaster(unstacked_provs[[i]], file = output_paths[i], overwrite=TRUE)
+  }
+```
+
+## GOODS provinces 
+
+### Abysal
+
+```{r}
+GOODS_abysal_provinces <- sf::st_read(file.path(emLab_shrd_data_dir, "bathyal-abyssal-biogeographic-provs", "GOODSprovinces_abyssal.shp"))
+
+GOODS_abysal_dissolved <- GOODS_abysal_provinces %>% 
+  st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>%
+  group_by(Province) %>% 
+  summarize(Name = unique(Name)) 
+
+GOODS_abysal_dissolved <- GOODS_abysal_dissolved %>% 
+  rmapshaper::ms_simplify(keep = 0.1) 
+
+GOODS_abysal_map <- GOODS_abysal_dissolved %>% 
+  st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  st_transform("+proj=moll") %>% 
+  ggplot()+
+  geom_sf(aes(fill = as.factor(Province)), col = 'transparent', show.legend = F) + 
+  my_theme_map()+
+  scale_fill_manual(values = cols)+
+  geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)
+
+ggsave(GOODS_abysal_map, 
+       filename =  file.path(emLab_project_dir, "figures", "supplement", "abyssal_provinces.png"),
+       dpi = 300,  height = 4, width = 8)
+```
+
+#### rasterize
+
+```{r}
+n_abysal_provs <- length(unique(GOODS_abysal_provinces$Province))
+
+registerDoParallel() #register cores
+
+foreach(p = seq(1:n_abysal_provs)) %dopar% { 
+  
+  GOODS_abysal_provinces %>% 
+    filter(Province == p) %>% 
+    st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+    st_transform("+proj=moll") %>% 
+    rasterize(ocean_low_res_moll,  getCover = T) %>% 
+    mask(ocean_low_res_moll) %>% 
+    raster::writeRaster(filename = paste0(file.path(emLab_project_dir, "data", "02_processed", "biogeography"), "/GOODS_abysal_provinces_", p ,".tif"),
+                        overwrite=TRUE)
+}
+```
+
+### Bathyal
+
+```{r}
+GOODS_bathyal_provinces <- sf::st_read(file.path(emLab_shrd_data_dir, "bathyal-abyssal-biogeographic-provs", "GOODSprovinces_bathyal.shp"))
+
+GOODS_bathyal_dissolved <- GOODS_bathyal_provinces %>% 
+  st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>%
+  group_by(Province) %>% 
+  summarize(Name = unique(Name)) %>% 
+  rmapshaper::ms_simplify(keep = 0.1) 
+
+bathyal_map <- GOODS_bathyal_dissolved %>% 
+  st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  st_transform("+proj=moll") %>% 
+  ggplot()+
+  geom_sf(aes(fill = as.factor(Province)), col = 'transparent', show.legend = F) + 
+  my_theme_map()+
+  scale_fill_manual(values = cols)+
+  geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)
+
+ggsave(bathyal_map, 
+       filename = file.path(emLab_project_dir, "figures", "supplement", "bathyal_provinces.png"),
+       dpi = 300,  height = 4, width = 8)
+```
+
+#### rasterize
+
+```{r}
+n_bathyal_provs <- length(unique(GOODS_bathyal_provinces$Province))
+
+registerDoParallel() #register cores
+
+foreach(p = seq(1:n_bathyal_provs)) %dopar% { 
+
+  GOODS_bathyal_provinces %>% 
+  filter(Province == p) %>% 
+  st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  st_transform("+proj=moll") %>% 
+  rasterize(ocean_low_res_moll,  getCover = T) %>% 
+  mask(ocean_low_res_moll) %>% 
+  raster::writeRaster(filename = paste0(file.path(emLab_project_dir, "data", "02_processed", "biogeography"), "/GOODS_bathyal_provinces_", p ,".tif"),
+                      overwrite=TRUE)}
+```
+
+

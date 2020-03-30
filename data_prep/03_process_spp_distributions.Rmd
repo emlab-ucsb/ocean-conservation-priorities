@@ -1,0 +1,1280 @@
+---
+title: "proccess species distributions"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r setup, message = F, warning = F}
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',message = FALSE, warning = FALSE)
+
+library(raster)
+library(tidyverse)
+library(sf)
+library(rredlist)
+library(furrr)
+library(rgdal)
+library(patchwork)
+library(here)
+library(doParallel)
+library(parallel)
+library(foreach)
+
+source(here::here("common.R"))
+
+#Sys.setenv(IUCN_REDLIST_KEY = "0b64bc7473e4e6dd698b42d5d239ff12786d3007a30aa4aa30064ae139d79bbe")
+```
+
+```{r}
+complete_spp_list <- read_rds(file.path(emLab_project_dir,"data", "02_processed", "species_list", "complete_spp_list_with_taxonomy.rds"))
+
+FAO_nei_genus <- read_csv(file.path(emLab_project_dir,"data", "02_processed", "species_list", "FAO_nei_genus.csv"))
+  
+RAM_nei_genus <- read_csv(file.path(emLab_project_dir, "data","02_processed", "species_list", "RAM_nei_genus.csv"))
+
+Watson_nei_genus <-  read_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list", "Watson_nei_genus.csv"))
+
+fishing_genus <- c(pull(FAO_nei_genus), pull(RAM_nei_genus), 
+                   pull(Watson_nei_genus), pull(filter(complete_spp_list, threat_group == "fishing"), genus))
+```
+
+# Aquamaps
+
+```{r}
+aquamaps_spp_info <- read_csv(file.path(emLab_shrd_data_dir, "aquamaps-species-distributions", "all_speciesid.txt"))
+
+aquamaps_spp_info <- aquamaps_spp_info %>% 
+  mutate(sci_name = paste(Genus, Species)) %>% 
+  map_df(~ if(class(.x) == "character"){stringr::str_trim(.x)} else (.x))
+```
+
+## resolve scientific names
+
+```{r}
+sources <- c(worms = 9, fishbase = 155, eol = 12, col = 1, gbif = 11)
+
+aquamaps_resolved_names <- sources %>% 
+  map(~ taxize::gnr_resolve(data_source_ids = .x, 
+                            names = aquamaps_spp_info$sci_name,
+                            best_match_only = T, 
+                            fields = c("all"), 
+                            canonical = T ))
+
+aquamaps_resolved_names_df <- aquamaps_resolved_names %>% 
+  map(~ .x %>% 
+        filter(!match_value %in% c("Could only match genus") & str_count(matched_name2, "\\w+") >= 2) %>% 
+        select(user_supplied_name, matched_name2, taxon_id)) %>% 
+  reduce(full_join, by = "user_supplied_name") %>% 
+  set_names(c("user_supplied_name", "worms_sci_name", "worms_id", "fishbase_sci_name", "fishbase_id", "eol_sci_name", "eol_id", "col_sci_name", "col_id","gbif_sci_name", "gbif_id"))
+
+aquamaps_resolved_names <- aquamaps_resolved_names_df %>% 
+  mutate(resolved_scientific_name = case_when(
+    !is.na(worms_sci_name) ~ worms_sci_name,
+    !is.na(fishbase_sci_name) ~ fishbase_sci_name,
+    !is.na(eol_sci_name) ~ eol_sci_name,
+    !is.na(col_sci_name) ~ col_sci_name,
+    TRUE ~ user_supplied_name
+  )) %>% 
+  select(user_supplied_name, resolved_scientific_name, everything()) 
+
+aquamaps_resolved_names %>% filter(user_supplied_name != resolved_scientific_name)
+```
+
+```{r}
+aquamaps_spp_list <- aquamaps_spp_info %>% 
+  select(aquamaps_sci_name = sci_name, aquamaps_id = SPECIESID, aquamaps_code = SpecCode) %>% 
+  left_join(aquamaps_resolved_names %>% 
+              select(user_supplied_name, resolved_sci_name = resolved_scientific_name), 
+            by = c("aquamaps_sci_name" = "user_supplied_name")) %>% 
+  select(aquamaps_sci_name, resolved_sci_name, everything())
+```
+
+
+```{r}
+aquamaps_spp_list <- aquamaps_spp_list %>% 
+  mutate(resolved_sci_name = coalesce(resolved_sci_name, aquamaps_sci_name)) 
+
+aquamaps_spp_list$resolved_sci_name[aquamaps_spp_list$aquamaps_sci_name == "Pagrus auratus"] <- 'Chrysophrys auratus'
+```
+
+## validate names and get taxonomic info from WoRMS
+
+```{r}
+get_worms_info <- function(sci_name){
+  
+  worrms::wm_records_name(name = sci_name) %>% 
+    mutate(provided_sci_name = sci_name) %>% 
+    select(provided_sci_name, scientificname, status, valid_name, kingdom, phylum, class, order, family, genus)
+  
+}
+```
+
+```{r}
+plan(multiprocess)
+
+aquamaps_worms_info <- aquamaps_spp_list %>%
+  pull(resolved_sci_name) %>% 
+  furrr::future_map(safely(get_worms_info)) %>% 
+  transpose()
+
+aquamaps_worms_info <- aquamaps_worms_info$result %>% 
+  compact() %>% 
+  bind_rows()
+```
+
+Lets take those entries that have no NAs, where the name queried matches the name supplied, and when there are only one valid name per entry
+
+```{r}
+valid_aquamaps_worms_info <- aquamaps_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) == 1) %>%  # get those for which there is only one valid name
+  ungroup() %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+Now, from those with multiple valid names per row, lets get only the row for which status == "accepted", which means that the supplied name was already valid
+
+```{r}
+accepted_aquamaps_worms_info <- aquamaps_worms_info %>% 
+  filter(!is.na(scientificname), !is.na(valid_name)) %>% # delete entries with NAs
+  group_by(provided_sci_name) %>% 
+  filter(provided_sci_name == scientificname) %>% # make sure to keep only rows that match the sci_name we supplied
+  filter(n_distinct(valid_name, na.rm = T) > 1) %>% 
+  filter(status == "accepted") %>% 
+  group_by(provided_sci_name) %>% 
+  summarise_at(vars(valid_name, kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+Lets now add the WoRMS valid name to the dataset
+
+```{r}
+aquamaps_spp_list <- aquamaps_spp_list %>% 
+  left_join(bind_rows(accepted_aquamaps_worms_info,
+                      valid_aquamaps_worms_info),
+            by = c("resolved_sci_name" = "provided_sci_name")
+)
+
+aquamaps_spp_list %>% 
+  filter(aquamaps_sci_name != valid_name)
+```
+
+```{r}
+aquamaps_spp_list %>% 
+  filter(is.na(kingdom))
+```
+
+```{r}
+aquamaps_spp_list <- aquamaps_spp_list %>% 
+  mutate(valid_sci_name = coalesce(valid_name, resolved_sci_name)) %>% 
+  select(aquamaps_sci_name, resolved_sci_name,  valid_sci_name, everything(), -valid_name)
+```
+
+## fill taxonomic gaps
+
+```{r}
+get_taxonomy <- function (sci_name, db) {
+  
+  taxize::classification(sci_name, db, accepted = T, ask = F)[[1]] %>% 
+    select(-id) %>% 
+    mutate(rank = stringr::str_to_lower(rank)) %>% 
+    filter(rank %in% c("genus","family",  "order", "class","phylum","kingdom")) %>% 
+    spread(rank, name) %>% 
+    mutate(sci_name = sci_name) %>% 
+    janitor::clean_names() %>% 
+    select(sci_name, genus, family, order, class, phylum, kingdom)
+  
+}
+```
+
+```{r}
+taxonomy_gaps_aquamaps <- aquamaps_spp_list %>% 
+  filter(is.na(kingdom)) %>% 
+  select(valid_sci_name)
+```
+
+### COL
+
+```{r}
+plan(multiprocess)
+
+aquamaps_taxonomy_col <- taxonomy_gaps_aquamaps %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "col") %>% 
+  transpose()
+
+aquamaps_taxonomy_col <- bind_rows(aquamaps_taxonomy_col$result)
+```
+
+### ITIS
+
+```{r}
+plan(multiprocess)
+
+aquamaps_taxonomy_itis <- taxonomy_gaps_aquamaps %>% 
+  filter(!valid_sci_name %in% aquamaps_taxonomy_col$sci_name) %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "itis") %>% 
+  transpose()
+
+aquamaps_taxonomy_itis <- bind_rows(aquamaps_taxonomy_itis$result)
+```
+
+### GBIF
+
+```{r}
+plan(multiprocess)
+
+aquamaps_taxonomy_gbif <- taxonomy_gaps_aquamaps %>% 
+  filter(!valid_sci_name %in% aquamaps_taxonomy_col$sci_name) %>% 
+  filter(!valid_sci_name %in% aquamaps_taxonomy_itis$sci_name) %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(get_taxonomy), db = "gbif") %>% 
+  transpose()
+
+aquamaps_taxonomy_gbif <- bind_rows(aquamaps_taxonomy_gbif$result)
+```
+
+```{r}
+filled_taxonomy_gaps_aquamaps <- bind_rows(aquamaps_taxonomy_col, aquamaps_taxonomy_itis, aquamaps_taxonomy_gbif)
+
+filled_taxonomy_gaps_aquamaps <- filled_taxonomy_gaps_aquamaps %>% 
+  mutate(valid_sci_name = sci_name) %>% 
+  group_by(valid_sci_name) %>% 
+  summarise_at(vars(kingdom, phylum, class, order, family, genus), .funs = unique)
+```
+
+```{r}
+aquamaps_spp_list <- aquamaps_spp_list %>% 
+  left_join(filled_taxonomy_gaps_aquamaps, 
+            by = c("valid_sci_name" = "valid_sci_name")) %>% 
+  mutate(genus = coalesce(genus.x, genus.y),
+         family = coalesce(family.x, family.y),
+         order = coalesce(order.x, order.y),
+         class = coalesce(class.x, class.y),
+         phylum = coalesce(phylum.x, phylum.y),
+         kingdom = coalesce(kingdom.x, kingdom.y)
+         ) %>% 
+  select(-contains(".x"), -contains(".y"))
+```
+
+### WoRMS
+
+```{r}
+last_aquamaps_taxonomic_gaps <- aquamaps_spp_list %>% 
+  filter(is.na(kingdom)) %>% 
+  pull(aquamaps_id)
+
+filled_aquamaps_taxonomic_gaps <- aquamaps_spp_info %>% 
+  filter(SPECIESID %in% last_aquamaps_taxonomic_gaps) %>% 
+  janitor::clean_names() %>% 
+  select(aquamaps_id = speciesid, kingdom, phylum, class, order, family, genus) %>% 
+  mutate_at(vars(kingdom, phylum, class, order, family), stringr::str_to_title)
+
+aquamaps_spp_list <- aquamaps_spp_list %>% 
+  left_join(filled_aquamaps_taxonomic_gaps, by = c("aquamaps_id")) %>% 
+  mutate(genus = coalesce(genus.x, genus.y),
+         family = coalesce(family.x, family.y),
+         order = coalesce(order.x, order.y),
+         class = coalesce(class.x, class.y),
+         phylum = coalesce(phylum.x, phylum.y),
+         kingdom = coalesce(kingdom.x, kingdom.y)
+         ) %>% 
+  select(-contains(".x"), -contains(".y")) 
+
+aquamaps_spp_list %>% 
+  filter(is.na(class))
+```
+
+```{r}
+write_csv(aquamaps_spp_list,
+          file.path(emLab_project_dir, "data", "02_processed","species_list", "aquamaps_spp_list.csv"))
+```
+
+## match species to our list
+
+```{r}
+aquamaps_spp_list <- read_csv(file.path(emLab_project_dir, "data", "02_processed","species_list", "aquamaps_spp_list.csv"))
+```
+
+How many species does Aquamap have? How many match our list?
+
+```{r}
+aquamaps_spp_list %>% 
+  summarise(n_spp = n_distinct(valid_sci_name),
+            n_matched_spp = n_distinct(valid_sci_name[valid_sci_name %in% complete_spp_list$valid_sci_name]),
+            n_matched_genus = n_distinct(valid_sci_name[genus %in% complete_spp_list$genus | genus %in% fishing_genus]),
+            n_matched_spp_fishing = n_distinct(valid_sci_name[valid_sci_name %in% complete_spp_list$valid_sci_name[complete_spp_list$threat_group == "fishing"]]),
+            n_matched_genus_fishing = n_distinct(valid_sci_name[genus %in% fishing_genus])
+            ) %>% 
+  arrange(desc(n_spp))
+```
+
+```{r}
+aquamaps_spp_list %>% 
+  group_by(class) %>% 
+  summarise(n_spp = n_distinct(valid_sci_name),
+            n_matched_spp = n_distinct(valid_sci_name[valid_sci_name %in% complete_spp_list$valid_sci_name]),
+            n_matched_genus = n_distinct(valid_sci_name[genus %in% complete_spp_list$genus | genus %in% fishing_genus]),
+            n_matched_spp_fishing = n_distinct(valid_sci_name[valid_sci_name %in% complete_spp_list$valid_sci_name[complete_spp_list$threat_group == "fishing"]]),
+            n_matched_genus_fishing = n_distinct(valid_sci_name[genus %in% fishing_genus])
+            ) %>% 
+  arrange(desc(n_spp))
+```
+
+```{r}
+aquamaps_spp_list <- aquamaps_spp_list %>% 
+  mutate(matched_spp = if_else(valid_sci_name %in% complete_spp_list$valid_sci_name[complete_spp_list$threat_group == "fishing"], T, F),
+         matched_genus = if_else(genus %in% complete_spp_list$genus[complete_spp_list$threat_group == "fishing"] | genus %in% fishing_genus, T, F),
+         matched_spp_all_threats = if_else(valid_sci_name %in% complete_spp_list$valid_sci_name, T, F),
+         matched_genus_all_threats =  if_else(genus %in% complete_spp_list$genus | genus %in% fishing_genus, T, F)) 
+```
+
+## especies richness
+
+```{r}
+aquamaps_spp_dist_expert <- read_csv(file.path(emLab_shrd_data_dir, "aquamaps-species-distributions","all_hcaf_species_native_expert.csv"))
+  
+aquamaps_spp_dist_model <- read_csv(file.path(emLab_shrd_data_dir, "aquamaps-species-distributions","all_hcaf_species_native.csv"))
+
+aquamaps_spp_dist <- bind_rows(aquamaps_spp_dist_expert %>% 
+                                 select(SpeciesID, CenterLong, CenterLat, probability) %>% 
+                                 mutate(reviewed = T),
+                               aquamaps_spp_dist_model %>% 
+                                 select(SpeciesID, CenterLong, CenterLat, probability) %>% 
+                                 mutate(reviewed = F))
+```
+
+```{r}
+aquamaps_spp_dist <- aquamaps_spp_dist %>% 
+  inner_join(aquamaps_spp_list %>% 
+              select(aquamaps_id, matched_spp, matched_genus, matched_spp_all_threats, matched_genus_all_threats, phylum, class),
+             by = c("SpeciesID" = "aquamaps_id"))
+```
+
+```{r}
+aquamaps_spp_dist %>% 
+  group_by(CenterLong, CenterLat) %>% 
+  summarize(spp_richness = sum(probability > 0.5, na.rm = T)) %>% 
+  ggplot()+
+  geom_raster(aes(x = CenterLong, y = CenterLat, fill = spp_richness), show.legend = T) +
+  scale_fill_gradientn(colours = pals::parula(100))+
+  my_theme_map()+
+  theme(plot.title.position  = "plot")+
+  labs(title = "All aquamaps spp richness")+
+  ggsave(file.path(emLab_project_dir, "figures", "exploratory", "all_aquamaps_spp_richness.png"), dpi = 300, width = 7, height = 5)
+```
+
+#### by matching level
+
+```{r}
+richness <- aquamaps_spp_dist %>% 
+  group_by(CenterLong, CenterLat) %>% 
+  summarize(spp_richness = sum(probability > 0.5, na.rm = T),
+            matched_spp_richness = sum(probability[matched_spp] > 0.5, na.rm = T),
+            matched_genus_spp_richness = sum(probability[matched_genus] > 0.5, na.rm = T))
+
+richness %>% 
+  gather(var, value, -CenterLong, -CenterLat) %>% 
+  group_by(var) %>% 
+  mutate(value = scales::rescale(value)) %>% 
+  ggplot()+
+  geom_raster(aes(x = CenterLong, y = CenterLat, fill = value), show.legend = T) +
+  scale_fill_gradientn(colours = pals::parula(100))+
+  facet_wrap(~var, ncol = 1)+
+  my_theme_map()+
+  labs(fill = "rescaled value")+
+  theme(legend.margin = margin(l = 0.1, unit = 'cm'))+
+  ggsave(file.path(emLab_project_dir, "figures", "exploratory", "aquamaps_spp_richness_matched.png"), dpi = 300)
+```
+
+##### diff and ratios
+
+```{r}
+richness <- richness %>% 
+  mutate(diff_genus_vs_spp = matched_genus_spp_richness - matched_spp_richness,
+         ratio_genus_vs_spp = if_else(matched_spp_richness != 0, matched_genus_spp_richness/matched_spp_richness, 1))
+
+richness_diff_n_ratio_plot <- ggplot(richness)+
+  geom_raster(aes(x = CenterLong, y = CenterLat, fill = diff_genus_vs_spp), show.legend = T) +
+  scale_fill_gradientn(colours = pals::parula(100))+
+  ggplot(richness)+
+  geom_raster(aes(x = CenterLong, y = CenterLat, fill = ratio_genus_vs_spp), show.legend = T) +
+  scale_fill_gradientn(colours = pals::parula(100))+
+  plot_layout(ncol = 1) & my_theme_map() 
+
+ggsave(file.path(emLab_project_dir, "figures", "exploratory", "aquamaps_spp_richness_match_levels_diff.png"),
+       richness_diff_n_ratio_plot,
+       dpi = 300)
+
+richness_diff_n_ratio_plot_log10 <- ggplot(richness)+
+  geom_raster(aes(x = CenterLong, y = CenterLat, fill = diff_genus_vs_spp), show.legend = T) +
+  scale_fill_gradientn(colours = pals::parula(100), trans = "log10")+
+  ggplot(richness)+
+  geom_raster(aes(x = CenterLong, y = CenterLat, fill = ratio_genus_vs_spp), show.legend = T) +
+  scale_fill_gradientn(colours = pals::parula(100),  trans = "log10")+
+  plot_layout(ncol = 1) & my_theme_map() 
+
+ggsave(file.path(emLab_project_dir, "figures", "exploratory", "aquamaps_spp_richness_match_levels_diff_log.png"),
+       richness_diff_n_ratio_plot_log10,
+       dpi = 300)
+```
+
+#### by major group
+
+```{r}
+aquamaps_spp_dist <- aquamaps_spp_dist %>% 
+  mutate(major_group = case_when(
+    class %in% c("Actinopterygii", "Sarcopterygii") ~ "Osteichthyes",
+    class %in% c("Elasmobranchii", "Holocephali") ~ "Chondrichthyes",
+    class %in% c("Mammalia") ~ "Mammals",
+    class %in% c("Reptilia") ~ "Reptiles",
+    phylum %in% c("Arthropoda") ~ "Arthropoda",
+    phylum %in% c("Cnidaria") ~ "Cnidaria",
+    phylum %in% c("Echinodermata") ~ "Echinodermata",
+    phylum %in% c("Mollusca") ~ "Mollusca",
+    phylum %in% c("Porifera") ~ "Porifera"
+  ))
+
+richness_by_group <- aquamaps_spp_dist %>% 
+  group_by(major_group, CenterLong, CenterLat) %>% 
+  summarize(spp_richness = sum(probability > 0.5),
+            matched_spp_richness = sum(probability[matched_spp] > 0.5),
+            matched_genus_spp_richness = sum(probability[matched_genus] > 0.5)) %>% 
+  mutate(diff_genus_vs_spp = matched_genus_spp_richness - matched_spp_richness,
+         ratio_genus_vs_spp = if_else(matched_spp_richness != 0, matched_genus_spp_richness/matched_spp_richness, 1))
+
+major_groups <- unique(aquamaps_spp_dist$major_group[!is.na(aquamaps_spp_dist$major_group)])
+
+for(i in 1:length(major_groups)){
+  
+  group = major_groups[i]
+  
+  richness_comparison_plot_by_group <- ggplot(richness_by_group %>% 
+                                                filter(major_group == group))+
+    geom_raster(aes(x = CenterLong, y = CenterLat, fill = spp_richness), show.legend = T) +
+    scale_fill_gradientn(colours = pals::parula(100))+
+    ggplot(richness_by_group %>% 
+             filter(major_group == group))+
+    geom_raster(aes(x = CenterLong, y = CenterLat, fill = matched_spp_richness), show.legend = T) +
+    scale_fill_gradientn(colours = pals::parula(100))+
+    ggplot(richness_by_group %>% 
+             filter(major_group == group))+
+    geom_raster(aes(x = CenterLong, y = CenterLat, fill = matched_genus_spp_richness), show.legend = T) +
+    scale_fill_gradientn(colours = pals::parula(100)) +
+    plot_layout(ncol = 1) & my_theme_map() & labs(caption = group) 
+  
+  ggsave(file.path(emLab_project_dir, "figures", "exploratory/", paste0("aquamaps_spp_richness_comparison_", group ,".png")), 
+         richness_comparison_plot_by_group,
+         dpi = 300)
+}
+```
+
+##### diff and ratios
+
+```{r}
+for(i in 1:length(major_groups)){
+  
+  group = major_groups[i]
+  
+  plot_by_group <- ggplot(richness_by_group %>% 
+                            filter(major_group == group))+
+    geom_raster(aes(x = CenterLong, y = CenterLat, fill = diff_genus_vs_spp), show.legend = T) +
+    scale_fill_gradientn(colours = pals::parula(100))+
+    ggplot(richness_by_group %>% 
+             filter(major_group == group))+
+    geom_raster(aes(x = CenterLong, y = CenterLat, fill = ratio_genus_vs_spp), show.legend = T) +
+    scale_fill_gradientn(colours = pals::parula(100))+
+    plot_layout(ncol = 1) & my_theme_map() & labs(caption = group) 
+  
+  
+  ggsave(file.path(emLab_project_dir, "figures", "exploratory/", paste0("aquamaps_spp_richness_comparison_", group ,"_diff_and_ratios.png")), 
+         plot_by_group,
+         dpi = 300)
+}
+```
+
+#### latitudinal patterns
+
+```{r}
+lat_richness <- aquamaps_spp_dist %>% 
+  group_by(CenterLat) %>% 
+  summarize(spp_richness = n_distinct(SpeciesID[probability > 0.5]),
+            matched_spp_richness = n_distinct(SpeciesID[probability > 0.5 & matched_spp]),
+            matched_genus_spp_richness = n_distinct(SpeciesID[probability > 0.5 & matched_genus]))
+```
+
+```{r}
+lat_richness %>% 
+  gather(var, value, -CenterLat) %>% 
+  ggplot()+
+  geom_line(aes(x = CenterLat, y = value, col = var))+
+  theme_classic()+
+  labs(title = "spp richnes by latitude")+
+  ggsave(file.path(emLab_project_dir, "figures", "exploratory", "aquamaps_spp_richness_by_latitude.png"), dpi = 300)
+```
+
+```{r}
+lat_richness_by_group <- aquamaps_spp_dist %>% 
+  group_by(major_group, CenterLat) %>% 
+  summarize(spp_richness = n_distinct(SpeciesID[probability > 0.5]),
+            matched_spp_richness = n_distinct(SpeciesID[probability > 0.5 & matched_spp]),
+            matched_genus_spp_richness = n_distinct(SpeciesID[probability > 0.5 & matched_genus]))
+
+
+richness_by_group_by_lat_plot <- ggplot(lat_richness_by_group)+
+  geom_line(aes(x = CenterLat, y = spp_richness, col = major_group))+
+  labs(title = "all aquamaps spp")+
+  ggplot(lat_richness_by_group)+
+  geom_line(aes(x = CenterLat, y = matched_spp_richness, col = major_group),show.legend = F)+
+  labs(title = "matched spp")+
+  ggplot(lat_richness_by_group)+
+  geom_line(aes(x = CenterLat, y = matched_genus_spp_richness, col = major_group), show.legend = F)+
+  labs(title = "spp matched on genus")+
+  plot_layout(ncol = 1) & theme_classic() & labs(y = "# spp")
+  
+ggsave(file.path(emLab_project_dir, "figures", "exploratory", "aquamaps_spp_richness_by_latitude_by_group.png"), 
+       richness_by_group_by_lat_plot,
+       dpi = 300)
+```
+
+```{r}
+richness_by_group_by_lat_plot_no_bony_fish <- ggplot(lat_richness_by_group %>% 
+                                                       filter(major_group != "Osteichthyes"))+
+  geom_line(aes(x = CenterLat, y = spp_richness, col = major_group))+
+  labs(title = "all aquamaps spp")+
+  ggplot(lat_richness_by_group %>% 
+           filter(major_group != "Osteichthyes"))+
+  geom_line(aes(x = CenterLat, y = matched_spp_richness, col = major_group),show.legend = F)+
+  labs(title = "matched spp")+
+  ggplot(lat_richness_by_group %>% 
+           filter(major_group != "Osteichthyes"))+
+  geom_line(aes(x = CenterLat, y = matched_genus_spp_richness, col = major_group), show.legend = F)+
+  labs(title = "spp matched on genus")+
+  plot_layout(ncol = 1) & theme_classic() & labs(y = "# spp")
+  
+  
+ggsave(file.path(emLab_project_dir, "figures", "exploratory", "aquamaps_spp_richness_by_latitude_by_group_sans_bony.png"), 
+       richness_by_group_by_lat_plot_no_bony_fish, dpi = 300)
+```
+
+## subset included species
+
+```{r}
+duplicated_aquamaps_species <- aquamaps_spp_list %>% 
+  filter(valid_sci_name %in% complete_spp_list$valid_sci_name[complete_spp_list$threat_group == "fishing"] |
+           aquamaps_sci_name %in% complete_spp_list$list_sci_name[complete_spp_list$threat_group == "fishing"]) %>% 
+  janitor::get_dupes(valid_sci_name)
+```
+
+```{r}
+included_aquamaps_spp_list <- aquamaps_spp_list %>% 
+  filter(valid_sci_name %in% complete_spp_list$valid_sci_name[complete_spp_list$threat_group == "fishing"] |
+           aquamaps_sci_name %in% complete_spp_list$list_sci_name[complete_spp_list$threat_group == "fishing"])%>% 
+  filter(!valid_sci_name %in% duplicated_aquamaps_species$valid_sci_name)
+```
+
+```{r}
+included_aquamaps_spp_list <- bind_rows(included_aquamaps_spp_list,
+          duplicated_aquamaps_species %>% 
+            filter(valid_sci_name == aquamaps_sci_name) %>% 
+            select(-dupe_count)) %>% 
+  select(-aquamaps_code)
+
+included_aquamaps_spp_list %>% 
+  map_df(~sum(is.na(.x)))
+```
+
+## fill last data gaps
+
+### taxonomy
+
+```{r}
+filter(included_aquamaps_spp_list, is.na(class))
+```
+
+### IUCN status
+
+Here we need to make sure we remove duplicated species. For those species that are listed more than once with different names, we take the entry whose scientific name matches the valid name
+
+```{r}
+included_aquamaps_spp_list <- included_aquamaps_spp_list %>% 
+  left_join(complete_spp_list %>%
+              group_by(valid_sci_name) %>% 
+              filter(n() == 1 | valid_sci_name == list_sci_name) %>% 
+              ungroup() %>% 
+              select(valid_sci_name, iucn_category, list, exploited, list_id))
+
+
+included_aquamaps_spp_list$iucn_category[included_aquamaps_spp_list$valid_sci_name == "Acropora muricata"] <- "NT"
+included_aquamaps_spp_list$list[included_aquamaps_spp_list$valid_sci_name == "Acropora muricata"] <- "IUCN"
+included_aquamaps_spp_list$list_id[included_aquamaps_spp_list$valid_sci_name == "Acropora muricata"] <- 133644
+included_aquamaps_spp_list$exploited[included_aquamaps_spp_list$valid_sci_name == "Acropora muricata"] <- FALSE
+
+included_aquamaps_spp_list$list[included_aquamaps_spp_list$valid_sci_name == "Planiliza haematocheila"] <- "FAO"
+included_aquamaps_spp_list$list_id[included_aquamaps_spp_list$valid_sci_name == "Planiliza haematocheila"] <- 1650101224
+included_aquamaps_spp_list$exploited[included_aquamaps_spp_list$valid_sci_name == "Planiliza haematocheila"] <- TRUE
+
+included_aquamaps_spp_list$list[included_aquamaps_spp_list$valid_sci_name == "Lepidonotothen squamifrons"] <- "FAO"
+included_aquamaps_spp_list$list_id[included_aquamaps_spp_list$valid_sci_name == "Lepidonotothen squamifrons"] <- 1650101224
+included_aquamaps_spp_list$exploited[included_aquamaps_spp_list$valid_sci_name == "Lepidonotothen squamifrons"] <- TRUE
+
+included_aquamaps_spp_list %>% filter(is.na(iucn_category))
+```
+
+```{r}
+plan(multiprocess)
+
+missing_iucn <- included_aquamaps_spp_list %>% 
+  filter(is.na(iucn_category)) %>% 
+  pull(valid_sci_name) %>% 
+  furrr::future_map(safely(rl_search)) %>% 
+  transpose()
+
+missing_iucn <- missing_iucn$result %>% 
+  map("result") %>% 
+  compact() %>% 
+  map(~ .x %>% 
+        select(scientific_name, category)) %>% 
+  bind_rows()
+```
+
+```{r}
+included_aquamaps_spp_list <- included_aquamaps_spp_list %>% 
+  select(-matched_spp, -matched_genus, -matched_spp_all_threats, -matched_genus_all_threats) %>% 
+  select(valid_sci_name, resolved_sci_name, aquamaps_sci_name, aquamaps_id, list, list_id,  genus, family, order, class, phylum, kingdom, iucn_category, exploited) 
+
+included_aquamaps_spp_list <- included_aquamaps_spp_list %>% 
+  filter(valid_sci_name != "Bathyraja meridionalis")
+
+write_csv(included_aquamaps_spp_list, 
+          file.path(emLab_project_dir, "data", "02_processed", "species_list","included_aquamaps_spp_list.csv"))
+```
+
+## generate rasters
+
+```{r}
+included_aquamaps_spp_list <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list","included_aquamaps_spp_list.csv"))
+
+empty_raster <- raster(resolution = 0.5)
+
+registerDoParallel(10) #register cores
+
+foreach(species_id = included_aquamaps_spp_list$aquamaps_id) %dopar% { 
+  
+  spp_data <- aquamaps_spp_dist %>% 
+    filter(SpeciesID == species_id) %>% 
+    select(CenterLong, CenterLat, probability)
+  
+  cells <- cellFromXY(empty_raster, as.matrix(spp_data[,1:2]))
+  
+  spp_raster <- empty_raster
+  
+  spp_raster[cells] <- pull(spp_data[,3])
+  
+  spp_raster <- projectRaster(spp_raster, ocean_low_res_moll)
+  
+  spp_raster <- mask(spp_raster, ocean_low_res_moll)
+  
+  spp_name <- str_replace_all(included_aquamaps_spp_list$valid_sci_name[included_aquamaps_spp_list$aquamaps_id == species_id], " ","_")
+  
+  raster::writeRaster(spp_raster, 
+                      file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "aquamaps/", paste0(spp_name, ".tif")),
+                      overwrite = T)
+}
+```
+
+# Birdlife
+
+```{r}
+# The input file geodatabase
+
+birds_gdb_path <- file.path(emLab_shrd_data_dir, "birdlife-species-ranges", "BOTW.gdb")
+  
+# List all feature classes in a file geodatabase
+
+fc_list <- ogrListLayers(birds_gdb_path)
+
+print(fc_list)
+
+# Read the feature class
+
+birds_distributions <- sf::st_read(dsn = birds_gdb_path, layer = "All_Species")
+```
+
+```{r}
+birds_distributions <- birds_distributions %>% 
+  janitor::clean_names() %>% 
+  rename( sci_name = sciname) %>% 
+  mutate(sci_name = as.character(sci_name)) %>% 
+  mutate(genus = stringr::word(sci_name, 1)) %>% 
+  filter(presence < 5) # eliminate extinct ranges
+```
+
+## resolve scientific names
+
+```{r}
+sources <- c(worms = 9, eol = 12, col = 1, gbif = 11, itis = 3)
+
+birds_resolved_names <- sources %>% 
+  purrr::map(~ taxize::gnr_resolve(data_source_ids = .x, 
+                            names = unique(birds_distributions$sci_name),
+                            best_match_only = T, 
+                            fields = c("all"), 
+                            canonical = T ))
+
+birds_resolved_names_df <- birds_resolved_names %>% 
+  map(~ .x %>% 
+        filter(!match_value %in% c("Could only match genus") & str_count(matched_name2, "\\w+") >= 2) %>% 
+        select(user_supplied_name, matched_name2, taxon_id)) %>% 
+  reduce(full_join, by = "user_supplied_name") %>% 
+  set_names(c("user_supplied_name", "worms_sci_name", "worms_id", "eol_sci_name", "eol_id", "col_sci_name", "col_id","gbif_sci_name", "gbif_id", "itis_sci_name", "itis_id"))
+
+birds_resolved_names_df <- birds_resolved_names_df %>% 
+  mutate(resolved_scientific_name = case_when(
+    !is.na(itis_sci_name) ~ itis_sci_name,
+    !is.na(col_sci_name) ~ col_sci_name,
+    !is.na(eol_sci_name) ~ eol_sci_name,
+    !is.na(worms_sci_name) ~ worms_sci_name,
+    TRUE ~ user_supplied_name
+  )) %>% 
+  select(user_supplied_name, resolved_scientific_name, everything()) 
+```
+
+```{r}
+birds_spp_list <- birds_distributions %>% 
+  st_set_geometry(NULL) %>% 
+  distinct(sisid, sci_name) %>% 
+  left_join(birds_resolved_names_df %>% 
+              select(user_supplied_name, everything(),resolved_sci_name = resolved_scientific_name), 
+            by = c("sci_name" = "user_supplied_name")) %>% 
+  select(birdlife_sci_name = sci_name, resolved_sci_name, everything()) %>% 
+  mutate(resolved_sci_name = coalesce(resolved_sci_name, birdlife_sci_name))
+
+write_csv(birds_spp_list,
+          file.path(emLab_project_dir, "data", "02_processed","species_list", "birdlife_spp_list.csv"))
+```
+
+## seabirds that meet our criteria
+
+```{r}
+birds_spp_list <- read_csv(file.path(emLab_project_dir, "data", "02_processed","species_list", "birdlife_spp_list.csv"))
+```
+
+```{r}
+included_seabirds_spp_list <- birds_spp_list %>% 
+  mutate(valid_sci_name = resolved_sci_name) %>% 
+  select(valid_sci_name, resolved_sci_name, birdlife_sci_name, birdlife_id = sisid) %>% 
+  inner_join(complete_spp_list %>% 
+               filter(threat_group == "fishing") %>% 
+              select(valid_sci_name, list, list_id, genus, family, order, class, phylum, kingdom, iucn_category, exploited), 
+             by = c("valid_sci_name")) %>% 
+  ungroup()
+```
+
+Lets add also those who matched on the original list names.
+
+```{r}
+og_match <- birds_spp_list %>% 
+  select(resolved_sci_name, birdlife_sci_name, birdlife_id = sisid) %>% 
+  filter(!resolved_sci_name %in% included_seabirds_spp_list$valid_sci_name) %>% 
+  inner_join(complete_spp_list %>% 
+               filter(threat_group == "fishing") %>% 
+              select(valid_sci_name, list_sci_name, list, list_id, genus, family, order, class, phylum, kingdom, iucn_category, exploited), 
+             by = c("resolved_sci_name" = "list_sci_name"))%>% 
+  ungroup()
+
+
+included_seabirds_spp_list <- bind_rows(included_seabirds_spp_list, og_match)
+```
+
+remove those already in Aquamaps if any
+
+```{r}
+included_seabirds_spp_list <- included_seabirds_spp_list %>% 
+  filter(!valid_sci_name %in% included_aquamaps_spp_list$valid_sci_name)
+```
+
+Check for any duplicates
+
+```{r}
+included_seabirds_spp_list %>% janitor::get_dupes(valid_sci_name)
+```
+
+```{r}
+included_seabirds_spp_list <- included_seabirds_spp_list %>% 
+  filter(!birdlife_id == 132467692)
+```
+
+```{r}
+write_csv(included_seabirds_spp_list,
+          file.path(emLab_project_dir, "data", "02_processed", "species_list", "included_birdlife_spp_list.csv"))
+```
+
+## create rasters
+
+```{r}
+included_seabirds_spp_list <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list","included_birdlife_spp_list.csv"))
+
+included_seabirds_distributions <- birds_distributions %>% 
+  inner_join(included_seabirds_spp_list %>% 
+               select(birdlife_id, valid_sci_name),
+             by = c("sisid" = "birdlife_id"))
+
+included_seabirds_distributions_moll <-included_seabirds_distributions %>% 
+  st_transform("+proj=moll")
+```
+
+```{r}
+included_seabirds_distributions_moll %>% 
+  st_set_geometry(NULL) %>% 
+  group_by(sisid) %>% 
+  summarise(n = n_distinct(valid_sci_name),
+            valid_sci_name = unique(valid_sci_name)) %>% 
+  arrange(desc(n))
+```
+
+```{r, eval = F}
+registerDoParallel(10) #register cores
+
+foreach(seabird_id = included_seabirds_spp_list$birdlife_id) %dopar% { 
+  
+  spp_data <- included_seabirds_distributions_moll %>% 
+    filter(sisid == seabird_id) %>% 
+    lwgeom::st_make_valid() %>% 
+    group_by(sisid) %>% 
+    summarise(valid_sci_name = unique(valid_sci_name))
+  
+  spp_raster <- rasterize(spp_data, ocean_low_res_moll,  getCover = T)
+  
+  spp_raster <- mask(spp_raster, ocean_low_res_moll)
+  
+  raster::writeRaster(spp_raster, 
+                      file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "birdlife/",
+                                          paste0(str_replace_all(spp_data$valid_sci_name, " ", "_"), ".tif")),
+                      overwrite = TRUE)
+}
+```
+
+## seabirds richness
+
+```{r}
+seabirds_raster_files <- list.files(file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "birdlife"),
+                                    pattern = ".tif", full.names = T)
+
+seabirds_stack <- raster::stack(seabirds_raster_files)
+
+seabirds_richness <- sum(seabirds_stack)
+
+writeRaster(seabirds_richness, 
+            file.path(emLab_project_dir, "data", "02_processed", "species_richness", "included_birdlife_spp_richness.tif"),
+            overwrite = T)
+
+seabird_richness_map <- tmap::tm_shape(seabirds_richness)+
+    tmap::tm_raster(title = "",
+                    palette = pals::parula(100),
+                    style = "cont")+
+    tmap::tm_shape(land_50_moll)+
+    tmap::tm_polygons(col = "black", border.col = "transparent")+
+    tmap::tm_layout(title = "Seabird richness",
+                    title.position = c("center", .95),
+                    inner.margins = c(0.12, 0.04, 0.08, 0.04), 
+                    frame = F)
+
+tmap::tmap_save(seabird_richness_map,
+                filename = file.path(emLab_project_dir, "figures", "exploratory", "included_birdlife_spp_richness.png"),
+                dpi = 300,  height = 4, width = 8 )
+```
+
+# Map patterns of species richness
+
+```{r}
+aquamaps_spp_dist_expert <- read_csv(file.path(emLab_shrd_data_dir, "aquamaps-species-distributions","all_hcaf_species_native_expert.csv"))
+  
+aquamaps_spp_dist_model <- read_csv(file.path(emLab_shrd_data_dir, "aquamaps-species-distributions","all_hcaf_species_native.csv"))
+
+aquamaps_spp_dist <- bind_rows(aquamaps_spp_dist_expert %>% 
+                                 select(SpeciesID, CenterLong, CenterLat, probability) %>% 
+                                 mutate(reviewed = T),
+                               aquamaps_spp_dist_model %>% 
+                                 select(SpeciesID, CenterLong, CenterLat, probability) %>% 
+                                 mutate(reviewed = F))
+
+aquamaps_spp_list <- read_csv(file.path(emLab_project_dir, "data", "02_processed","species_list", "aquamaps_spp_list.csv"))
+
+included_aquamaps_spp_list <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list","included_aquamaps_spp_list.csv"))
+
+aquamaps_spp_dist <- aquamaps_spp_dist %>% 
+  inner_join(aquamaps_spp_list %>% 
+              select(SpeciesID = aquamaps_id, phylum, class))
+
+aquamaps_spp_dist <- aquamaps_spp_dist %>% 
+  mutate(included = if_else(SpeciesID %in% included_aquamaps_spp_list$aquamaps_id, TRUE, FALSE))
+
+aquamaps_spp_dist <- aquamaps_spp_dist %>% 
+  mutate(major_group = case_when(
+    class %in% c("Actinopterygii", "Sarcopterygii") ~ "Osteichthyes",
+    class %in% c("Elasmobranchii", "Holocephali") ~ "Chondrichthyes",
+    class %in% c("Mammalia") ~ "Mammals",
+    class %in% c("Reptilia") ~ "Reptiles",
+    phylum %in% c("Arthropoda") ~ "Arthropoda",
+    phylum %in% c("Cnidaria") ~ "Cnidaria",
+    phylum %in% c("Echinodermata") ~ "Echinodermata",
+    phylum %in% c("Mollusca") ~ "Mollusca",
+    phylum %in% c("Porifera") ~ "Porifera",
+    TRUE ~ "Other"
+  ))
+```
+
+
+```{r}
+aquamaps_richness_sf <- aquamaps_spp_dist %>% 
+  group_by(CenterLong, CenterLat) %>% 
+  summarize(spp_richness = sum(probability > 0.5),
+            included_spp_richness = sum(probability[included] > 0.5)) %>% 
+  sf::st_as_sf(coords = c("CenterLong", "CenterLat"), 
+               agr = "constant", 
+               crs = 4326) %>% 
+  st_transform(crs = projection(ocean_low_res_moll))
+
+aquamaps_richness_raster <- aquamaps_richness_sf %>% 
+  rasterize(ocean_low_res_moll, field = "spp_richness") %>% 
+  raster::resample(ocean_low_res_moll, method = "bilinear")
+
+included_aquamaps_richness_raster <- aquamaps_richness_sf %>% 
+  rasterize(ocean_low_res_moll, field = "included_spp_richness") %>% 
+  raster::resample(ocean_low_res_moll, method = "bilinear")
+
+raster::writeRaster(included_aquamaps_richness_raster, 
+                    file.path(emLab_project_dir, "data", "02_processed", "species_richness", "included_aquamaps_spp_richness.tif"),
+                    overwrite = T)
+
+included_aquamaps_richness_map <- tmap::tm_shape(included_aquamaps_richness_raster)+
+    tmap::tm_raster(title = "",
+                    palette = pals::parula(100),
+                    style = "cont")+
+    tmap::tm_shape(land_50_moll)+
+    tmap::tm_polygons(col = "black", border.col = "transparent")+
+    tmap::tm_layout(title = "Included aquamaps spp richness",
+                    title.position = c("center", .95),
+                    inner.margins = c(0.12, 0.04, 0.08, 0.04), 
+                    frame = F)
+
+tmap::tmap_save(included_aquamaps_richness_map,
+                filename = file.path(emLab_project_dir, "figures", "exploratory", "included_aquamaps_spp_richness.png"),
+                dpi = 300,  height = 4, width = 8 )
+```
+
+## combine aquamaps and birdlife
+
+```{r}
+seabirds_richness <- raster(file.path(emLab_project_dir, "data", "02_processed", "species_richness", "included_birdlife_spp_richness.tif"))
+
+all_spp_stack <- stack(seabirds_richness, aquamaps_richness_raster)
+
+all_spp_richness <- sum(all_spp_stack, na.rm = T) %>% 
+  mask(ocean_low_res_moll)
+
+included_spp_stack <- stack(seabirds_richness, included_aquamaps_richness_raster)
+
+included_spp_richness <- sum(included_spp_stack, na.rm = T) %>% 
+  mask(ocean_low_res_moll)
+
+raster::writeRaster(included_spp_richness, 
+                    file.path(emLab_project_dir, "data", "02_processed", "species_richness", "included_all_spp_richness.tif"),
+                    overwrite = T)
+```
+
+```{r}
+all_spp_richness_map <- tmap::tm_shape(all_spp_richness) +
+  tmap::tm_raster(title = "",
+                  palette =  pals::parula(100),
+                  style = "cont") +
+  tmap::tm_shape(land_50_moll) +
+  tmap::tm_fill(col = "black", border.col = "transparent") +
+  tmap::tm_credits("all aquamaps and birdlife species richness") +
+  tmap::tm_layout(
+    title.position = c("center", .95),
+    inner.margins = c(0.12, 0, 0.08, 0.04),
+    frame = F,
+    legend.position = c(.99, "center"),
+    legend.height = 100
+  )
+
+tmap::tmap_save(all_spp_richness_map, 
+                filename = file.path(emLab_project_dir, "figures", "exploratory", "all_spp_richness.png"),
+                dpi = 300,  height = 4, width = 8 )
+
+
+included_spp_richness_map <- tmap::tm_shape(included_spp_richness) +
+  tmap::tm_raster(title = "",
+                  palette =  pals::parula(100),
+                  style = "cont") +
+  tmap::tm_shape(land_50_moll) +
+  tmap::tm_fill(col = "black", border.col = "transparent") +
+  tmap::tm_credits("Included aquamaps and birdlife species richness") +
+  tmap::tm_layout(
+    title.position = c("center", .95),
+    inner.margins = c(0.12, 0, 0.08, 0.04),
+    frame = F,
+    legend.position = c(.99, "center"),
+    legend.height = 100
+  )
+
+tmap::tmap_save(included_spp_richness_map, 
+                filename = file.path(emLab_project_dir, "figures", "exploratory", "included_spp_richness.png"),
+                dpi = 300,  height = 4, width = 8 )
+```
+
+## by major group
+
+```{r}
+for(group in unique(aquamaps_spp_dist$major_group)){
+  
+  r <- aquamaps_spp_dist %>% 
+    filter(major_group == group) %>% 
+    group_by(CenterLong, CenterLat) %>% 
+    summarize(included_spp_richness = sum(probability[included] > 0.5)) %>% 
+    sf::st_as_sf(coords = c("CenterLong", "CenterLat"), 
+                 agr = "constant", 
+                 crs = 4326) %>% 
+    st_transform(crs = projection(ocean_low_res_moll)) %>% 
+    rasterize(ocean_low_res_moll, field = "included_spp_richness") %>% 
+    raster::resample(ocean_low_res_moll, method = "bilinear") %>% 
+    raster::mask(ocean_low_res_moll)
+  
+  names(r) <- group
+  
+  writeRaster(r,
+              file.path(emLab_project_dir, "data", "02_processed", "species_richness/", paste0(group,".tif")))
+  }
+
+richness_stack <- stack(list.files(file.path(emLab_project_dir,  "data", "02_processed", "species_richness"), full.names = T))
+
+names(richness_stack[[7]]) <- "Aves"
+
+richness_df <- richness_stack %>% 
+  dropLayer("Porifera") %>% 
+  dropLayer("Other") %>% 
+  dropLayer("Echinodermata") %>% 
+  dropLayer("included_all_spp_richness") %>% 
+  dropLayer("included_aquamaps_spp_richness") %>% 
+  as.data.frame(xy = T, centroids = T) 
+
+names(richness_df)
+
+ls_plots <- names(richness_df)[c(-1,-2)] %>% 
+  map(.f = ~ richness_df %>% 
+        gather(group, richness, -x, -y) %>% 
+        select(lon = x, lat = y, group, richness) %>% 
+        filter(!is.na(richness)) %>% 
+        filter(group == .x) %>% 
+        ggplot()+
+        geom_raster(aes(x = lon, y = lat, fill = richness))+
+        geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
+        labs(fill = "", subtitle = .x) 
+  )
+
+
+richness_maps <- ls_plots[[1]] + ls_plots[[2]] + ls_plots[[3]] +  ls_plots[[4]] + ls_plots[[5]]+ ls_plots[[6]]+ ls_plots[[7]]+ ls_plots[[8]] + 
+  plot_layout(ncol = 2) & 
+    scale_fill_viridis_c(guide = guide_colorbar(title.position = 'top',
+                                                                      title.hjust = 0.5,
+                                                                      barwidth = 0.5,
+                                                                      label.hjust = -.02)) &
+  theme(legend.text = element_text(size = 6),
+        legend.text.align = 0,
+        legend.position = "right",
+        axis.text.x = element_text(size = 6),
+        axis.text.y = element_text(size = 6),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = NA, color = NA), 
+        panel.background = element_rect(fill = NA, color = NA), 
+        legend.background = element_rect(fill = NA, color = NA),
+        panel.border = element_blank()) 
+
+richness_maps %>% 
+  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement","included_spp_richness_by_taxa.png"), 
+         dpi = 300,  height = 8, width = 8)
+```
+
+```{r}
+richness_df %>% 
+  gather(group, richness, -x, -y) %>% 
+  group_by(y, group) %>% 
+  summarize(r = mean(richness, na.rm = T)) %>% 
+  ggplot()+
+  geom_line(aes(y, r, col = group))+
+  labs(x = "Latitude", y = "Average species richness", col = "Taxonomic Group")+
+  theme_classic()+
+  scale_x_continuous(breaks = c(-10^7, 0, 10^7), 
+                     labels = c(-90, 0 ,90))+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement","included_spp_richness_by_latitude.png"), 
+         dpi = 300,  height = 4, width = 8)
+```
+
+```{r}
+# for(group in unique(aquamaps_spp_dist$major_group)){
+#   
+#   group_richness_sf <- aquamaps_spp_dist %>% 
+#     filter(major_group == group) %>% 
+#     group_by(CenterLong, CenterLat) %>% 
+#     summarize(spp_richness = sum(probability > 0.5),
+#               included_spp_richness = sum(probability[included] > 0.5)) %>% 
+#     sf::st_as_sf(coords = c("CenterLong", "CenterLat"), 
+#                  agr = "constant", 
+#                  crs = 4326) %>% 
+#     st_transform(crs = projection(ocean_low_res_moll))
+#   
+#   all_spp_richness_map <- group_richness_sf %>% 
+#     rasterize(ocean_low_res_moll, field = "spp_richness") %>% 
+#     raster::resample(ocean_low_res_moll, method = "bilinear") %>% 
+#     raster::mask(ocean_low_res_moll) %>% 
+#     tmap::tm_shape() +
+#     tmap::tm_raster(title = "",
+#                     palette =  pals::parula(100),
+#                     style = "cont") +
+#     tmap::tm_shape(land_shp_moll) +
+#     tmap::tm_fill(col = "black", border.col = "transparent") +
+#     tmap::tm_credits(paste("Species richness:", group)) +
+#     tmap::tm_layout(
+#       inner.margins = c(0.12, 0, 0.08, 0.04),
+#       frame = F,
+#       legend.position = c(.99, "center"),
+#       legend.height = 100
+#     )
+#   
+#   tmap::tmap_save(all_spp_richness_map, 
+#                   filename = file.path(DIR_GCS, "Biodiversity/figures/final/", paste0("all_spp_richness_", group,".png")), 
+#                   dpi = 300,  height = 4, width = 8 )
+#   
+#   included_spp_richness_map <- group_richness_sf %>% 
+#     rasterize(ocean_low_res_moll, field = "included_spp_richness") %>% 
+#     raster::resample(ocean_low_res_moll, method = "bilinear") %>% 
+#     raster::mask(ocean_low_res_moll) %>% 
+#     tmap::tm_shape() +
+#     tmap::tm_raster(title = "",
+#                     palette =  pals::parula(100),
+#                     style = "cont") +
+#     tmap::tm_shape(land_shp_moll) +
+#     tmap::tm_fill(col = "black", border.col = "transparent") +
+#     tmap::tm_credits(group) +
+#     tmap::tm_layout(
+#       inner.margins = c(0.12, 0, 0.08, 0.04),
+#       frame = F,
+#       legend.position = c(.99, "center"),
+#       legend.height = 100
+#     )
+#   
+#   tmap::tmap_save(included_spp_richness_map, 
+#                   filename = file.path(DIR_GCS, "Biodiversity/figures/final/", paste0("included_spp_richness_", group,".png")), 
+#                   dpi = 300,  height = 4, width = 8 )
+#   
+# }
+```
+
+# Projected distributions (2050)
+
+```{r}
+included_aquamaps_spp_list <- read_csv(file.path(emLab_project_dir, 
+                                                 "data", "02_processed", "species_list","included_aquamaps_spp_list.csv"))
+
+aquamaps_2050_spp_dist_expert <- read_csv(file.path(emLab_shrd_data_dir, "aquamaps-species-distributions","hcaf_species_native_2050_expert.csv"))
+
+aquamaps_2050_spp_dist_model <- read_csv(file.path(emLab_shrd_data_dir, "aquamaps-species-distributions","hcaf_species_native_2050.csv"))
+
+aquamaps_2050_spp_dist <- bind_rows(aquamaps_2050_spp_dist_expert %>% 
+                                 select(SpeciesID, CenterLong, CenterLat, probability) %>% 
+                                 mutate(reviewed = T),
+                               aquamaps_2050_spp_dist_model %>% 
+                                 select(SpeciesID, CenterLong, CenterLat, probability) %>% 
+                                 mutate(reviewed = F))
+
+aquamaps_2050_spp_dist <- aquamaps_2050_spp_dist %>% 
+  inner_join(aquamaps_spp_list %>% 
+              select(aquamaps_id,  phylum, class),
+             by = c("SpeciesID" = "aquamaps_id"))
+```
+
+
+```{r}
+aquamaps_2050_spp_dist %>% 
+  group_by(CenterLong, CenterLat) %>% 
+  summarize(spp_richness = sum(probability > 0.5, na.rm = T)) %>% 
+  ggplot()+
+  geom_sf(data = land_50, col = "transparent", fill = "black")+
+  geom_raster(aes(x = CenterLong, y = CenterLat, fill = spp_richness), show.legend = T) +
+  scale_fill_gradientn(colours = pals::parula(100))+
+  my_theme_map()+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "exploratory", "all_aquamaps_spp_richness_2050.png"), dpi = 300)
+```
+
+```{r}
+suitability <- aquamaps_spp_dist %>% 
+  filter(SpeciesID %in% included_aquamaps_spp_list$aquamaps_id) %>% 
+  group_by(CenterLong, CenterLat) %>% 
+  summarize(included_suitability = sum(probability, na.rm = T))
+
+suitability_2050 <- aquamaps_2050_spp_dist %>% 
+  filter(SpeciesID %in% included_aquamaps_spp_list$aquamaps_id) %>% 
+  group_by(CenterLong, CenterLat) %>% 
+  summarize(included_suitability_2050 = sum(probability, na.rm = T))
+
+suitability_db <- suitability %>% 
+  left_join(suitability_2050)
+
+suitability_db %>% 
+  mutate(diff =  included_suitability_2050 - included_suitability) %>% 
+  ggplot()+
+  geom_sf(data = land_50, col = "transparent", fill = "grey")+
+  geom_raster(aes(x = CenterLong, y = CenterLat, fill = diff), show.legend = T) +
+  scale_fill_gradient2()+
+  my_theme_map()+
+  labs(title = "change in total spp suitability")+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "exploratory", "included_aquamaps_spp_richness_today_vs_2050_diff.png"), dpi = 300)
+```
+
+## Generate rasters
+
+```{r}
+empty_raster <- raster(resolution = 0.5)
+
+registerDoParallel(10) #register cores
+
+foreach(species_id = included_aquamaps_spp_list$aquamaps_id) %dopar% { 
+  
+  spp_data <- aquamaps_2050_spp_dist %>% 
+    filter(SpeciesID == species_id) %>% 
+    select(CenterLong, CenterLat, probability)
+  
+  cells <- cellFromXY(empty_raster, as.matrix(spp_data[,1:2]))
+  
+  spp_raster <- empty_raster
+  
+  spp_raster[cells] <- pull(spp_data[,3])
+  
+  spp_raster <- projectRaster(spp_raster, ocean_low_res_moll)
+  
+  spp_raster <- mask(spp_raster, ocean_low_res_moll)
+  
+  spp_name <- str_replace_all(included_aquamaps_spp_list$valid_sci_name[included_aquamaps_spp_list$aquamaps_id == species_id], " ","_")
+  
+  raster::writeRaster(spp_raster, 
+                      file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "aquamaps_2050/", paste0(spp_name, ".tif")),
+                      overwrite = T)
+}
+```

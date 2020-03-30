@@ -1,0 +1,159 @@
+---
+title: "Seamounts"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r setup, message=F,warning=F}
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',message = FALSE, warning = FALSE)
+
+library(raster)
+library(tidyverse)
+library(sf)
+library(rredlist)
+library(furrr)
+library(parallel)
+library(foreach)
+library(doParallel)
+
+source(here::here("common.R"))
+```
+
+# Seamounts
+
+## Clark et al
+
+Clark et al classify the world's bathyal seamounts (depth < 3500) into 194 classes. 
+
+```{r}
+clark_seamounts <- readxl::read_xls(file.path(emLab_shrd_data_dir, "seamounts-clark", "Clarketal_2011_OCM_All_seamounts_values.xls"))
+
+clark_seamounts <- clark_seamounts %>% 
+  janitor::clean_names() %>% 
+  select(id, long, lat, depth, class = smt_class_poc) %>% 
+  filter(depth <= 3500) 
+
+n_distinct(clark_seamounts$class) # 194
+```
+
+```{r}
+clark_seamounts_sf_moll <- sf::st_as_sf(clark_seamounts, 
+             coords = c("long", "lat"), 
+             agr = "constant", 
+             crs = 4326) %>% 
+  st_transform(crs = projection(ocean_low_res_moll)) 
+```
+
+```{r}
+color = grDevices::colors()[grep('gr(a|e)y', grDevices::colors(), invert = T)]
+
+cols = sample(color, 194)
+```
+
+```{r}
+ggplot()+
+  geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
+  geom_sf(data = clark_seamounts_sf_moll, 
+          aes(col = factor(class), stroke = 0), 
+          size = 0.7,
+          show.legend = F)+
+  my_theme_map()+
+  scale_color_manual(values  = cols)+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "seamounts_by_class.png"),
+         height = 4, width = 8)
+```
+
+```{r}
+clark_seamounts %>% 
+  group_by(class) %>% 
+  summarize(n = n()) %>% 
+  arrange(desc(n)) 
+```
+
+```{r}
+clark_seamounts %>% 
+  group_by(class) %>% 
+  summarize(n = n()) %>% 
+  arrange(desc(n)) %>% 
+  ggplot()+
+  geom_histogram(aes(n))+
+  theme_minimal()+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "exploratory", "seamounts_histogram.png"))
+```
+
+We can also use the RFMO data to classify them as fishable or non-fishable. Let's use the max depth across all RFMOs 2200m
+
+```{r}
+clark_seamounts <- clark_seamounts %>% 
+  mutate(fishable = depth < 2200)
+```
+
+```{r}
+clark_fishable_seamounts_sf_moll <- sf::st_as_sf(clark_seamounts %>% 
+                                                   filter(fishable), 
+                                                 coords = c("long", "lat"), 
+                                                 agr = "constant", 
+                                                 crs = 4326) %>% 
+  st_transform(crs = projection(ocean_low_res_moll)) 
+```
+
+```{r}
+ggplot()+
+  geom_sf(data = land_50_moll, fill = 'black', col = 'black', lwd = 0.1)+
+  geom_sf(data = clark_fishable_seamounts_sf_moll, aes(col = factor(class), stroke = 0), show.legend = F)+
+  my_theme_map()+
+  scale_color_manual(values  = cols)+
+  labs(caption = "Clark's classification of global seamounts (depth < 2200m)")+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "exploratory", "seamounts_by_class_fishable.png"), height = 4, width = 8)
+```
+
+### rasterize'em
+
+Let's rasterize these data and produce one raster for each class of seamount. 
+
+```{r, eval = F}
+registerDoParallel(10) #register cores
+
+seamounts_classes <- unique(clark_seamounts$class)
+
+foreach(seamount_class = seamounts_classes) %dopar% { 
+  
+  smt_data <- clark_seamounts_sf_moll %>% 
+    filter(class == seamount_class) 
+  
+  smt_raster <- rasterize(smt_data, 
+                          ocean_low_res_moll, field = 'id' ,fun = 'count')
+  
+  smt_raster <- mask(smt_raster, ocean_low_res_moll)
+  
+  raster::writeRaster(smt_raster, 
+                      file.path(emLab_project_dir, "data", "02_processed", "seamounts/", paste0("smt_class_", seamount_class, ".tif")))
+}
+```
+
+```{r, eval = F}
+#registerDoParallel(10) #register cores
+# 
+# foreach(seamount_class = seamounts_classes) %dopar% { 
+#   
+#   smt_data <- clark_fishable_seamounts_sf_moll %>% 
+#     filter(class == seamount_class) 
+#   
+#   smt_raster <- rasterize(smt_data, 
+#                           ocean_low_res_moll, field = 'id' ,fun = 'count')
+#   
+#   smt_raster <- mask(smt_raster, ocean_low_res_moll)
+#   
+#   raster::writeRaster(smt_raster, 
+#                       file.path(emLab_project_dir, "data", "02_processed", "seamounts/", paste0("fishable_smt_class_", seamount_class, ".tif")))
+# }
+```
+
