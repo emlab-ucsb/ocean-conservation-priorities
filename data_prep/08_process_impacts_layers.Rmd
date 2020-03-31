@@ -1,0 +1,455 @@
+---
+title: "Human Impacts"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r setup, message=F,warning=F}
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',message = FALSE, warning = FALSE)
+
+library(raster)
+library(tidyverse)
+library(sf)
+library(rredlist)
+library(furrr)
+library(patchwork)
+library(DBI)
+library(bigrquery)
+library(parallel)
+library(foreach)
+library(doParallel)
+
+source(here::here("common.R"))
+```
+
+# Human Impacts from Halpern et al
+
+## Resample individual stressor impacts
+
+```{r, eval = F}
+impact_files <- list.files(file.path(emLab_shrd_data_dir, "human-impacts-on-ocean", "stressor_impact"),
+                           full.names = T, 
+                           pattern = "2009|2010|2011|2012|2013")
+
+``` 
+
+```{r}
+original_res <- res(raster(impact_files[1]))
+
+agg_fact <- round(res(ocean_low_res_moll)[1]/original_res[1])
+
+registerDoParallel(10) #register cores
+
+foreach(r_file = impact_files) %dopar% { 
+  
+  hr_ras <- r_file %>% 
+    raster() 
+  
+  hr_ras %>% 
+    raster::aggregate(fact = agg_fact, 
+                      fun = mean, na.rm = T) %>% 
+    projectRaster(ocean_low_res_moll, method = "bilinear") %>% 
+    mask(ocean_low_res_moll) %>% 
+    writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi", paste0(names(hr_ras), "_lr.tif")))
+}
+```
+
+## Examine data
+
+```{r}
+stressors_2013 <- raster::stack(list.files(file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi"), 
+                                           pattern = "2013", full.names = T))
+
+names(stressors_2013)
+```
+
+```{r}
+dem_dest_2013 <- stressors_2013$dem_dest_2013_lr
+
+dem_dest_2013 %>% 
+  mask(dem_dest_2013 > 0.001, maskvalue = 0) %>% 
+  plot()
+
+hist(dem_dest_2013)
+```
+
+```{r}
+summed_stressors <- sum(stressors_2013)
+
+all_stressors_2013 <- 
+  tmap::tm_shape(land_50_moll)+
+  tmap::tm_fill(col = "black")+
+  tmap::tm_shape(summed_stressors)+
+  tmap::tm_raster(title = "",
+                  palette  = viridis::viridis(n = 15),
+                  style = 'cont', legend.is.portrait = T, legend.reverse = T)+
+  tmap::tm_layout(title = "All stressors (2013)",
+                  title.position = c("center", "top"),
+                  inner.margins = c(0.06, 0.05, 0.10, 0.08), 
+                  frame = FALSE,
+                  legend.position = c("right","bottom"),
+                  legend.width = 10)
+
+tmap::tmap_save(all_stressors_2013, 
+                filename = file.path(emLab_project_dir, "figures", "exploratory", "chi_2013"),
+                dpi = 300,  height = 4, width = 8)
+```
+
+### Pelagic Fishing
+
+```{r}
+pelagic_hb <- raster::stack(list.files(file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi"), 
+                                       pattern = "pel_hb", full.names = T))
+
+pelagic_lb <- raster::stack(list.files(file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi"), 
+                                       pattern = "pel_lb", full.names = T))
+
+avg_pelagic_hb <- mean(pelagic_hb, na.rm = T)
+
+avg_pelagic_lb <- mean(pelagic_lb, na.rm = T)
+
+avg_pelagic <- sum(stack(avg_pelagic_hb, avg_pelagic_lb))
+
+avg_pelagic[avg_pelagic <= 0] <- min(avg_pelagic[avg_pelagic > 0])
+```
+
+```{r}
+hist(avg_pelagic,
+     main = "Distribution of pelagic fishing impact",
+     xlab = "Impact", ylab = "Frequency",
+     col = "springgreen")
+```
+
+
+```{r}
+avg_pelagic_fishing_impact_2003_2013 <-   tmap::tm_shape(land_50_moll)+
+  tmap::tm_fill(col = "black")+
+  tmap::tm_shape(avg_pelagic)+
+  tmap::tm_raster(title = "",
+                  palette  = viridis::viridis(n = 50),
+                  style = 'order', legend.is.portrait = T, legend.reverse = T)+
+  tmap::tm_layout(title = "Average Pelagic Fishing Impact (2003-2013)",
+                  title.position = c("center", "top"),
+                  inner.margins = c(0.06, 0.05, 0.10, 0.08), 
+                  frame = FALSE,
+                  legend.position = c("right","bottom"),
+                  legend.width = 10)
+
+tmap::tmap_save(avg_pelagic_fishing_impact_2003_2013, 
+                filename = file.path(emLab_project_dir, "figures", "exploratory", "chi_mean_pelagic_fishing.png"),
+                dpi = 300,  height = 4, width = 8)
+```
+
+### Demersal Fishing
+
+```{r}
+dem_dest <- raster::stack(list.files(file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi"), 
+                                     pattern = "dem_dest", full.names = T))
+
+dem_nondest_lb <- raster::stack(list.files(file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi"), 
+                                           pattern = "dem_nondest_lb", full.names = T))
+
+dem_nondest_hb <- raster::stack(list.files(file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi"), 
+                                           pattern = "dem_nondest_hb", full.names = T))
+
+avg_dem_dest <- mean(dem_dest, na.rm = T)
+
+avg_dem_nondest_lb <- mean(dem_nondest_lb, na.rm = T)
+
+avg_dem_nondest_hb <- mean(dem_nondest_hb, na.rm = T)
+
+avg_demersal <- sum(stack(avg_dem_dest, avg_dem_nondest_lb, avg_dem_nondest_hb))
+
+avg_demersal[avg_demersal <= 0] <- min(avg_demersal[avg_demersal > 0])
+```
+
+```{r}
+hist((avg_demersal),
+     main = "Distribution of demersal fishing impact",
+     xlab = "Impact", ylab = "Frequency",
+     col = "springgreen")
+```
+
+```{r}
+(avg_demersal_fishing_impact_2003_2013 <-  tmap::tm_shape(land_50_moll)+
+  tmap::tm_fill(col = "black")+
+  tmap::tm_shape(avg_demersal)+
+  tmap::tm_raster(title = "",
+                  palette  = viridis::viridis(n = 15),
+                  style = 'order', legend.is.portrait = T, legend.reverse = T)+
+  tmap::tm_layout(title = "Average Demersal Fishing Impact (2003-2013)",
+                  title.position = c("center", "top"),
+                  inner.margins = c(0.06, 0.05, 0.10, 0.08), 
+                  frame = FALSE,
+                  legend.position = c("right","bottom"),
+                  legend.width = 10))
+
+tmap::tmap_save(avg_demersal_fishing_impact_2003_2013, 
+                filename = file.path(emLab_project_dir, "figures", "exploratory", "chi_mean_demersal_fishing.png"),
+                 dpi = 300,  height = 4, width = 8)
+```
+
+## Create annual averages
+
+```{r}
+stressors <- c("art_fish", "dem_dest", "dem_nondest_hb", "dem_nondest_lb", "direct_human", "light", 
+               "nutrient","oa", "organic", "pel_hb", "pel_lb", "shipping","slr","sst")
+
+yrs = c("2009","2010","2011", "2012", "2013")
+```
+
+```{r, eval = F}
+registerDoParallel() #register cores
+
+foreach(stressor = stressors) %dopar% { 
+  
+  impact_stack <- raster::stack(list.files(file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi"),
+                                           pattern = paste(stressor, yrs, sep = "_", collapse = "|"), 
+                                           full.names = T))
+  
+  impact_avg <- mean(impact_stack, na.rm = T) %>% 
+    mask(ocean_low_res_moll) 
+  
+  impact_avg[impact_avg <= 0] <- min(impact_avg[impact_avg > 0])
+  
+  names(impact_avg) <- paste(stressor, "avg", sep = "_")
+  
+  writeRaster(impact_avg,
+              file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi", paste0(stressor, "_5_yr_avg_lr.tif")))
+
+}
+```
+
+## Create Retention Rasters
+
+### Raw 
+
+#### Abatable
+
+```{r}
+abatable_stressors <- c("art_fish", "dem_dest", "dem_nondest_hb", "dem_nondest_lb", "pel_hb", "pel_lb")
+
+abatable_stack <- raster::stack(list.files(file.path(emLab_project_dir,  "data", "02_processed", "impacts", "chi"),
+                                           pattern = paste0(abatable_stressors, "_5_yr_avg", collapse = "|"),
+                                           full.names = T))
+```
+
+```{r}
+Ia <- sum(abatable_stack)
+
+min_Ia <- cellStats(Ia,'min')
+
+max_Ia <- cellStats(Ia,'max')
+
+Ia <- (Ia - min_Ia) / (max_Ia - min_Ia)
+```
+
+```{r}
+Ia_map <- Ia %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_raster(aes(x, y, fill = layer), show.legend = T)+
+  geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
+  my_theme_map()+
+  labs(title = "Relative abatable impacts", fill = "") + 
+  scale_fill_gradientn(colors  = pals::viridis(n = 30),
+                        na.value = "white")
+  
+Ia_hist <- Ia %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_histogram(aes(layer))+ 
+  theme_classic()+
+  labs(x = "Relative abatable impacts", y = "")
+
+cowplot::plot_grid(Ia_map, Ia_hist, labels = NULL, ncol = 1, rel_heights = c(2,1))+
+  cowplot::ggsave2(dpi = 300, 
+                   filename = file.path(emLab_project_dir, "figures", "exploratory", "abatable_impacts.png"),  height = 4, width = 6)
+```
+
+#### Unabatable
+
+```{r}
+unabatable_stressors <- c("direct_human", "light", "nutrient", "oa", "organic", "shipping", "sst")
+
+un_abatable_stack <- raster::stack(list.files(file.path(emLab_project_dir,  "data", "02_processed", "impacts", "chi"),
+                                              pattern = paste0(unabatable_stressors, "_5_yr_avg", collapse = "|") ,
+                                              full.names = T))
+```
+
+```{r}
+Iu <- sum(un_abatable_stack)
+
+min_Iu <- cellStats(Iu,'min')
+
+max_Iu <- cellStats(Iu,'max')
+
+Iu <- (Iu - min_Iu) / (max_Iu - min_Iu)
+```
+
+
+```{r}
+Iu_map <- Iu %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_raster(aes(x, y, fill = layer), show.legend = T)+
+  geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
+  my_theme_map()+
+  labs(title = "Relative un-abatable impacts", fill = "") + 
+  scale_fill_gradientn(colors  = pals::viridis(n = 30),
+                        na.value = "white")
+  
+Iu_hist <- Iu %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_histogram(aes(layer))+ 
+  theme_classic()+
+  labs(x = "Relative un-abatable impacts", y = "")
+
+cowplot::plot_grid(Iu_map, Iu_hist, labels = NULL, ncol = 1, rel_heights = c(2,1))+
+  cowplot::ggsave2(dpi = 300, 
+                   filename = file.path(emLab_project_dir, "figures", "exploratory", "unabatable_impacts.png"),  height = 4, width = 6)
+```
+
+#### Difference made
+
+```{r}
+diff_made <- Ia - Ia*Iu
+
+diff_map <- diff_made %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_raster(aes(x, y, fill = layer), show.legend = T)+
+  geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
+  my_theme_map()+
+  labs(title = "Difference made by MPAs", fill = "") + 
+  scale_fill_gradientn(colors  = pals::viridis(n = 30),
+                        na.value = "white")
+  
+diff_hist <- diff_made %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_histogram(aes(layer))+ 
+  theme_classic()+
+  labs(x = "Difference made by MPAs", y = "")
+
+cowplot::plot_grid(diff_map, diff_hist, labels = NULL, ncol = 1, rel_heights = c(2,1))+
+  cowplot::ggsave2(dpi = 300, 
+                   filename = file.path(emLab_project_dir, "figures", "exploratory", "diff_made.png"),  height = 4, width = 6)
+```
+
+### Log 
+
+#### Abatable
+
+```{r}
+Ia_log <- log(sum(abatable_stack))
+
+min_Ia_log <- cellStats(Ia_log,'min')
+
+max_Ia_log <- cellStats(Ia_log,'max')
+
+Ia_log <- (Ia_log - min_Ia_log) / (max_Ia_log - min_Ia_log)
+```
+
+```{r}
+log_Ia_map <- Ia_log %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_raster(aes(x, y, fill = layer), show.legend = T)+
+  geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
+  my_theme_map()+
+  labs(title = "Relative abatable impacts, log", fill = "") + 
+  scale_fill_gradientn(colors  = pals::viridis(n = 30),
+                       na.value = "white")
+
+log_Ia_hist <- Ia_log %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_histogram(aes(layer))+ 
+  theme_classic()+
+  labs(x = "Relative abatable impacts, log", y = "")
+
+cowplot::plot_grid(log_Ia_map, log_Ia_hist, labels = NULL, ncol = 1, rel_heights = c(2,1))+
+  cowplot::ggsave2(dpi = 300, 
+                   filename = file.path(emLab_project_dir, "figures", "supplement", "log_abatable_impacts.png"),  height = 4, width = 6)
+
+raster::writeRaster(Ia_log, 
+                    file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi","abatable_impacts_5_yr_avg_log.tif"),
+                    overwrite = TRUE)
+```
+
+
+#### Unabatable
+
+```{r}
+Iu_log <- log(sum(un_abatable_stack))
+
+min_Iu_log <- cellStats(Iu_log,'min')
+
+max_Iu_log <- cellStats(Iu_log,'max')
+
+Iu_log <- (Iu_log - min_Iu_log) / (max_Iu_log - min_Iu_log)
+```
+
+```{r}
+log_Iu_map <- Iu_log %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_raster(aes(x, y, fill = layer), show.legend = T)+
+  geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
+  my_theme_map()+
+  labs(title = "", fill = "") + 
+  scale_fill_gradientn(colors  = pals::viridis(n = 30),
+                       na.value = "white")
+
+log_Iu_hist <- Iu_log %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_histogram(aes(layer))+ 
+  theme_classic()+
+  labs(x = "Relative un-abatable impacts, log", y = "")
+
+cowplot::plot_grid(log_Iu_map, log_Iu_hist, labels = NULL, ncol = 1, rel_heights = c(2,1))+
+  cowplot::ggsave2(dpi = 300, 
+                   filename = file.path(emLab_project_dir, "figures", "supplement", "log_unabatable_impacts.png"),  height = 4, width = 6)
+
+raster::writeRaster(Iu_log, 
+                    file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi","unabatable_impacts_5_yr_avg_log.tif"),
+                    overwrite = TRUE)
+```
+
+#### Difference made
+
+```{r}
+diff_made_log <- Ia_log*(1- Iu_log)
+
+diff_log_map <- diff_made_log %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_raster(aes(x, y, fill = layer), show.legend = T)+
+  geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
+  my_theme_map()+
+  labs(title = "", fill = "") + 
+  scale_fill_gradientn(colors  = pals::viridis(n = 30),
+                        na.value = "white")
+  
+diff_log_hist <- diff_made_log %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_histogram(aes(layer))+ 
+  theme_classic()+
+  labs(x = "Difference made by MPAs", y = "")
+
+cowplot::plot_grid(diff_log_map, diff_log_hist, labels = NULL, ncol = 1, rel_heights = c(2,1))+
+  cowplot::ggsave2(dpi = 300, 
+                   filename = file.path(emLab_project_dir, "figures", "supplement", "diff_made_log.png"),  height = 4, width = 6)
+```

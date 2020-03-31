@@ -1,0 +1,111 @@
+---
+title: "Create stock rasters"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r setup, message=F,warning=F}
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',message = FALSE, warning = FALSE)
+
+library(raster)
+library(tidyverse)
+library(sf)
+library(rredlist)
+library(furrr)
+library(rgdal)
+library(patchwork)
+
+source("../common.R")
+```
+
+```{r}
+stocks <- read_rds("../../../gcs/git-annex/Carta-Marina/Food-provision/data/raw/Cleanmegacell.rds") 
+
+cells <- read_rds("../../../gcs/git-annex/Carta-Marina/Food-provision/data/raw/CleanCoordmegacell.rds")
+
+stocks_distributions <- bind_cols(stocks, cells) %>% 
+  select(lon, lat, everything()) %>% 
+  gather(stock_id, suitability, -lon, -lat)
+```
+
+# Generate stock rasters
+
+```{r}
+# produced_stocks <- tibble(filename = list.files(file.path(DIR_GCS, paste0("Food-provision/data/processed/stock_distributions")), full.names = T),
+#                      stockid = str_remove(basename(filename), "\\.tif"))
+```
+
+```{r}
+# tmp <- unique(stocks_distributions$stock_id)
+# 
+# t <- tmp[!tmp %in% produced_stocks$stockid]
+```
+
+```{r}
+empty_raster <- raster(resolution = 0.5)
+
+library(parallel)
+library(foreach)
+library(doParallel)
+
+registerDoParallel(80) #register cores
+
+unique_stock_ids <- unique(stocks_distributions$stock_id)
+#unique_stock_ids <- t
+
+foreach(stock = unique_stock_ids) %dopar% { 
+  
+  stock_data <- stocks_distributions %>% 
+    filter(stock_id == stock,
+           suitability > 0) %>% 
+    select(lon, lat, suitability)
+  
+  cells <- cellFromXY(empty_raster, as.matrix(stock_data[,1:2]))
+  
+  stock_raster <- empty_raster
+  
+  stock_raster[cells] <- pull(stock_data, suitability)
+  
+  stock_raster <- projectRaster(stock_raster, ocean_low_res_moll)
+  
+  stock_raster <- mask(stock_raster, ocean_low_res_moll)
+  
+  raster::writeRaster(stock_raster, 
+                      file.path(DIR_GCS, 
+                                paste0("Food-provision/data/processed/stock_distributions/", stock, ".tif")),
+                      overwrite = T)
+}
+```
+
+```{r}
+# all_stocks <- tibble(filename = list.files(file.path(DIR_GCS, paste0("Food-provision/data/processed/stock_distributions")), full.names = T),
+#                      stockid = str_remove(basename(filename), "\\.tif"))
+# 
+# included_stocks <- read_csv(file.path(DIR_GCS, "Food-provision/data/raw/FP_stock_info.csv"))
+# 
+# all_stocks %>% 
+#   filter(!stockid %in% included_stocks$stockid) %>% 
+#   pull(filename)
+
+#  file.remove()
+```
+
+
+```{r}
+hist(included_stocks$Hopt)
+
+included_stocks %>% 
+  filter(stockid != "ILLEXNWATLC") %>% 
+  ggplot()+
+  geom_point(aes(Ropt, Hopt))
+```
+
+

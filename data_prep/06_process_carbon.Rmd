@@ -1,0 +1,165 @@
+---
+title: "Blue Carbon Stocks"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r setup, message=F,warning=F}
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',message = FALSE, warning = FALSE)
+
+library(raster)
+library(tidyverse)
+library(sf)
+library(rredlist)
+library(furrr)
+
+source(here::here("common.R"))
+```
+
+# Read data 
+
+```{r, eval = F}
+carbon_raster <- raster(file.path(emLab_shrd_data_dir, "global-marine-sedimentary-carbon", "Mean carbon_stock.tif"))
+
+total_carbon <- raster::cellStats(carbon_raster, sum)/10^6 # 3117263 millions of Tons in the raw data
+
+carbon_map_high_res <- tmap::tm_shape(land_50)+
+  tmap::tm_fill(col = "black")+
+  tmap::tm_shape(log(carbon_raster))+
+  tmap::tm_raster(title =  expression(paste("Mg C ") * km^2),
+                  palette  = viridis::plasma(n = 10),
+                  style = 'cont',
+                  legend.is.portrait = T, legend.reverse = T)+
+  tmap::tm_layout(title = "",
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.1), 
+                  frame = F,
+                  legend.position = c(.92, "center"))
+
+tmap::tmap_save(carbon_map_high_res, 
+                filename = file.path(emLab_project_dir, "figures", "exploratory", "carbon_stocks_high_res.png"),
+                dpi = 300,  height = 4, width = 8)
+```
+
+# Resample
+
+How can we aggregate this high res raster?
+
+One approach is to aggregate the resolution to an equivalent 0.5º degrees, an summing all carbon within each pixel. 
+
+```{r}
+agg_fact <- round(res(ocean_low_res_wgs84)[1]/res(carbon_raster)[1])
+
+carbon_raster_lr_sum <- aggregate(carbon_raster, 
+                                  fact = agg_fact, 
+                                  fun = sum, na.rm = T)
+
+raster::cellStats(carbon_raster_lr_sum, sum)/10^6 # 3117263 millions of Tons, same as in the raw data
+```
+
+```{r}
+carbon_map_lr_sum <- tmap::tm_shape(land_50)+
+  tmap::tm_fill(col = "black")+
+  tmap::tm_shape(carbon_raster_lr_sum)+
+  tmap::tm_raster(title = "Mg Carbon @ 1m depth",
+                  palette  = viridis::plasma(n = 10),
+                  style = 'cont', legend.is.portrait = T, legend.reverse = T)+
+  tmap::tm_layout(title = "",
+                  title.position = c("center", "top"),
+                  frame = FALSE,
+                  legend.position = c("right","bottom"),
+                  legend.width = 10)
+
+tmap::tmap_save(carbon_map_lr_sum, 
+                filename = file.path(emLab_project_dir, "figures", "exploratory", "carbon_stocks_low_res_sum.png"),
+                dpi = 300,  height = 4, width = 8)
+```
+
+However, this approach results in a wrong pattern of lower total carbon along the coastline because the function sums too many land values that have NA. 
+
+If instead we take the mean of a cell we retain the spatial patterns
+
+```{r}
+carbon_raster_lr_mean <- aggregate(carbon_raster, 
+                                   fact = agg_fact, 
+                                   fun = mean,
+                                   na.rm = T) %>% 
+  projectRaster(ocean_low_res_wgs84) %>% 
+  mask(ocean_low_res_wgs84)
+
+carbon_map_lr_mean <- tmap::tm_shape(land_50)+
+  tmap::tm_fill(col = "black")+
+  tmap::tm_shape(carbon_raster_lr_mean)+
+  tmap::tm_raster(title = expression(paste("Avg Mg C ") * km^2),
+                  palette  = viridis::plasma(n = 10),
+                  style = 'cont', legend.is.portrait = T, legend.reverse = T)+
+  tmap::tm_layout(title = "",
+                  title.position = c("center", "top"),
+                  frame = FALSE,
+                  legend.position = c("right","bottom"),
+                  legend.width = 10)
+
+tmap::tmap_save(carbon_map_lr_mean, 
+                filename = file.path(emLab_project_dir, "figures", "exploratory", "carbon_stocks_low_res_mean.png"),
+                dpi = 300,  height = 4, width = 8)
+
+carbon_raster_lr_mean %>% 
+  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed","carbon","carbon_lr_mean_wgs84.tif"), 
+                      overwrite = T)
+
+raster::cellStats(carbon_raster_lr_mean, sum)/10^6 
+```
+
+The patterns seen here appear to be correct. How much carbon does the map shows? To estimate this we need to multiply the average carbon in each cell time its area. But, we need to reproject the raster in the first place in order to get an accurate estimate of each pixels area.
+
+```{r}
+raster::cellStats(raster::area(carbon_raster_lr_mean)*carbon_raster_lr_mean, sum)/10^6/total_carbon 
+```
+
+```{r}
+# reprojecting to mollweide
+
+carbon_raster_lr_mean_moll <- projectRaster(carbon_raster_lr_mean, 
+                                            ocean_low_res_moll, method = 'bilinear') %>% 
+  mask(ocean_low_res_moll) 
+
+raster::cellStats(raster::area(carbon_raster_lr_mean_moll)/10^6*carbon_raster_lr_mean_moll, sum)/10^6/total_carbon # 2615847 million tons of carbon
+
+carbon_raster_lr_mean_moll %>% 
+  mask(ocean_low_res_moll) %>% 
+  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed","carbon","carbon_lr_mean_moll.tif"), 
+                      overwrite = T)
+
+plot((carbon_raster_lr_mean_moll))
+```
+
+```{r}
+carbon_low_res <- raster::raster(file.path(emLab_project_dir, "data", "02_processed","carbon","carbon_lr_mean_moll.tif"))
+
+carbon_low_res %>% 
+  as.data.frame(xy = T) %>% 
+  ggplot()+
+  geom_raster(aes(x, y, fill = carbon_lr_mean_moll), show.legend = T)+
+  theme_void()+
+  geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
+  scale_fill_gradientn(colors  = pals::viridis(n = 30),
+                       na.value = "white",
+                       trans = "log10")+
+  labs(fill = "Avg Mg Carbon per km2\n @ 1m depth") +
+  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "mean_carbon_stocks.png"), 
+         dpi = 300,  height = 4, width = 8)
+```
+
+
+
+
+
+

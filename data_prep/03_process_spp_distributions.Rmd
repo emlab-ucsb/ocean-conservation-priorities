@@ -663,7 +663,8 @@ write_csv(included_aquamaps_spp_list,
 ## generate rasters
 
 ```{r}
-included_aquamaps_spp_list <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list","included_aquamaps_spp_list.csv"))
+included_aquamaps_spp_list <- read_csv(file.path(emLab_project_dir,
+                                                 "data", "02_processed", "species_list","included_aquamaps_spp_list.csv"))
 
 empty_raster <- raster(resolution = 0.5)
 
@@ -681,7 +682,7 @@ foreach(species_id = included_aquamaps_spp_list$aquamaps_id) %dopar% {
   
   spp_raster[cells] <- pull(spp_data[,3])
   
-  spp_raster <- projectRaster(spp_raster, ocean_low_res_moll)
+  spp_raster <- projectRaster(spp_raster, ocean_low_res_moll, method = "bilinear")
   
   spp_raster <- mask(spp_raster, ocean_low_res_moll)
   

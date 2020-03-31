@@ -28,6 +28,8 @@ library(paletteer)
 emLab_project_dir <- "~/Google Drive File Stream/Shared drives/emlab/projects/current-projects/ocean-conservation-priorities"
 
 emLab_shrd_data_dir <- "~/Google Drive File Stream/Shared drives/emlab/data/"
+
+source(here::here("common.R"))
 ```
 
 # Create ocean and land masks
@@ -43,7 +45,9 @@ empty_lr_raster <- raster(crs = crs(ocean),
                           ext = extent(ocean),
                           res = 50000)
 
-ocean_low_res_moll <- projectRaster(ocean, empty_lr_raster, method = 'ngb', over = T)
+ocean_low_res_moll <- ocean %>% 
+  raster::aggregate(fact = 50, fun = modal, na.rm = T) %>% 
+  projectRaster(empty_lr_raster, method = 'ngb', over = T)
 
 #Remove cells with 100% land
 
@@ -55,7 +59,7 @@ land_50_moll <- land_50 %>%
 land_50_raster_moll <- rasterize(land_50_moll, ocean_low_res_moll, getCover = T)
 
 ocean_low_res_moll <- ocean_low_res_moll %>% 
-  mask(land_50_raster_moll, maskvalue = 1)
+  mask(land_50_raster_moll >= 0.99, maskvalue = 1)
 
 # make wgs84 versions
 
@@ -69,6 +73,13 @@ land_50_raster_wgs84 <- rasterize(land_50, empty_wgs84_raster, getCover = T)
 
 ocean_low_res_wgs84 <- ocean_low_res_wgs84 %>% 
   mask(land_50_raster_wgs84, maskvalue = 1) 
+```
+
+```{r}
+tmap::tm_shape(ocean_low_res_moll)+
+  tmap::tm_raster(palette = "navy")+
+  tmap::tm_shape(land_50_moll)+
+  tmap::tm_fill(col = "black", border.col = "transparent") 
 ```
 
 ```{r, eval = F}
@@ -85,10 +96,10 @@ writeRaster(land_50_raster_moll,
             file.path(emLab_project_dir, "data","02_processed", "masks", "land_low_res_moll.tif"), overwrite = T)
 
 sf::st_write(land_50_moll,
-             file.path(emLab_project_dir,"data", "02_processed", "masks", "land_50_moll.shp"))
+             file.path(emLab_project_dir,"data", "02_processed", "masks", "land_50_moll.shp"), overwrite = T)
 
 sf::st_write(land_50,
-             file.path(emLab_project_dir, "data", "02_processed", "masks", "land_50.shp"))
+             file.path(emLab_project_dir, "data", "02_processed", "masks", "land_50.shp"), overwrite = T)
 ```
 
 # Biogeographic provinces
