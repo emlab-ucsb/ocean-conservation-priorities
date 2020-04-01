@@ -135,7 +135,8 @@ foreach(seamount_class = seamounts_classes) %dopar% {
   smt_raster <- mask(smt_raster, ocean_low_res_moll)
   
   raster::writeRaster(smt_raster, 
-                      file.path(emLab_project_dir, "data", "02_processed", "seamounts/", paste0("smt_class_", seamount_class, ".tif")))
+                      file.path(emLab_project_dir, "data", "02_processed", "seamounts/", paste0("smt_class_", seamount_class, ".tif")),
+                      overwrite = T)
 }
 ```
 

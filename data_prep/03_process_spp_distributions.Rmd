@@ -29,6 +29,7 @@ library(foreach)
 
 source(here::here("common.R"))
 
+emLab_project_dir
 #Sys.setenv(IUCN_REDLIST_KEY = "0b64bc7473e4e6dd698b42d5d239ff12786d3007a30aa4aa30064ae139d79bbe")
 ```
 
@@ -692,6 +693,8 @@ foreach(species_id = included_aquamaps_spp_list$aquamaps_id) %dopar% {
                       file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "aquamaps/", paste0(spp_name, ".tif")),
                       overwrite = T)
 }
+
+str_subset(list.files(file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "aquamaps")), "Holo")
 ```
 
 # Birdlife
@@ -1056,7 +1059,8 @@ for(group in unique(aquamaps_spp_dist$major_group)){
   names(r) <- group
   
   writeRaster(r,
-              file.path(emLab_project_dir, "data", "02_processed", "species_richness/", paste0(group,".tif")))
+              file.path(emLab_project_dir, "data", "02_processed", "species_richness/", paste0(group,".tif")), 
+              overwrite = T)
   }
 
 richness_stack <- stack(list.files(file.path(emLab_project_dir,  "data", "02_processed", "species_richness"), full.names = T))

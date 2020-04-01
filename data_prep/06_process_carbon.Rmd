@@ -26,7 +26,7 @@ source(here::here("common.R"))
 
 # Read data 
 
-```{r, eval = F}
+```{r}
 carbon_raster <- raster(file.path(emLab_shrd_data_dir, "global-marine-sedimentary-carbon", "Mean carbon_stock.tif"))
 
 total_carbon <- raster::cellStats(carbon_raster, sum)/10^6 # 3117263 millions of Tons in the raw data

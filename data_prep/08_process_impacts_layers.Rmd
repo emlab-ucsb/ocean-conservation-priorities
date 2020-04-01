@@ -58,7 +58,8 @@ foreach(r_file = impact_files) %dopar% {
                       fun = mean, na.rm = T) %>% 
     projectRaster(ocean_low_res_moll, method = "bilinear") %>% 
     mask(ocean_low_res_moll) %>% 
-    writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi", paste0(names(hr_ras), "_lr.tif")))
+    writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi", paste0(names(hr_ras), "_lr.tif")),
+                overwrite = T)
 }
 ```
 

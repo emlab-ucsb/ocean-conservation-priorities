@@ -521,7 +521,7 @@ plot(Ia_carbon_rescaled)
 Ia_carbon_rescaled %>% 
   projectRaster(ocean_low_res_moll, method = "bilinear") %>% 
   mask(ocean_low_res_moll) %>%
-  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr.tif"))
+  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr.tif"), overwrite = T)
 ```
 
 # Visualize
