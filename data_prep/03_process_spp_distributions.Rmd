@@ -939,12 +939,11 @@ aquamaps_spp_dist <- aquamaps_spp_dist %>%
   ))
 ```
 
-
 ```{r}
 aquamaps_richness_sf <- aquamaps_spp_dist %>% 
   group_by(CenterLong, CenterLat) %>% 
-  summarize(spp_richness = sum(probability > 0.5),
-            included_spp_richness = sum(probability[included] > 0.5)) %>% 
+  summarize(spp_richness = sum(probability > 0.5, na.rm = T),
+            included_spp_richness = sum(probability[included] > 0.5), na.rm = T) %>% 
   sf::st_as_sf(coords = c("CenterLong", "CenterLat"), 
                agr = "constant", 
                crs = 4326) %>% 
@@ -952,7 +951,7 @@ aquamaps_richness_sf <- aquamaps_spp_dist %>%
 
 aquamaps_richness_raster <- aquamaps_richness_sf %>% 
   rasterize(ocean_low_res_moll, field = "spp_richness") %>% 
-  raster::resample(ocean_low_res_moll, method = "bilinear")
+  raster::resample(ocean_low_res_moll, method = "bilinear", na.rm = T)
 
 included_aquamaps_richness_raster <- aquamaps_richness_sf %>% 
   rasterize(ocean_low_res_moll, field = "included_spp_richness") %>% 
@@ -1074,8 +1073,6 @@ richness_df <- richness_stack %>%
   dropLayer("included_all_spp_richness") %>% 
   dropLayer("included_aquamaps_spp_richness") %>% 
   as.data.frame(xy = T, centroids = T) 
-
-names(richness_df)
 
 ls_plots <- names(richness_df)[c(-1,-2)] %>% 
   map(.f = ~ richness_df %>% 

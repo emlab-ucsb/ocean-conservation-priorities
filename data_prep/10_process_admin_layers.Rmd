@@ -180,14 +180,6 @@ writeRaster(reviewed_fully_highly_protected_MPAs_raster_moll,
             overwrite = T)
 ```
 
-```{r}
-writeRaster(reviewed_fully_highly_protected_MPAs_raster_moll, 
-            file.path(DIR_GCS,"masks/data/processed/fully_highly_protected_reviewed_MPAs.tif"),
-            overwrite = T)
-
-plot(reviewed_fully_highly_protected_MPAs_raster_moll)
-```
-
 # Territories EEZs
 
 ```{r}
@@ -210,7 +202,7 @@ territories_raster_lr <- territories_raster_lr %>%
   mask(ocean_low_res_moll)
 
 writeRaster(territories_raster_lr, 
-            file.path(emLab_project_dir, "data", "02_processed", "masks", "territories.tif"))
+            file.path(emLab_project_dir, "data", "02_processed", "masks", "territories.tif"), overwrite = T)
 
 eez_info <- eez_and_land %>% 
   sf::st_drop_geometry()
@@ -222,8 +214,3 @@ eez_info %>%
   mutate_if(is.factor, as.character) %>% 
   write_csv(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories_lookup.csv"))
 ```
-
-
-
-
-

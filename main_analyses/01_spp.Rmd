@@ -24,10 +24,6 @@ variant_name <- "01_spp"
 variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name)
 
 dir.create(variant_dir)
-
-# dir.create(file.path(variant_dir, "results"))
-# 
-# dir.create(file.path(variant_dir, "figures"))
 ```
 
 # Load data 
@@ -36,7 +32,8 @@ dir.create(variant_dir)
 spp_files <- tibble(filepath = list.files(c(file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "birdlife"),
                                             file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "aquamaps")),
                                           full.names = T),
-                    valid_sci_name = str_replace_all(str_remove(basename(filepath), "\\.tif"), "_", " "))
+                    valid_sci_name = str_replace_all(str_remove(basename(filepath), "\\.tif"), "_", " ")) %>% 
+  arrange(valid_sci_name)
 ```
 
 ```{r, eval = F}

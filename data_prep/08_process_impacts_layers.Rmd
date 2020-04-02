@@ -22,7 +22,6 @@ library(rredlist)
 library(furrr)
 library(patchwork)
 library(DBI)
-library(bigrquery)
 library(parallel)
 library(foreach)
 library(doParallel)
@@ -100,7 +99,7 @@ all_stressors_2013 <-
                   legend.width = 10)
 
 tmap::tmap_save(all_stressors_2013, 
-                filename = file.path(emLab_project_dir, "figures", "exploratory", "chi_2013"),
+                filename = file.path(emLab_project_dir, "figures", "exploratory", "chi_2013.png"),
                 dpi = 300,  height = 4, width = 8)
 ```
 
@@ -368,7 +367,7 @@ log_Ia_map <- Ia_log %>%
   geom_raster(aes(x, y, fill = layer), show.legend = T)+
   geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
   my_theme_map()+
-  labs(title = "Relative abatable impacts, log", fill = "") + 
+  labs(title = "", fill = "") + 
   scale_fill_gradientn(colors  = pals::viridis(n = 30),
                        na.value = "white")
 
