@@ -171,13 +171,13 @@ bio_unabatable_impacts_df <- raster(file.path(emLab_project_dir,
 # Run national ranking
 
 ```{r}
-registerDoParallel(cores = 50) #register cores
+registerDoParallel(cores = 10) #register cores
 
 foreach(iso_code = unique(territories_df$iso_ter1)) %dopar% { 
   
   # Normalize and trim 
   
-  eez_cells <- unique(territories_df$cell_id[territories_df$iso_sov1 == iso_code])
+  eez_cells <- unique(territories_df$cell_id[territories_df$iso_ter1 == iso_code])
   
   national_features_matrix <- features_matrix[eez_cells,  , drop = F]
   
@@ -279,9 +279,8 @@ foreach(iso_code = unique(territories_df$iso_ter1)) %dopar% {
 national_results <- list.files(file.path(variant_dir, "national_results"), pattern = "results", full.names = T) %>% 
   map_dfr(.f = ~.x %>% 
         read_csv() %>% 
-        mutate(cell_id = as.character(cell_id)) %>% 
         arrange(desc(delta)) %>% 
-        select(cell_id, eez_iso, delta) %>%
+        select(cell_id, iso_ter1, delta) %>%
         tibble::rowid_to_column("pick_order")
   ) 
 ```
@@ -326,45 +325,7 @@ Norm_features_matrix_diff <- Norm_features_matrix %>%
 ## benefit functions
 
 ```{r}
-a <- MPAs_df %>% 
-  filter(!is.na(mpa)) %>% 
-  select(cell_id) %>% 
-  bind_rows(abnj %>% mutate(cell_id = as.character(cell_id))) %>% 
-  mutate(is_mpa = is.na(delta)) %>% 
-  full_join(ocean_matrix) %>% 
-  left_join(Norm_features_matrix_diff %>% 
-              as_tibble(rownames = NA) %>% 
-              rownames_to_column("cell_id")) %>% 
-  replace(is.na(.), 0) %>% 
-  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa, -eez_iso, -eez_id) %>% 
-  mutate_all(.funs = cumsum) 
-
-b <- a %>% 
-  sweep(MARGIN = 2, remains_BAU, `+`) %>%
-  mutate_all(.funs = ~(.)^0.25) %>% 
-  as.matrix() %*% as.matrix(feature_wts) %>% 
-  as_tibble() %>% 
-  set_names("V") %>% 
-  mutate(fraction_protected = 1/n(),
-         fraction_protected = cumsum(fraction_protected))
-
-b %>% 
-  ungroup() %>% 
-  filter(fraction_protected > fraction_in_MPA) %>% 
-  ggplot()+
-  geom_line(aes(x = fraction_protected, y = V/sum(feature_wts))) +
-  geom_vline(xintercept = c(0.1, 0.2, 0.3),
-             linetype = c("dashed","dotted","dotdash"))+
-  labs(x = "Fraction Ocean Protected",
-       y = "Biodiversity Benefit",
-       caption = "Biodiversity national, with impacts")+
-  theme_classic()+
-  scale_x_continuous(limits = c(0,1), expand = c(0,0))+
-  geom_rect(aes(xmin = 0, 
-                xmax = fraction_in_MPA, 
-                ymin = min(b$V)/sum(feature_wts), 
-                ymax = max(b$V)/sum(feature_wts)),
-                fill = "#69B578", alpha = 0.01)
+national_results %>% arrange(desc(delta))
 ```
 
 ```{r}
@@ -372,6 +333,7 @@ representation_curves <- MPAs_df %>%
   filter(!is.na(mpa)) %>% 
   select(cell_id) %>% 
   bind_rows(national_results %>% 
+              mutate(cell_id = as.character(as.integer(cell_id))) %>% 
               arrange(desc(delta))) %>% 
   mutate(is_mpa = is.na(delta)) %>% 
   full_join(ocean_matrix) %>% 
@@ -379,7 +341,7 @@ representation_curves <- MPAs_df %>%
               as_tibble(rownames = NA) %>% 
               rownames_to_column("cell_id")) %>% 
   replace(is.na(.), 0) %>% 
-  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa, -eez_iso) %>% 
+  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa, -iso_ter1) %>% 
   mutate_all(.funs = cumsum) 
 
 benefit_curve <- representation_curves %>% 
@@ -414,8 +376,8 @@ benefit_curve %>%
                 xmax = fraction_in_MPA, 
                 ymin = min(benefit_curve$V)/sum(feature_wts), 
                 ymax = max(benefit_curve$V)/sum(feature_wts)),
-                fill = "#69B578", alpha = 0.01)
-  ggsave(file.path(variant_dir, "benefit_curve_national_priorities.png"),
+                fill = "#69B578", alpha = 0.01)+
+  ggsave(file.path(variant_dir, "benefit_curve.png"),
          width = 7, height = 4)
 ```
 
