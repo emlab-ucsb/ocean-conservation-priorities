@@ -36,7 +36,9 @@ dir.create(variant_dir)
 ## Territories 
 
 ```{r}
-territories_df <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories.tif")) %>% 
+territories_raster <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories.tif"))
+
+territories_df <- territories_raster %>% 
   raster::as.data.frame(xy = T) %>%
   inner_join(ocean_matrix) %>%
   select(x, y, cell_id, everything()) %>%
@@ -60,6 +62,32 @@ territories_df$name[is.na(territories_df$territory_id)] <- 'ABNJ'
 territories_df$iso_sov1[is.na(territories_df$territory_id)] <- 'ABNJ'
 territories_df$mrgid_eez[is.na(territories_df$territory_id)] <- 999
 territories_df$territory_id[is.na(territories_df$territory_id)] <- 999
+  
+territories_df <- territories_df %>% 
+  mutate(iso_ter1 = case_when(
+  name %in% c("Alaska", "Hawaii") ~ "USA",
+  name %in% c("Kuril Islands") ~ "RUS",
+  name %in% c("Azores", "Madeira") ~ "PRT",
+  name %in% c("Canary Islands") ~ "ESP",
+  name %in% c("Senkaku Islands") ~ "JPN",
+  name %in% c("Navassa Island") ~ "JAM",
+  name %in% c("Serranilla Bank", "Colombian Exclusive Economic Zone (Quitasueño)") ~ "COL",
+  name %in% c("Andaman and Nicobar") ~ "IND",
+  name %in% c("Clipperton Island") ~ "CLI",
+  name %in% c("Galapagos") ~ "ECU",
+  name %in% c("Chagos Archipelago") ~ "CHG",
+  name %in% c("Oecusse") ~ "TLS",
+  name %in% c("Glorioso Islands", "Tromelin Island") ~ "ATF",
+  name %in% c("Trinidade") ~ "BRA",
+  name %in% c("Matthew and Hunter Islands") ~ "NCL",
+  name %in% c("Easter Island") ~ "CHL",
+  name %in% c("Prince Edward Islands") ~ "ZAF",
+  name %in% c("Macquarie Island") ~ "AUS", 
+  TRUE ~ iso_ter1
+  )) 
+
+territories_df <- territories_df %>% 
+  distinct(iso_sov1, iso_ter1, x, y, cell_id, territory_id) 
 ```
 
 ## Features
@@ -143,23 +171,13 @@ bio_unabatable_impacts_df <- raster(file.path(emLab_project_dir,
 # Run national ranking
 
 ```{r}
-territories_df %>% 
-  group_by(mrgid_eez) %>% 
-  summarize(n = n_distinct(iso_sov1)) %>% filter(n > 1)
-```
-
-```{r}
-eez_ids <- unique(territories_df$mrgid_eez)
-
 registerDoParallel(cores = 50) #register cores
 
-foreach(eez_id = eez_ids) %dopar% { 
+foreach(iso_code = unique(territories_df$iso_ter1)) %dopar% { 
   
   # Normalize and trim 
   
-  eez_iso <- unique(territories_df$iso_sov1[territories_df$mrgid_eez == eez_id])
-  
-  eez_cells <- territories_df$cell_id[territories_df$mrgid_eez == eez_id]
+  eez_cells <- unique(territories_df$cell_id[territories_df$iso_sov1 == iso_code])
   
   national_features_matrix <- features_matrix[eez_cells,  , drop = F]
   
@@ -245,12 +263,10 @@ foreach(eez_id = eez_ids) %dopar% {
     
   }
   
-  ranking$eez_iso <- eez_iso
-  
-  ranking$eez_id <- eez_id
+  ranking$iso_ter1 <- iso_code
   
   data.table::fwrite(ranking, 
-                     file.path(variant_dir, "national_results", paste0(eez_iso, "_results.csv")))
+                     file.path(variant_dir, "national_results", paste0(iso_code, "_results.csv")))
   
 }
 ```
@@ -260,9 +276,6 @@ foreach(eez_id = eez_ids) %dopar% {
 ## load national ranks
 
 ```{r}
-list.files(file.path(variant_dir, "national_results"), pattern = "results", full.names = T)[61] %>% 
-  read_csv() 
-
 national_results <- list.files(file.path(variant_dir, "national_results"), pattern = "results", full.names = T) %>% 
   map_dfr(.f = ~.x %>% 
         read_csv() %>% 
@@ -271,8 +284,6 @@ national_results <- list.files(file.path(variant_dir, "national_results"), patte
         select(cell_id, eez_iso, delta) %>%
         tibble::rowid_to_column("pick_order")
   ) 
-
-national_results %>% filter(eez_iso == "HRV")
 ```
 
 ## make global matrix
@@ -313,6 +324,48 @@ Norm_features_matrix_diff <- Norm_features_matrix %>%
 ```
 
 ## benefit functions
+
+```{r}
+a <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(abnj %>% mutate(cell_id = as.character(cell_id))) %>% 
+  mutate(is_mpa = is.na(delta)) %>% 
+  full_join(ocean_matrix) %>% 
+  left_join(Norm_features_matrix_diff %>% 
+              as_tibble(rownames = NA) %>% 
+              rownames_to_column("cell_id")) %>% 
+  replace(is.na(.), 0) %>% 
+  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa, -eez_iso, -eez_id) %>% 
+  mutate_all(.funs = cumsum) 
+
+b <- a %>% 
+  sweep(MARGIN = 2, remains_BAU, `+`) %>%
+  mutate_all(.funs = ~(.)^0.25) %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected))
+
+b %>% 
+  ungroup() %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(x = fraction_protected, y = V/sum(feature_wts))) +
+  geom_vline(xintercept = c(0.1, 0.2, 0.3),
+             linetype = c("dashed","dotted","dotdash"))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Biodiversity Benefit",
+       caption = "Biodiversity national, with impacts")+
+  theme_classic()+
+  scale_x_continuous(limits = c(0,1), expand = c(0,0))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = min(b$V)/sum(feature_wts), 
+                ymax = max(b$V)/sum(feature_wts)),
+                fill = "#69B578", alpha = 0.01)
+```
 
 ```{r}
 representation_curves <- MPAs_df %>% 
