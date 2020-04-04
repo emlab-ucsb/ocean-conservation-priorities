@@ -50,15 +50,16 @@ territories_LUT <- read_csv(file.path(emLab_project_dir, "data", "02_processed",
 territories_df <- territories_df %>% 
   left_join(territories_LUT,
             by = c("territory_id" = "mrgid_ter1")) 
+```
 
+```{r}
 # make high seas another territory id = 999
 
-territories_df <- territories_df %>% 
-  replace_na(list(territory_id = 999,
-                  iso_ter1 = "ABNJ",
-                  name = "high seas",
-                  mrgid_eez = 999,
-                  iso_sov1 = "ABNJ")) 
+territories_df$iso_ter1[is.na(territories_df$territory_id)] <- 'ABNJ'
+territories_df$name[is.na(territories_df$territory_id)] <- 'ABNJ'
+territories_df$iso_sov1[is.na(territories_df$territory_id)] <- 'ABNJ'
+territories_df$mrgid_eez[is.na(territories_df$territory_id)] <- 999
+territories_df$territory_id[is.na(territories_df$territory_id)] <- 999
 ```
 
 ## Features
@@ -142,27 +143,33 @@ bio_unabatable_impacts_df <- raster(file.path(emLab_project_dir,
 # Run national ranking
 
 ```{r}
-terri_ids <- unique(territories_df$territory_id)
+territories_df %>% 
+  group_by(mrgid_eez) %>% 
+  summarize(n = n_distinct(iso_sov1)) %>% filter(n > 1)
+```
 
-registerDoParallel(cores = 10) #register cores
+```{r}
+eez_ids <- unique(territories_df$mrgid_eez)
 
-foreach(terri_id = terri_ids) %dopar% { 
+registerDoParallel(cores = 50) #register cores
+
+foreach(eez_id = eez_ids) %dopar% { 
   
   # Normalize and trim 
   
-  terri_iso <- unique(territories_df$iso_ter1[territories_df$territory_id == terri_id])
+  eez_iso <- unique(territories_df$iso_sov1[territories_df$mrgid_eez == eez_id])
   
-  terri_cells <- territories_df$cell_id[territories_df$territory_id == terri_id]
+  eez_cells <- territories_df$cell_id[territories_df$mrgid_eez == eez_id]
   
-  national_features_matrix <- features_matrix[terri_cells,  , drop = F]
+  national_features_matrix <- features_matrix[eez_cells,  , drop = F]
   
   national_features_matrix_Norm <- sweep(national_features_matrix, 2, colSums(national_features_matrix, na.rm = T), FUN = "/")
   
   all.equal(colnames(national_features_matrix_Norm), colnames(features_matrix))
   
   national_features_matrix_Norm <- national_features_matrix_Norm[ ,
-                                                                 colSums(is.na(national_features_matrix_Norm)) != nrow(national_features_matrix_Norm), 
-                                                                 drop = F]
+                                                                  colSums(is.na(national_features_matrix_Norm)) != nrow(national_features_matrix_Norm), 
+                                                                  drop = F]
 
   # Apply retention
   
@@ -238,10 +245,12 @@ foreach(terri_id = terri_ids) %dopar% {
     
   }
   
-  ranking$terri_iso3 <- terri_iso
+  ranking$eez_iso <- eez_iso
+  
+  ranking$eez_id <- eez_id
   
   data.table::fwrite(ranking, 
-                     file.path(variant_dir, paste0(terri_iso, "_results.csv")))
+                     file.path(variant_dir, "national_results", paste0(eez_iso, "_results.csv")))
   
 }
 ```
@@ -251,15 +260,19 @@ foreach(terri_id = terri_ids) %dopar% {
 ## load national ranks
 
 ```{r}
-national_results <- list.files(variant_dir, pattern = "results", full.names = T) %>% 
+list.files(file.path(variant_dir, "national_results"), pattern = "results", full.names = T)[61] %>% 
+  read_csv() 
+
+national_results <- list.files(file.path(variant_dir, "national_results"), pattern = "results", full.names = T) %>% 
   map_dfr(.f = ~.x %>% 
         read_csv() %>% 
+        mutate(cell_id = as.character(cell_id)) %>% 
         arrange(desc(delta)) %>% 
-        select(cell_id, terri_iso3, delta) %>%
+        select(cell_id, eez_iso, delta) %>%
         tibble::rowid_to_column("pick_order")
-  ) %>% 
-  mutate(cell_id = as.character(cell_id)) %>% 
-  arrange(desc(delta))
+  ) 
+
+national_results %>% filter(eez_iso == "HRV")
 ```
 
 ## make global matrix
@@ -313,7 +326,7 @@ representation_curves <- MPAs_df %>%
               as_tibble(rownames = NA) %>% 
               rownames_to_column("cell_id")) %>% 
   replace(is.na(.), 0) %>% 
-  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa, -terri_iso3) %>% 
+  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa, -eez_iso) %>% 
   mutate_all(.funs = cumsum) 
 
 benefit_curve <- representation_curves %>% 
@@ -333,6 +346,7 @@ write_csv(benefit_curve,
 benefit_curve <- read_csv(file.path(variant_dir, "benefit_curve.csv"))
 
 benefit_curve %>% 
+  ungroup() %>% 
   filter(fraction_protected > fraction_in_MPA) %>% 
   ggplot()+
   geom_line(aes(x = fraction_protected, y = V/sum(feature_wts))) +
