@@ -82,15 +82,6 @@ fully_highly_protected_MPAs <- all_MPAs %>%
 # writeRaster(fully_highly_protected_MPAs_raster_moll, 
 #             file.path(DIR_GCS,"masks/data/processed/fully_highly_protected_implemented_MPAs.tif"),
 #             overwrite = T)
-
-t <- fully_highly_protected_MPAs %>%
-  st_geometry(NULL)
-
-
-t <- fully_highly_protected_MPAs %>% 
-  filter(country == "MEX")
-
-
 ```
 
 ## designated & highly protected

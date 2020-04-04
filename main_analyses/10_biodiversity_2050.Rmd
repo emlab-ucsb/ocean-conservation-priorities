@@ -1,0 +1,666 @@
+---
+title: "Biodiversity with Climate Change in Juanation"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+
+DIR_GCS <- "~/gcs/git-annex/Carta-Marina"
+
+DIR_GCS_data <- "~/gcs/spatial-datasets"
+
+ocean_low_res_moll <- raster("~/gcs/spatial-datasets/ocean/ocean-low-res-moll.tif")
+
+ocean_matrix <- ocean_low_res_moll %>% 
+  raster::as.data.frame(xy = T) %>% 
+  filter(ocean.low.res.moll == 1) %>% 
+  mutate(cell_id = as.character(group_indices(., x, y))) %>% 
+  select(-ocean.low.res.moll) %>% 
+  as_tibble()
+
+land_shp <- sf::read_sf("~/gcs/spatial-datasets/land/land_50.shp")
+
+land_shp_moll <- land_shp %>% 
+  st_transform(crs = projection(ocean_low_res_moll))
+
+z_pal <- list(breaks = c(0, 0.2, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
+              labels = c("0-20", "20-50", "50-70", "70-80", "80-85", "85-90", "90-95", "95-100"),
+              colors = c("#4575b4", "#74add1", "#abd9e9", "#e0f3f8" ,"#fee090" ,"#fdae61" ,"#f46d43", "#d73027"))
+
+variant_name <- "10_biodiversity_2050"
+
+output_dir <- file.path(variant_name, "results")
+
+figs_output_dir <- file.path(variant_name, "figures")
+
+dir.create(variant_name)
+
+dir.create(figs_output_dir)
+
+dir.create(output_dir)
+```
+
+# Approach 1: Design for the 2050
+
+This approach plans for the future using the most relevant dataset. Thus, we use aquamaps 2050 distribution + seamounts but exclude provinces and threats as we don't know how those will change in the future. 
+
+## Load data 
+
+### species 2050
+
+```{r, eval = F}
+spp_files <- tibble(filepath = list.files(c("../Zonation/data/aquamaps_spp_distributions_2050/"), 
+                                            full.names = T),
+                   valid_sci_name = str_replace_all(str_remove(basename(filepath), "\\.tif"), "_", " "))
+
+bio_features_df <- stack(spp_files$filepath) %>%
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>%
+  select(x, y, cell_id, everything()) %>%
+  as_tibble()
+
+data.table::fwrite(bio_features_df, "data/spp_2050_df.csv")
+```
+
+```{r}
+spp_2050_df <- data.table::fread("data/spp_2050_df.csv") %>% 
+  as_tibble()
+
+spp_2050_files <- tibble(filepath = list.files(c("../Zonation/data/aquamaps_spp_distributions_2050"), 
+                                               full.names = T),
+                         valid_sci_name = str_replace_all(str_remove(basename(filepath), ".tif"), "_", " "))
+
+spp_info <- data.table::fread("data/spp_weights.csv") %>% 
+  as_tibble() %>% 
+  rename(w = spp_weight) %>% 
+  mutate(new_file = str_replace(basename(filepath), "\\.tif", "_2050.tif")) %>% 
+  filter(new_file %in% basename(spp_2050_files$filepath)) %>% 
+  select(-new_file)
+
+smts_df <- data.table::fread("data/smts_df.csv") %>% 
+  as_tibble()
+
+smts_info <- tibble(filepath = list.files("../Zonation/data/seamounts/all", full.names = T)) %>% 
+  mutate(w = sum(spp_info$w)/n())
+
+sum(spp_info$w) ==  sum(smts_info$w)
+
+features_df <- spp_2050_df %>% 
+  left_join(smts_df) 
+
+n_features <- nrow(spp_info)  + nrow(smts_info) 
+
+feature_names <- colnames(features_df)[c(-1,-2,-3)]
+```
+
+### Normalize and trim
+
+```{r}
+features_matrix <- features_df %>% 
+  select(-x,-y,-cell_id) %>% 
+  as.matrix()
+
+stopifnot(
+  sum(map_lgl(features_df, is.numeric)) == ncol(features_df) 
+  ) # ALL numeric?
+
+Norm_features_matrix <- sweep(features_matrix, 2, colSums(features_matrix, na.rm = T), FUN = "/")
+
+stopifnot(
+  sum(colSums(Norm_features_matrix, na.rm = T)) == ncol(features_matrix)
+  )  # Normalized OK?
+
+rownames(Norm_features_matrix) <- features_df$cell_id
+
+Norm_features_matrix <- Norm_features_matrix[rowSums(is.na(Norm_features_matrix)) != ncol(Norm_features_matrix), , drop = F]
+
+stopifnot(
+  identical(colnames(Norm_features_matrix), 
+          features_df %>% 
+            select(-x,-y,-cell_id) %>% 
+            colnames())
+  )  # Is the order of the features mantained?
+
+Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
+```
+
+### Feature weights 
+
+```{r}
+feature_wts <- c(spp_info$w, smts_info$w)
+  
+names(feature_wts) <- feature_names
+```
+
+### Current MPAs
+
+```{r}
+MPAs <- raster("../Zonation/data/masks/fully_highly_protected_reviewed_MPAs.tif")
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+  
+MPA_vect <- rownames(Norm_features_matrix) %>% 
+  enframe() %>% 
+  select(cell_id = value) %>% 
+  left_join(MPAs_df) %>% 
+  mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
+```
+
+## Initial conditions
+
+```{r}
+z <- 0.25
+
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix))
+
+colnames(protected_cells) <- rownames(Norm_features_matrix)
+
+unprotected_matrix <- Norm_features_matrix[!protected_cells, ,drop = F]
+
+baseline_state <-  protected_cells%*%Norm_features_matrix
+
+protected_matrix <- Norm_features_matrix[protected_cells, ,drop =F]
+
+max_slopes <- z*matrixStats::colMaxs(Norm_features_matrix, na.rm = T)^(z - 1)
+
+max(max_slopes)
+```
+
+## Run Algorithm
+
+```{r}
+ranking <- list()
+
+current_pick <- 0
+
+current_state <- baseline_state
+
+start_time <- Sys.time()
+
+while(nrow(unprotected_matrix) > 0){
+  
+  current_pick <- sum(current_pick, 1)
+  
+  slopes <- feature_wts*pmin(max_slopes, z*current_state^(z - 1))
+  
+  delta <- unprotected_matrix%*%as.matrix(slopes)
+  
+  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  
+  best_cells <- delta[best_cell_indeces, ] %>% 
+    enframe() %>% 
+    set_names(c('cell_id', "delta")) %>% 
+    mutate(pick_order = current_pick)
+  
+  ranking <- bind_rows(ranking, best_cells)
+  
+  current_state <- unprotected_matrix[best_cell_indeces, , drop = F] %>% 
+    colSums() +
+    current_state
+  
+  unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ,drop = F]
+  
+}
+
+end_time <- Sys.time()
+
+end_time - start_time
+
+write_rds(ranking, 
+          file.path(output_dir, "ranking_results_approach_1.rds"))
+```
+
+## Results
+
+### Benefit curve
+
+```{r}
+ranking <- read_rds(file.path(output_dir, "ranking_results_approach_1.rds"))
+
+representation_curves <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking) %>% 
+  mutate(is_mpa = is.na(delta)) %>% 
+  full_join(ocean_matrix) %>% 
+  left_join(Norm_features_matrix %>% 
+              as_tibble(rownames = NA) %>% 
+              rownames_to_column("cell_id")) %>% 
+  replace(is.na(.), 0) %>% 
+  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
+  mutate_all(.funs = cumsum) 
+
+benefit_curve <- representation_curves %>% 
+  mutate_all(.funs = ~(.)^0.25) %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected))
+
+benefit_curve %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(x = fraction_protected, y = V/max(V))) +
+  geom_vline(xintercept = c(0.1, 0.2, 0.3),
+             linetype = c("dashed","dotted","dotdash"))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Biodiversity Benefit",
+       caption = "Biodiversity + Climate Change, approach 1, Juanation")+
+  theme_classic()+
+  scale_x_continuous(limits = c(0,1), expand = c(0,0))+
+  scale_y_continuous(limits = c(0,1), expand = c(0,0))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = 0, 
+                ymax = 1),
+                fill = "#69B578", alpha = 0.01)+
+  ggsave(file.path(figs_output_dir, "benefit_curve_approach_1.png"),
+         width = 7, height = 4)
+```
+
+### Maps
+
+```{r}
+ranking_raster <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking) %>% 
+  mutate(is_mpa = is.na(delta)) %>% 
+  left_join(ocean_matrix) %>% 
+  tibble::rowid_to_column("ID") %>% 
+  mutate(rank = 1- scales::rescale(ID)) %>% 
+  select(x, y, rank) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll) %>% 
+  mask(ocean_low_res_moll) 
+
+writeRaster(ranking_raster, 
+            file.path(output_dir, "ranking_raster.tif"), 
+            overwrite = T)
+```
+
+```{r}
+ranking_raster <- raster( file.path(output_dir, "ranking_raster.tif"))
+
+ranking_map <- tmap::tm_shape(ranking_raster)+
+  tmap::tm_raster(title = "",
+                  palette  = z_pal$colors,
+                  breaks = z_pal$breaks,
+                  labels = z_pal$labels,
+                  legend.is.portrait = T, 
+                  legend.reverse = T)+
+  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_fill(col = "black", border.col = "transparent")+
+  tmap::tm_credits("Biodiversity + Climate change, approach 1") +
+  tmap::tm_shape(MPAs)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_layout(title = "Biodiversity Conservation Priorities",
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.04), 
+                  frame = F,
+                  legend.position = c(.99, "center")) 
+
+tmap::tmap_save(ranking_map, 
+                filename = file.path(figs_output_dir, "priority_map_approach_1.png"),
+                dpi = 300,  height = 4, width = 8 )
+```
+
+#### diff map
+
+```{r}
+raster_today <- raster("05_spp_wts_smts_provs_MPAs/results/ranking_raster_with_impacts.tif")
+
+comparison_raster <- overlay(ranking_raster, raster_today, fun = function(x, y){if_else(x >= 0.95 & y >= 0.95, 1, 
+                                                                            if_else(x <= 0.5 & y <= 0.5, -1, 
+                                                                                    if_else(abs(x-y) <= 0.01, 0, 
+                                                                                            if_else(x > y, 0.5, -0.5))))})
+diff_map <- comparison_raster %>%
+  tmap::tm_shape()+
+  tmap::tm_raster(title = "",
+                  palette = "seq",
+                  style = "cat",
+                  labels = rev(c("irreplaceable (top 10%)", "increasing", "comparable", "decreasing", "least (bottom 50%)")),
+                  legend.is.portrait = T, 
+                  legend.reverse = T)+
+  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_fill(col = "gray", border.col = "transparent")+
+  tmap::tm_shape(MPAs)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_layout(title = "Global Ocean Conservation Priorities",
+                  aes.palette = list(seq = "-RdBu"),
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.04), 
+                  frame = F,
+                  legend.position = c(.88, .1))
+
+tmap::tmap_save(diff_map, 
+               filename = file.path(figs_output_dir, "map_2050_vs_today_approach_1.png"),
+                dpi = 300,  height = 4, width = 8 )
+
+```
+
+# Approach 2: Isolate the effect of Climate change
+
+Here we keep all layer and impacts and only swap the species distributions. 
+
+## Load data 
+
+```{r}
+provs_df <- data.table::fread("data/provs_df.csv") %>% 
+  as_tibble()
+
+provs_info <- tibble(filepath = list.files(c("../Zonation/data/biogeography/Spalding",
+                                             "../Zonation/data/biogeography/GOODS"), 
+                                           full.names = T)) %>% 
+  mutate(w = sum(spp_info$w)/n())
+
+sum(spp_info$w) ==  sum(provs_info$w)
+```
+
+```{r}
+features_df <- spp_2050_df %>% 
+  left_join(smts_df) %>% 
+  left_join(provs_df)
+
+n_features <- nrow(spp_info)  + nrow(smts_info) + nrow(provs_info) 
+
+feature_names <- colnames(features_df)[c(-1,-2,-3)]
+```
+
+### Normalize and trim
+
+```{r}
+features_matrix <- features_df %>% 
+  select(-x,-y,-cell_id) %>% 
+  as.matrix()
+
+stopifnot(
+  sum(map_lgl(features_df, is.numeric)) == ncol(features_df) 
+  ) # ALL numeric?
+
+Norm_features_matrix <- sweep(features_matrix, 2, colSums(features_matrix, na.rm = T), FUN = "/")
+
+stopifnot(
+  sum(colSums(Norm_features_matrix, na.rm = T)) == ncol(features_matrix)
+  )  # Normalized OK?
+
+rownames(Norm_features_matrix) <- features_df$cell_id
+
+Norm_features_matrix <- Norm_features_matrix[rowSums(is.na(Norm_features_matrix)) != ncol(Norm_features_matrix), , drop = F]
+
+stopifnot(
+  identical(colnames(Norm_features_matrix), 
+          features_df %>% 
+            select(-x,-y,-cell_id) %>% 
+            colnames())
+  )  # Is the order of the features mantained?
+
+Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
+```
+
+### Feature weights 
+
+```{r}
+feature_wts <- c(spp_info$w, smts_info$w, provs_info$w)
+  
+names(feature_wts) <- feature_names
+```
+
+### Current MPAs
+
+```{r}
+MPAs <- raster("../Zonation/data/masks/fully_highly_protected_reviewed_MPAs.tif")
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+  
+MPA_vect <- rownames(Norm_features_matrix) %>% 
+  enframe() %>% 
+  select(cell_id = value) %>% 
+  left_join(MPAs_df) %>% 
+  mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
+```
+
+### Apply Impacts 
+
+```{r}
+bio_abatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Abatable_impacts_5yr_avg_log.tif") %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("x", "y", "Ia")) %>% 
+  inner_join(ocean_matrix) %>% 
+  as_tibble() %>% 
+  replace_na(list(Ia = 0))
+
+bio_unabatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Unbatable_impacts_5yr_avg_log.tif") %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("x", "y", "Iu")) %>% 
+  inner_join(ocean_matrix) %>% 
+  as_tibble()%>% 
+  replace_na(list(Iu = 0))
+
+Norm_features_matrix_BAU <- Norm_features_matrix %>% 
+  sweep(1, (1 - bio_abatable_impacts_df$Ia), FUN = "*") %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*")
+
+remains_BAU <- colSums(Norm_features_matrix_BAU, na.rm = T)
+
+Norm_features_matrix_MPAs <- Norm_features_matrix %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*")
+
+remains_MPA <- colSums(Norm_features_matrix_MPAs, na.rm = T)
+
+Norm_features_matrix_diff <- Norm_features_matrix %>% 
+  sweep(1, (bio_abatable_impacts_df$Ia - bio_abatable_impacts_df$Ia*bio_unabatable_impacts_df$Iu), FUN = "*")
+```
+
+## Initial conditions
+
+```{r}
+z <- 0.25
+
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix_diff))
+
+colnames(protected_cells) <- rownames(Norm_features_matrix_diff)
+
+unprotected_matrix <- Norm_features_matrix_diff[!protected_cells, ,drop = F]
+
+baseline_state <- remains_BAU + protected_cells%*%Norm_features_matrix_diff
+
+protected_matrix <- Norm_features_matrix_diff[protected_cells, ,drop =F]
+
+max_slopes <- z*baseline_state^(z - 1)
+```
+
+## Run algorithm 
+
+```{r}
+ranking <- list()
+
+current_pick <- 0
+
+current_state <- baseline_state
+
+start_time <- Sys.time()
+
+while(nrow(unprotected_matrix) > 0){
+  
+  current_pick <- sum(current_pick, 1)
+  
+  slopes <- feature_wts*pmin(max_slopes, z*current_state^(z - 1))
+  
+  delta <- unprotected_matrix%*%t(as.matrix(slopes))
+  
+  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  
+  best_cells <- delta[best_cell_indeces, ] %>% 
+    enframe() %>% 
+    set_names(c('cell_id', "delta")) %>% 
+    mutate(pick_order = current_pick)
+  
+  ranking <- bind_rows(ranking, best_cells)
+  
+  current_state <- unprotected_matrix[best_cell_indeces, , drop = F] %>% 
+    colSums() +
+    current_state
+  
+  unprotected_matrix <- unprotected_matrix[-best_cell_indeces, , drop = F]
+  
+}
+
+end_time <- Sys.time()
+
+end_time - start_time
+
+write_rds(ranking, 
+          file.path(output_dir, "ranking_results_approach_2.rds"))
+```
+
+## Results
+
+### Benefit curve
+
+```{r}
+ranking_approach_2 <- read_rds(file.path(output_dir, "ranking_results_approach_2.rds"))
+
+benefit_curve_approach_2 <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking_approach_2) %>% 
+  mutate(is_mpa = is.na(delta))  %>% 
+  full_join(ocean_matrix) %>% 
+  left_join(Norm_features_matrix_diff %>% 
+              as_tibble(rownames = NA) %>% 
+              rownames_to_column("cell_id")) %>% 
+  replace(is.na(.), 0) %>% 
+  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
+  mutate_all(.funs = cumsum) %>% 
+  sweep(MARGIN = 2, remains_BAU, `+`) %>%
+  mutate_all(.funs = ~(.)^0.25) %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
+  rowSums() %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected)) 
+
+benefit_curve_approach_2 %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(x = fraction_protected, y = V/sum(feature_wts))) +
+  geom_vline(xintercept = c(0.1, 0.2, 0.3),
+             linetype = c("dashed","dotted","dotdash"))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Biodiversity Benefit",
+       caption = "Biodiversity + Climate Change, approach 2, Juanation")+
+  theme_classic()+
+  scale_x_continuous(limits = c(0,1), expand = c(0,0))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = min(benefit_curve_approach_2$V)/sum(feature_wts), 
+                ymax = max(benefit_curve_approach_2$V)/sum(feature_wts)),
+                fill = "#69B578", alpha = 0.01)+
+  ggsave(file.path(figs_output_dir, "benefit_curve_approach_2.png"),
+         width = 7, height = 4)
+```
+
+### Maps
+
+```{r}
+ranking_raster_approach_2 <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking_approach_2) %>% 
+  mutate(is_mpa = is.na(delta)) %>% 
+  left_join(ocean_matrix) %>% 
+  tibble::rowid_to_column("ID") %>% 
+  mutate(rank = 1- scales::rescale(ID)) %>% 
+  select(x, y, rank) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll) %>% 
+  mask(ocean_low_res_moll) 
+
+writeRaster(ranking_raster_approach_2, 
+            file.path(output_dir, "ranking_raster_approach_2.tif"), 
+            overwrite = T)
+```
+
+```{r}
+ranking_map_approach_2 <- tmap::tm_shape(ranking_raster_approach_2)+
+  tmap::tm_raster(title = "",
+                  palette  = z_pal$colors,
+                  breaks = z_pal$breaks,
+                  labels = z_pal$labels,
+                  legend.is.portrait = T, 
+                  legend.reverse = T)+
+  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_fill(col = "black", border.col = "transparent")+
+  tmap::tm_credits("Biodiversity + Climate change, approach 2") +
+  tmap::tm_shape(MPAs)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_layout(title = "Biodiversity Conservation Priorities",
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.04), 
+                  frame = F,
+                  legend.position = c(.99, "center")) 
+
+tmap::tmap_save(ranking_map_approach_2, 
+                filename = file.path(figs_output_dir, "priority_map_approach_2.png"),
+                dpi = 300,  height = 4, width = 8 )
+```
+
+```{r}
+raster_today <- raster("05_spp_wts_smts_provs_MPAs/results/ranking_raster_with_impacts.tif")
+
+comparison_raster_approach_2 <- overlay(ranking_raster_approach_2, raster_today, fun = function(x, y){if_else(x >= 0.95 & y >= 0.95, 1, 
+                                                                            if_else(x <= 0.5 & y <= 0.5, -1, 
+                                                                                    if_else(abs(x-y) <= 0.01, 0, 
+                                                                                            if_else(x > y, 0.5, -0.5))))})
+
+diff_map_approach_2 <- comparison_raster_approach_2 %>%
+  tmap::tm_shape()+
+  tmap::tm_raster(title = "",
+                  palette = "seq",
+                  style = "cat",
+                  labels = rev(c("irreplaceable (top 10%)", "increasing", "comparable", "decreasing", "least (bottom 50%)")),
+                  legend.is.portrait = T, 
+                  legend.reverse = T)+
+  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_fill(col = "gray", border.col = "transparent")+
+  tmap::tm_shape(MPAs)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_layout(title = "Global Ocean Conservation Priorities",
+                  aes.palette = list(seq = "-RdBu"),
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.04), 
+                  frame = F,
+                  legend.position = c(.88, .1))
+
+tmap::tmap_save(diff_map_approach_2, 
+               filename = file.path(figs_output_dir, "map_2050_vs_today_approach_2.png"),
+                dpi = 300,  height = 4, width = 8 )
+
+```

@@ -1,0 +1,278 @@
+---
+title: "Biodiversity at random in Juanation"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+
+DIR_GCS <- "~/gcs/git-annex/Carta-Marina"
+
+DIR_GCS_data <- "~/gcs/spatial-datasets"
+
+ocean_low_res_moll <- raster("~/gcs/spatial-datasets/ocean/ocean-low-res-moll.tif")
+
+ocean_matrix <- ocean_low_res_moll %>% 
+  raster::as.data.frame(xy = T) %>% 
+  filter(ocean.low.res.moll == 1) %>% 
+  mutate(cell_id = as.character(group_indices(., x, y))) %>% 
+  select(-ocean.low.res.moll) %>% 
+  as_tibble()
+
+land_shp <- sf::read_sf("~/gcs/spatial-datasets/land/land_50.shp")
+
+land_shp_moll <- land_shp %>% 
+  st_transform(crs = projection(ocean_low_res_moll))
+
+z_pal <- list(breaks = c(0, 0.2, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
+              labels = c("0-20", "20-50", "50-70", "70-80", "80-85", "85-90", "90-95", "95-100"),
+              colors = c("#4575b4", "#74add1", "#abd9e9", "#e0f3f8" ,"#fee090" ,"#fdae61" ,"#f46d43", "#d73027"))
+
+variant_name <- "09_biodiversity_random"
+
+output_dir <- file.path(variant_name, "results")
+
+figs_output_dir <- file.path(variant_name, "figures")
+
+dir.create(variant_name)
+
+dir.create(figs_output_dir)
+
+dir.create(output_dir)
+```
+
+# Load data 
+
+```{r}
+spp_df <- data.table::fread("data/spp_df.csv") %>% 
+  as_tibble()
+
+spp_info <- data.table::fread("data/spp_weights.csv") %>% 
+  as_tibble() %>% 
+  rename(w = spp_weight)
+
+smts_df <- data.table::fread("data/smts_df.csv") %>% 
+  as_tibble()
+
+smts_info <- tibble(filepath = list.files("../Zonation/data/seamounts/all", full.names = T)) %>% 
+  mutate(w = sum(spp_info$w)/n())
+
+sum(spp_info$w) ==  sum(smts_info$w)
+
+provs_df <- data.table::fread("data/provs_df.csv") %>% 
+  as_tibble()
+
+provs_info <- tibble(filepath = list.files(c("../Zonation/data/biogeography/Spalding",
+                                             "../Zonation/data/biogeography/GOODS"), 
+                                           full.names = T)) %>% 
+  mutate(w = sum(spp_info$w)/n())
+
+sum(spp_info$w) ==  sum(provs_info$w)
+```
+
+```{r}
+features_df <- spp_df %>% 
+  left_join(smts_df) %>% 
+  left_join(provs_df)
+
+n_features <- nrow(spp_info)  + nrow(smts_info) + nrow(provs_info) 
+
+feature_names <- colnames(features_df)[c(-1,-2,-3)]
+```
+
+## Normalize and trim
+
+```{r}
+features_matrix <- features_df %>% 
+  select(-x,-y,-cell_id) %>% 
+  as.matrix()
+
+stopifnot(
+  sum(map_lgl(features_df, is.numeric)) == ncol(features_df) 
+  ) # ALL numeric?
+
+Norm_features_matrix <- sweep(features_matrix, 2, colSums(features_matrix, na.rm = T), FUN = "/")
+
+stopifnot(
+  sum(colSums(Norm_features_matrix, na.rm = T)) == ncol(features_matrix)
+  )  # Normalized OK?
+
+Norm_features_matrix <- Norm_features_matrix[rowSums(is.na(Norm_features_matrix)) != ncol(Norm_features_matrix), , drop = F]
+
+rownames(Norm_features_matrix) <- features_df$cell_id
+
+stopifnot(
+  identical(colnames(Norm_features_matrix), 
+          features_df %>% 
+            select(-x,-y,-cell_id) %>% 
+            colnames())
+  )  # Is the order of the features mantained?
+
+Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
+```
+
+## Feature weights 
+
+```{r}
+feature_wts <- c(spp_info$w, smts_info$w, provs_info$w)
+  
+names(feature_wts) <- feature_names
+```
+
+
+# Current MPAs
+
+```{r}
+MPAs <- raster("../Zonation/data/masks/fully_highly_protected_reviewed_MPAs.tif")
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+  
+MPA_vect <- rownames(Norm_features_matrix) %>% 
+  enframe() %>% 
+  select(cell_id = value) %>% 
+  left_join(MPAs_df) %>% 
+  mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
+```
+
+
+
+# Apply Impacts 
+
+```{r}
+bio_abatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Abatable_impacts_5yr_avg_log.tif") %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("x", "y", "Ia")) %>% 
+  inner_join(ocean_matrix) %>% 
+  as_tibble() %>% 
+  replace_na(list(Ia = 0))
+
+bio_unabatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Unbatable_impacts_5yr_avg_log.tif") %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("x", "y", "Iu")) %>% 
+  inner_join(ocean_matrix) %>% 
+  as_tibble()%>% 
+  replace_na(list(Iu = 0))
+
+Norm_features_matrix_BAU <- Norm_features_matrix %>% 
+  sweep(1, (1 - bio_abatable_impacts_df$Ia), FUN = "*") %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*")
+
+remains_BAU <- colSums(Norm_features_matrix_BAU, na.rm = T)
+
+Norm_features_matrix_MPAs <- Norm_features_matrix %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*")
+
+remains_MPA <- colSums(Norm_features_matrix_MPAs, na.rm = T)
+
+Norm_features_matrix_diff <- Norm_features_matrix %>% 
+  sweep(1, (bio_abatable_impacts_df$Ia - bio_abatable_impacts_df$Ia*bio_unabatable_impacts_df$Iu), FUN = "*")
+```
+
+# Initial conditions
+
+```{r}
+z <- 0.25
+
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix_diff))
+
+colnames(protected_cells) <- rownames(Norm_features_matrix_diff)
+
+unprotected_matrix <- Norm_features_matrix_diff[!protected_cells, ,drop = F]
+
+baseline_state <- remains_BAU + protected_cells%*%Norm_features_matrix_diff
+
+protected_matrix <- Norm_features_matrix_diff[protected_cells, ,drop =F]
+
+max_slopes <- z*baseline_state^(z - 1)
+```
+
+### Random selection
+
+```{r}
+for(i in seq(1:100)){ 
+  
+  random_rank <- tibble(cell_id = as.character(sample(rownames(unprotected_matrix))))
+  
+  benefit_curve <- MPAs_df %>% 
+    filter(!is.na(mpa)) %>% 
+    select(cell_id) %>% 
+    bind_rows(random_rank) %>% 
+    full_join(ocean_matrix) %>% 
+    left_join(Norm_features_matrix_diff %>% 
+                as_tibble(rownames = NA) %>% 
+                rownames_to_column("cell_id")) %>% 
+    replace(is.na(.), 0) %>% 
+    select(-x, -y, -cell_id) %>% 
+    mutate_all(.funs = cumsum) %>% 
+    sweep(MARGIN = 2, remains_BAU, `+`) %>%
+    mutate_all(.funs = ~(.)^0.25) %>% 
+    as.matrix() %*% as.matrix(feature_wts) %>% 
+    as_tibble() %>% 
+    set_names("V") %>% 
+    mutate(fraction_protected = 1/n(),
+           fraction_protected = cumsum(fraction_protected),
+           run = i)
+  
+  write_csv(benefit_curve, 
+            file.path(output_dir, paste0("random_benefit_curve_", i ,".csv"))) 
+}
+```
+
+# Results
+
+## Benefit Curve
+
+```{r}
+random_results <- list.files(output_dir, full.names = T) %>% 
+  map(read_csv) %>% 
+  reduce(bind_rows)
+
+random_results %>%
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(x = fraction_protected, y = V/sum(feature_wts), group = run))+
+  geom_vline(xintercept = c(0.1, 0.2, 0.3),
+             linetype = c("dashed","dotted","dotdash"))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Biodiversity Benefit",
+       caption = "Biodiversity random, Juanation")+
+  theme_classic()+
+  scale_x_continuous(limits = c(0,1), expand = c(0,0))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = min(random_results$V)/sum(feature_wts), 
+                ymax = max(random_results$V)/sum(feature_wts)),
+                fill = "#69B578", alpha = 0.01)+
+  ggsave(file.path(figs_output_dir, "random_benefit_curve.png"),
+         width = 7, height = 4)
+```
+
+
+```{r}
+random_results %>% 
+  group_by(run) %>% 
+  mutate(V_rescaled = scales::rescale(V)) %>% 
+  slice(which.min(abs(V_rescaled - 0.9))) %>% 
+  ungroup() %>% 
+  summarise(mean(fraction_protected))
+
+85/20
+```
+

@@ -1,5 +1,5 @@
 ---
-title: "Only species in the analysis"
+title: "Species + weights + seamounts + provinces in Juanation"
 author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
 output: 
   html_document:
@@ -19,7 +19,7 @@ library(tidyverse)
 
 source(here::here("common.R"))
 
-variant_name <- "01_spp"
+variant_name <- "04_spp_wts_smts_provs"
 
 variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name)
 
@@ -28,30 +28,59 @@ dir.create(variant_dir)
 
 # Load data 
 
+
 ```{r}
-spp_files <- tibble(filepath = list.files(c(file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "birdlife"),
-                                            file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "aquamaps")),
-                                          full.names = T),
-                    valid_sci_name = str_replace_all(str_remove(basename(filepath), "\\.tif"), "_", " ")) %>% 
-  arrange(valid_sci_name)
+# species
+
+spp_df <- data.table::fread(file.path(emLab_project_dir, 
+                                           "data", "02_processed", "features_df", "all_spp_distributions_df.csv")) %>% 
+  as_tibble()
+
+spp_info <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "species_list", "spp_weights.csv")) %>% 
+  as_tibble() %>% 
+  rename(w = spp_weight)
+
+# semounts
+
+smts_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "smts_df.csv")) %>% 
+  as_tibble() 
+
+smts_info <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed","seamounts"), full.names = T)) %>% 
+  mutate(w = sum(spp_info$w)/n())
+
+sum(spp_info$w) ==  sum(smts_info$w)
 ```
 
 ```{r, eval = F}
-bio_features_df <- stack(spp_files$filepath) %>%
+provs_info <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "biogeography"), full.names = T, pattern = "\\.tif")) %>% 
+  mutate(w = sum(spp_info$w)/n())
+
+provs_features_df <- stack(provs_info$filepath) %>%
   raster::as.data.frame(xy = T) %>%
   inner_join(ocean_matrix) %>%
   select(x, y, cell_id, everything()) %>%
   as_tibble()
 
-data.table::fwrite(bio_features_df, 
-                   file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "all_spp_distributions_df.csv"))
+data.table::fwrite(provs_features_df, 
+                   file.path(emLab_project_dir, "data", "02_processed", "features_df", "provinces_df.csv"))
 ```
 
 ```{r}
-features_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "all_spp_distributions_df.csv")) %>% 
-  as_tibble()
+provs_info <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "biogeography"), full.names = T, pattern = "\\.tif")) %>% 
+  mutate(w = sum(spp_info$w)/n())
 
-n_features <- nrow(spp_files) 
+provs_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "provinces_df.csv"))
+
+features_df <- spp_df %>% 
+  left_join(smts_df) %>% 
+  left_join(provs_df)
+
+n_features <- nrow(spp_info)  + nrow(smts_info) + nrow(provs_info) 
+
+feature_names <- colnames(features_df)[c(-1,-2,-3)]
+
+data.table::fwrite(features_df, 
+                   file.path(emLab_project_dir, "data", "02_processed", "features_df", "all_bio_features_df.csv"))
 ```
 
 ## Normalize and trim
@@ -83,6 +112,14 @@ stopifnot(
   )  # Is the order of the features mantained?
 
 Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
+```
+
+## Feature weights 
+
+```{r}
+feature_wts <- c(spp_info$w, smts_info$w, provs_info$w)
+  
+names(feature_wts) <- feature_names
 ```
 
 # Ranking
@@ -120,7 +157,7 @@ while(nrow(unprotected_matrix) > 0){
   
   current_pick <- sum(current_pick, 1)
   
-  slopes <- pmin(max_slopes, z*current_state^(z - 1))
+  slopes <- feature_wts*pmin(max_slopes, z*current_state^(z - 1))
   
   delta <- unprotected_matrix%*%as.matrix(slopes)
   
@@ -149,7 +186,8 @@ write_rds(ranking,
           file.path(variant_dir, "ranking_results_se.rds"))
 ```
 
-## Not scorched Earth
+
+## With impacts
 
 ### Apply Impacts 
 
@@ -181,17 +219,6 @@ remains_MPA <- Norm_features_matrix %>%
 
 Norm_features_matrix_diff <- Norm_features_matrix %>% 
   sweep(1, (bio_abatable_impacts_df$Ia - bio_abatable_impacts_df$Ia*bio_unabatable_impacts_df$Iu), FUN = "*")
-```
-
-```{r}
-hist(remains_BAU)
-hist(remains_MPA)
-# How much would remain under BAU?
-sum(remains_BAU^0.25)/n_features
-# How much would remain with full protection?
-sum(remains_MPA^0.25)/n_features
-# What is the % increase from
-(sum(remains_MPA^0.25) - sum(remains_BAU^0.25))/sum(remains_BAU^0.25)
 ```
 
 ### Initial conditions
@@ -227,7 +254,7 @@ while(nrow(unprotected_matrix) > 0){
   
   current_pick <- sum(current_pick, 1)
   
-  slopes <- pmin(max_slopes, z*current_state^(z - 1))
+  slopes <- feature_wts*pmin(max_slopes, z*current_state^(z - 1))
   
   delta <- unprotected_matrix%*%t(as.matrix(slopes))
   
@@ -266,17 +293,17 @@ write_rds(ranking,
 ranking_se <- read_rds(file.path(variant_dir, "ranking_results_se.rds"))
 
 rep_curves_se <- ranking_se %>% 
-  full_join(ocean_matrix) %>% 
-  left_join(Norm_features_matrix %>% 
-              as_tibble(rownames = NA) %>% 
-              rownames_to_column("cell_id")) %>% 
-  replace(is.na(.), 0) %>% 
-  select(-x, -y, -cell_id, -delta, -pick_order) %>% 
-  mutate_all(.funs = cumsum)
+    full_join(ocean_matrix) %>% 
+    left_join(Norm_features_matrix %>% 
+                as_tibble(rownames = NA) %>% 
+                rownames_to_column("cell_id")) %>% 
+    replace(is.na(.), 0) %>% 
+    select(-x, -y, -cell_id, -delta, -pick_order) %>% 
+    mutate_all(.funs = cumsum)
 
 benefit_curve_se <- rep_curves_se %>% 
   mutate_all(.funs = ~(.)^0.25) %>% 
-  as.matrix() %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
   rowSums() %>% 
   enframe(name = NULL) %>% 
   set_names("V") %>% 
@@ -290,7 +317,7 @@ benefit_curve_se %>%
              linetype = c("dashed","dotted","dotdash"))+
   labs(x = "Fraction Ocean Protected",
        y = "Biodiversity Benefit",
-       caption = "spp, Scorched Earth")+
+       caption = "spp + wts + smts + provs, scorched Earth")+
   theme_classic()+
   ggsave(file.path(variant_dir, "benefit_curve_se.png"),
          width = 7, height = 5)
@@ -312,7 +339,7 @@ ggplot(avg_rep_curve_se)+
              linetype = c("dashed","dotted","dotdash"))+
   labs(x = "Fraction Ocean Protected",
        y = "Average feature representation",
-       caption = "spp, Scorched Earth")+
+       caption = "spp + wts + smts + provs, Scorched Earth")+
   theme_classic()+
   ggsave(file.path(variant_dir, "rep_curve_se.png"),
          width = 7, height = 5)
@@ -333,7 +360,7 @@ benefit_curve <- ranking %>%
   mutate_all(.funs = cumsum) %>% 
   sweep(MARGIN = 2, remains_BAU, `+`) %>%
   mutate_all(.funs = ~(.)^0.25) %>% 
-  as.matrix() %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
   rowSums() %>% 
   enframe(name = NULL) %>% 
   set_names("V") %>% 
@@ -342,12 +369,12 @@ benefit_curve <- ranking %>%
 
 benefit_curve %>% 
   ggplot()+
-  geom_line(aes(x = fraction_protected, y = V/n_features)) +
+  geom_line(aes(x = fraction_protected, y = V/sum(feature_wts)))+
   geom_vline(xintercept = c(0.1, 0.2, 0.3),
              linetype = c("dashed","dotted","dotdash"))+
   labs(x = "Fraction Ocean Protected",
        y = "Biodiversity Benefit",
-       caption = "spp, with impacts")+
+       caption = "spp + wts + smts + provs, with impacts")+
   theme_classic()+
   ggsave(file.path(variant_dir, "benefit_curve.png"),
          width = 7, height = 5)
@@ -366,7 +393,7 @@ rep_curves <- ranking %>%
 rep_curves %>% 
   as.matrix() %>% 
   rowSums() %>% 
-  enframe(name = NULL) %>% 
+  as_tibble() %>% 
   set_names("V") %>% 
   mutate(fraction_protected = 1/n(),
          fraction_protected = cumsum(fraction_protected)) %>% 
@@ -377,28 +404,9 @@ rep_curves %>%
              linetype = c("dashed","dotted","dotdash"))+
   labs(x = "Fraction Ocean Protected",
        y = "Average feature representation",
-       caption = "spp, with impacts")+
+       caption = "spp + wts + smts + provs, with impacts")+
   theme_classic()+
   ggsave(file.path(variant_dir, "rep_curve.png"),
-         width = 7, height = 5)
-```
-
-```{r}
-bind_rows(benefit_curve_se %>% 
-            mutate(V = scales::rescale(V),
-                   run = "Sorched Earth"),
-          benefit_curve %>% 
-            mutate(V =scales::rescale(V),
-                   run = "With impacts")) %>% 
-  ggplot()+
-  geom_line(aes(x = fraction_protected, y = V, col = run)) +
-  geom_vline(xintercept = c(0.1, 0.2, 0.3),
-             linetype = c("dashed","dotted","dotdash"))+
-  labs(x = "Fraction Ocean Protected",
-       y = "Biodiversity benefit rescaled",
-       caption = "spp")+
-  theme_classic()+
-  ggsave(file.path(variant_dir, "benefit_curves_comparison.png"),
          width = 7, height = 5)
 ```
 
@@ -444,7 +452,7 @@ ranking_map_se <- tmap::tm_shape(ranking_raster_se)+
                   legend.reverse = T)+
   tmap::tm_shape(land_50_moll)+
   tmap::tm_fill(col = "black", border.col = "transparent")+
-  tmap::tm_credits("spp, scorched Earth") +
+  tmap::tm_credits("spp + wts + smts + provs, scorched Earth") +
   tmap::tm_layout(title = "Biodiversity Conservation Priorities",
                   title.position = c("center", .95),
                   inner.margins = c(0.12, 0, 0.08, 0.04), 
@@ -467,7 +475,7 @@ ranking_map <- tmap::tm_shape(ranking_raster)+
                   legend.reverse = T)+
   tmap::tm_shape(land_50_moll)+
   tmap::tm_fill(col = "black", border.col = "transparent")+
-  tmap::tm_credits("spp, with impacts") +
+  tmap::tm_credits("spp + wts + smts + provs, with impacts") +
   tmap::tm_layout(title = "Biodiversity Conservation Priorities",
                   title.position = c("center", .95),
                   inner.margins = c(0.12, 0, 0.08, 0.04), 
@@ -476,26 +484,5 @@ ranking_map <- tmap::tm_shape(ranking_raster)+
 
 tmap::tmap_save(ranking_map, 
                 filename = file.path(variant_dir, "priority_map.png"),
-                dpi = 300,  height = 4, width = 8 )
-```
-
-```{r}
-impact_effects <- ranking_raster %>% 
-  overlay(ranking_raster_se, fun = function(x,y){x-y}) %>% 
-  tmap::tm_shape()+
-  tmap::tm_raster(title = "",
-                  palette  = rev(c('#009B9E','#42B7B9','#A7D3D4','#F1F1F1','#E4C1D9','#D691C1','#C75DAB')),
-                  style = "cont",
-                  legend.is.portrait = T, 
-                  legend.reverse = T)+
-  tmap::tm_credits("Effect of including impacts")+
-  tmap::tm_layout(title = "Ranking difference",
-                  title.position = c("center", .95),
-                  inner.margins = c(0.12, 0, 0.08, 0.04), 
-                  frame = F,
-                  legend.position = c(.99, "center"))
-
-tmap::tmap_save(impact_effects, 
-                filename = file.path(variant_dir, "diff_ranking_map_.png"),
                 dpi = 300,  height = 4, width = 8 )
 ```

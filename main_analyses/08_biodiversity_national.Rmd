@@ -1,0 +1,363 @@
+---
+title: "Biodiversity strong national priorities"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+library(patchwork)
+library(parallel)
+library(foreach)
+library(doParallel)
+
+source(here::here("common.R"))
+
+variant_name <- "08_biodiversity_national"
+
+variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name)
+
+dir.create(variant_dir)
+```
+
+# Load data 
+
+## Territories 
+
+```{r}
+territories_df <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories.tif")) %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>%
+  select(x, y, cell_id, everything()) %>%
+  as_tibble() %>% 
+  mutate(cell_id = as.integer(cell_id),
+         territories = as.integer(territories)) %>% 
+  rename(territory_id = territories)
+
+territories_LUT <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories_lookup.csv"))
+
+territories_df <- territories_df %>% 
+  left_join(territories_LUT,
+            by = c("territory_id" = "mrgid_ter1")) 
+
+# make high seas another territory id = 999
+
+territories_df <- territories_df %>% 
+  replace_na(list(territory_id = 999,
+                  iso_ter1 = "ABNJ",
+                  name = "high seas",
+                  mrgid_eez = 999,
+                  iso_sov1 = "ABNJ")) 
+```
+
+## Features
+
+```{r}
+features_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "all_bio_features_df.csv"))
+
+feature_names <- colnames(features_df)[c(-1,-2,-3)]
+
+n_features <- length(feature_names)
+
+features_matrix <- features_df %>% 
+  select(-x,-y,-cell_id) %>% 
+  as.matrix()
+
+rownames(features_matrix) <- features_df$cell_id
+```
+
+### Weights 
+
+```{r}
+spp_wts <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "species_list", "spp_weights.csv")) %>% 
+  as_tibble() %>% 
+  rename(w = spp_weight)
+
+smts_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed","seamounts"), full.names = T)) %>% 
+  mutate(w = sum(spp_wts$w)/n())
+
+provs_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "biogeography"), full.names = T, pattern = "\\.tif")) %>% 
+  mutate(w = sum(spp_wts$w)/n())
+
+feature_wts <- c(spp_wts$w, smts_wts$w, provs_wts$w)
+
+names(feature_wts) <- feature_names
+
+sum(spp_wts$w) == sum(smts_wts$w)
+
+sum(smts_wts$w) == sum(provs_wts$w)
+```
+
+## Current MPAs
+
+```{r}
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+  
+MPA_vect <- rownames(features_matrix) %>% 
+  enframe() %>% 
+  select(cell_id = value) %>% 
+  left_join(MPAs_df) %>% 
+  mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
+```
+
+## Impacts
+
+```{r}
+bio_abatable_impacts_df <- raster(file.path(emLab_project_dir, 
+                                            "data", "02_processed", "impacts", "chi", "abatable_impacts_5_yr_avg_log.tif")) %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("x", "y", "Ia")) %>% 
+  inner_join(ocean_matrix) %>% 
+  as_tibble() %>% 
+  replace_na(list(Ia = 0))
+
+bio_unabatable_impacts_df <- raster(file.path(emLab_project_dir, 
+                                              "data", "02_processed", "impacts", "chi", "unabatable_impacts_5_yr_avg_log.tif")) %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("x", "y", "Iu")) %>% 
+  inner_join(ocean_matrix) %>% 
+  as_tibble()%>% 
+  replace_na(list(Iu = 0))
+```
+
+# Run national ranking
+
+```{r}
+terri_ids <- unique(territories_df$territory_id)
+
+registerDoParallel(cores = 10) #register cores
+
+foreach(terri_id = terri_ids) %dopar% { 
+  
+  # Normalize and trim 
+  
+  terri_iso <- unique(territories_df$iso_ter1[territories_df$territory_id == terri_id])
+  
+  terri_cells <- territories_df$cell_id[territories_df$territory_id == terri_id]
+  
+  national_features_matrix <- features_matrix[terri_cells,  , drop = F]
+  
+  national_features_matrix_Norm <- sweep(national_features_matrix, 2, colSums(national_features_matrix, na.rm = T), FUN = "/")
+  
+  all.equal(colnames(national_features_matrix_Norm), colnames(features_matrix))
+  
+  national_features_matrix_Norm <- national_features_matrix_Norm[ ,
+                                                                 colSums(is.na(national_features_matrix_Norm)) != nrow(national_features_matrix_Norm), 
+                                                                 drop = F]
+
+  # Apply retention
+  
+  national_Ia <- tibble(cell_id = rownames(national_features_matrix_Norm)) %>% 
+    left_join(bio_abatable_impacts_df)
+  
+  national_Iu <- tibble(cell_id = rownames(national_features_matrix_Norm)) %>% 
+    left_join(bio_unabatable_impacts_df)
+  
+  national_features_matrix_Norm_BAU <- national_features_matrix_Norm %>% 
+    sweep(1, (1 - national_Ia$Ia), FUN = "*") %>% 
+    sweep(1, (1 - national_Iu$Iu), FUN = "*")
+  
+  remains_BAU <- colSums(national_features_matrix_Norm_BAU, na.rm = T)
+  
+  national_diff_matrix <- national_features_matrix_Norm %>% 
+    sweep(1, (national_Ia$Ia - national_Ia$Ia*national_Iu$Iu), FUN = "*")
+  
+  # Set initial conditions
+  
+  z <- 0.25
+  
+  national_diff_matrix[is.na(national_diff_matrix)] <- 0
+  
+  national_MPA_vect <- rownames(national_diff_matrix) %>% 
+    enframe() %>% 
+    select(cell_id = value) %>% 
+    left_join(MPAs_df) %>% 
+    mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
+  
+  protected_cells <- matrix(national_MPA_vect, nrow = 1, ncol = nrow(national_diff_matrix))
+  
+  unprotected_matrix <- national_diff_matrix[!protected_cells, ,drop = F]
+  
+  baseline_state <- remains_BAU + protected_cells%*%national_diff_matrix
+  
+  protected_matrix <- national_diff_matrix[protected_cells, , drop = F]
+  
+  max_slopes <- z*baseline_state^(z - 1)
+  
+  ranking <- list()
+  
+  current_pick <- 0
+  
+  current_state <- baseline_state 
+  
+  national_feature_wts <- feature_wts[names(feature_wts) %in% colnames(national_diff_matrix)]
+  
+  # Run Ranking
+  
+  while(nrow(unprotected_matrix) > 0){
+    
+    current_pick <- sum(current_pick, 1)
+    
+    slopes <- national_feature_wts*pmin(max_slopes, z*current_state^(z - 1))
+    
+    delta <- unprotected_matrix%*%t(as.matrix(slopes))
+    
+    best_cell_indeces <- doBy::which.maxn(delta, n = 10)
+    
+    best_cells <- delta[best_cell_indeces,] %>% 
+      enframe() %>% 
+      set_names(c('cell_id', "delta")) %>% 
+      mutate(pick_order = current_pick)
+    
+    ranking <- bind_rows(ranking, best_cells)
+    
+    current_state <- unprotected_matrix[best_cell_indeces, ,drop = F] %>% 
+      colSums() +
+      current_state
+    
+    unprotected_matrix <- unprotected_matrix[-best_cell_indeces, , drop = F]
+    
+  }
+  
+  ranking$terri_iso3 <- terri_iso
+  
+  data.table::fwrite(ranking, 
+                     file.path(variant_dir, paste0(terri_iso, "_results.csv")))
+  
+}
+```
+
+# Results
+
+## load national ranks
+
+```{r}
+national_results <- list.files(variant_dir, pattern = "results", full.names = T) %>% 
+  map_dfr(.f = ~.x %>% 
+        read_csv() %>% 
+        arrange(desc(delta)) %>% 
+        select(cell_id, terri_iso3, delta) %>%
+        tibble::rowid_to_column("pick_order")
+  ) %>% 
+  mutate(cell_id = as.character(cell_id)) %>% 
+  arrange(desc(delta))
+```
+
+## make global matrix
+
+```{r}
+Norm_features_matrix <- sweep(features_matrix, 2, colSums(features_matrix, na.rm = T), FUN = "/")
+
+stopifnot(
+  sum(colSums(Norm_features_matrix, na.rm = T)) == ncol(features_matrix)
+  )  # Normalized OK?
+
+Norm_features_matrix <- Norm_features_matrix[rowSums(is.na(Norm_features_matrix)) != ncol(Norm_features_matrix), , drop = F]
+
+rownames(Norm_features_matrix) <- features_df$cell_id
+
+stopifnot(
+  identical(colnames(Norm_features_matrix), 
+          features_df %>% 
+            select(-x,-y,-cell_id) %>% 
+            colnames())
+  )  # Is the order of the features mantained?
+
+Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
+
+Norm_features_matrix_BAU <- Norm_features_matrix %>% 
+  sweep(1, (1 - bio_abatable_impacts_df$Ia), FUN = "*") %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*")
+
+remains_BAU <- colSums(Norm_features_matrix_BAU, na.rm = T)
+
+Norm_features_matrix_MPAs <- Norm_features_matrix %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*")
+
+remains_MPA <- colSums(Norm_features_matrix_MPAs, na.rm = T)
+
+Norm_features_matrix_diff <- Norm_features_matrix %>% 
+  sweep(1, (bio_abatable_impacts_df$Ia - bio_abatable_impacts_df$Ia*bio_unabatable_impacts_df$Iu), FUN = "*")
+```
+
+## benefit functions
+
+```{r}
+representation_curves <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(national_results %>% 
+              arrange(desc(delta))) %>% 
+  mutate(is_mpa = is.na(delta)) %>% 
+  full_join(ocean_matrix) %>% 
+  left_join(Norm_features_matrix_diff %>% 
+              as_tibble(rownames = NA) %>% 
+              rownames_to_column("cell_id")) %>% 
+  replace(is.na(.), 0) %>% 
+  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa, -terri_iso3) %>% 
+  mutate_all(.funs = cumsum) 
+
+benefit_curve <- representation_curves %>% 
+  sweep(MARGIN = 2, remains_BAU, `+`) %>%
+  mutate_all(.funs = ~(.)^0.25) %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected))
+
+write_csv(benefit_curve, 
+          file.path(variant_dir, "benefit_curve.csv"))
+```
+
+```{r}
+benefit_curve <- read_csv(file.path(variant_dir, "benefit_curve.csv"))
+
+benefit_curve %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(x = fraction_protected, y = V/sum(feature_wts))) +
+  geom_vline(xintercept = c(0.1, 0.2, 0.3),
+             linetype = c("dashed","dotted","dotdash"))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Biodiversity Benefit",
+       caption = "Biodiversity national, with impacts")+
+  theme_classic()+
+  scale_x_continuous(limits = c(0,1), expand = c(0,0))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = min(benefit_curve$V)/sum(feature_wts), 
+                ymax = max(benefit_curve$V)/sum(feature_wts)),
+                fill = "#69B578", alpha = 0.01)
+  ggsave(file.path(variant_dir, "benefit_curve_national_priorities.png"),
+         width = 7, height = 4)
+```
+
+# What does it take to get 90% of the benefits?
+
+```{r}
+(f_to_90 <- benefit_curve %>% 
+  mutate(V_rescaled = scales::rescale(V)) %>% 
+  slice(which.min(abs(V_rescaled - 0.9))) %>% 
+  pull(fraction_protected))
+```
+

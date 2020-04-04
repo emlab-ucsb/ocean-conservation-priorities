@@ -223,7 +223,8 @@ foreach(stressor = stressors) %dopar% {
   names(impact_avg) <- paste(stressor, "avg", sep = "_")
   
   writeRaster(impact_avg,
-              file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi", paste0(stressor, "_5_yr_avg_lr.tif")))
+              file.path(emLab_project_dir, "data", "02_processed", "impacts", "chi", paste0(stressor, "_5_yr_avg_lr.tif")),
+              overwrite = T)
 
 }
 ```

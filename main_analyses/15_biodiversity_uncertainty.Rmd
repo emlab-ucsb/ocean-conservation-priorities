@@ -1,0 +1,375 @@
+---
+title: "Biodiversity Uncertainty"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+library(doParallel)
+
+DIR_GCS <- "~/gcs/git-annex/Carta-Marina"
+
+DIR_GCS_data <- "~/gcs/spatial-datasets"
+
+ocean_low_res_moll <- raster("~/gcs/spatial-datasets/ocean/ocean-low-res-moll.tif")
+
+land_shp <- sf::read_sf("~/gcs/spatial-datasets/land/land_50.shp")
+
+land_shp_moll <- land_shp %>% 
+  st_transform(crs = projection(ocean_low_res_moll))
+
+#land_raster_moll <- rasterize(land_shp_moll, ocean_low_res_moll, getCover = T)
+#writeRaster(land_raster_moll, "~/gcs/spatial-datasets/land/land_raster_moll.tif")
+
+land_raster_moll <- raster("~/gcs/spatial-datasets/land/land_raster_moll.tif")
+
+ocean_matrix <- ocean_low_res_moll %>% 
+  mask(land_raster_moll, maskvalue = 1) %>% 
+  raster::as.data.frame(xy = T) %>% 
+  filter(ocean.low.res.moll == 1) %>% 
+  mutate(cell_id = as.character(group_indices(., x, y))) %>% 
+  select(-ocean.low.res.moll) %>% 
+  as_tibble()
+
+z_pal <- list(breaks = c(0, 0.2, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
+              labels = c("0-20", "20-50", "50-70", "70-80", "80-85", "85-90", "90-95", "95-100"),
+              colors = c("#4575b4", "#74add1", "#abd9e9", "#e0f3f8" ,"#fee090" ,"#fdae61" ,"#f46d43", "#d73027"))
+
+variant_name <- "15_biodiversity_uncertainty"
+
+output_dir <- file.path(variant_name, "results")
+
+figs_output_dir <- file.path(variant_name, "figures")
+
+dir.create(variant_name)
+
+dir.create(figs_output_dir)
+
+dir.create(output_dir)
+```
+
+# Load data 
+
+```{r features}
+spp_df <- data.table::fread("data/spp_df.csv") %>% 
+  as_tibble()
+
+spp_info <- data.table::fread("data/spp_weights.csv") %>% 
+  as_tibble() %>% 
+  rename(w = spp_weight)
+
+smts_df <- data.table::fread("data/smts_df.csv") %>% 
+  as_tibble()
+
+smts_info <- tibble(filepath = list.files("../Zonation/data/seamounts/all", full.names = T)) %>% 
+  mutate(w = sum(spp_info$w)/n())
+
+sum(spp_info$w) ==  sum(smts_info$w)
+
+provs_df <- data.table::fread("data/provs_df.csv") %>% 
+  as_tibble()
+
+provs_info <- tibble(filepath = list.files(c("../Zonation/data/biogeography/Spalding",
+                                             "../Zonation/data/biogeography/GOODS"), 
+                                           full.names = T)) %>% 
+  mutate(w = sum(spp_info$w)/n())
+
+sum(spp_info$w) ==  sum(provs_info$w)
+
+features_df <- spp_df %>% 
+  left_join(smts_df) %>% 
+  left_join(provs_df)
+
+n_features <- nrow(spp_info)  + nrow(smts_info) + nrow(provs_info) 
+
+feature_names <- colnames(features_df)[c(-1,-2,-3)]
+```
+
+```{r mpas}
+MPAs <- raster("../Zonation/data/masks/fully_highly_protected_reviewed_MPAs.tif")
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+```
+
+```{r impacts}
+bio_abatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Abatable_impacts_5yr_avg_log.tif") %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("x", "y", "Ia")) %>% 
+  inner_join(ocean_matrix) %>% 
+  as_tibble() %>% 
+  replace_na(list(Ia = 0))
+
+bio_unabatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Unbatable_impacts_5yr_avg_log.tif") %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("x", "y", "Iu")) %>% 
+  inner_join(ocean_matrix) %>% 
+  as_tibble()%>% 
+  replace_na(list(Iu = 0))
+```
+
+## Feature weights 
+
+```{r}
+feature_wts <- c(spp_info$w, smts_info$w, provs_info$w)
+  
+names(feature_wts) <- feature_names
+```
+
+```{r}
+features_matrix <- features_df %>% 
+  select(-x,-y,-cell_id) %>% 
+  as.matrix()
+```
+
+## Algorithm
+
+```{r}
+random_cell_removal <- function(v, f){
+  
+  n_effective_cells <- sum(v > 0, na.rm = T)
+  
+  effective_cells <- which(v > 0)
+  
+  indices_to_remove <- sample(effective_cells, round(n_effective_cells*f))
+  
+  v[indices_to_remove] <- NA
+  
+  v
+}
+```
+
+Do what follows 3000 times
+
+```{r}
+gc()
+
+registerDoParallel(cores = 150)
+
+foreach (i = c(101:1000)) %dopar% {
+
+# RANDOMIZE
+
+feature_wts <- feature_wts + runif(n = length(feature_wts), min = -sd(feature_wts), max = sd(feature_wts))
+
+removed_fraction <-  runif(n = 1, min = 0, max = 0.3)
+
+features_matrix <- features_matrix %>% 
+  apply(MARGIN = 2, FUN = random_cell_removal, f = removed_fraction)
+
+stopifnot(
+  sum(map_lgl(features_df, is.numeric)) == ncol(features_df) 
+  ) # ALL numeric?
+
+features_matrix <- sweep(features_matrix, 2, colSums(features_matrix, na.rm = T), FUN = "/")
+
+# stopifnot(
+#   sum(colSums(features_matrix, na.rm = T)) == ncol(features_matrix)
+#   )  # Normalized OK?
+
+features_matrix <- features_matrix[rowSums(is.na(features_matrix)) != ncol(features_matrix), , drop = F]
+
+rownames(features_matrix) <- features_df$cell_id
+
+stopifnot(
+  identical(colnames(features_matrix), 
+          features_df %>% 
+            select(-x,-y,-cell_id) %>% 
+            colnames())
+  )  # Is the order of the features mantained?
+
+features_matrix[is.na(features_matrix)] <- 0
+
+# Get MPA vector
+
+MPA_vect <- rownames(features_matrix) %>% 
+  enframe() %>% 
+  select(cell_id = value) %>% 
+  left_join(MPAs_df) %>% 
+  mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
+
+# Apply impacts
+
+remains_BAU <- features_matrix %>% 
+  sweep(1, (1 - bio_abatable_impacts_df$Ia), FUN = "*") %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*") %>% 
+  colSums(na.rm = T)
+
+remains_MPA <- features_matrix %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*") %>% 
+  colSums(na.rm = T)
+
+features_matrix <- features_matrix %>% 
+  sweep(1, (bio_abatable_impacts_df$Ia - bio_abatable_impacts_df$Ia*bio_unabatable_impacts_df$Iu), FUN = "*")
+
+# Initial conditions
+
+z <- 0.25
+
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(features_matrix))
+
+colnames(protected_cells) <- rownames(features_matrix)
+
+baseline_state <- remains_BAU + protected_cells%*%features_matrix
+
+max_slopes <- z*baseline_state^(z - 1)
+
+features_matrix <- features_matrix[!protected_cells, ,drop = F]
+
+# Algorithm 
+
+ranking <- list()
+
+current_pick <- 0
+
+current_state <- baseline_state
+
+while(nrow(features_matrix) > 0){
+  
+  current_pick <- sum(current_pick, 1)
+  
+  slopes <- feature_wts*pmin(max_slopes, z*current_state^(z - 1))
+  
+  delta <- features_matrix%*%t(as.matrix(slopes))
+  
+  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  
+  best_cells <- delta[best_cell_indeces, ] %>% 
+    enframe() %>% 
+    set_names(c('cell_id', "delta")) %>% 
+    mutate(pick_order = current_pick)
+  
+  ranking <- bind_rows(ranking, best_cells)
+  
+  current_state <- features_matrix[best_cell_indeces, , drop = F] %>% 
+    colSums() +
+    current_state
+  
+  features_matrix <- features_matrix[-best_cell_indeces, , drop = F]
+  
+}
+
+write_rds(ranking, 
+          file.path(output_dir, 
+                    paste0(paste("run", i,"f",100*round(removed_fraction, 2), sep = "_"), ".rds")))
+}
+```
+
+# Results
+
+```{r}
+library(furrr)
+
+plan(multiprocess)
+
+uncertainty_runs_results <- furrr::future_map_dfr(list.files("15_biodiversity_uncertainty/results",
+                                                             pattern = "run", full.names = T), 
+             .f = function(x){
+               
+               xx <- read_rds(x)
+               
+               MPAs_df %>% 
+                 filter(!is.na(mpa)) %>% 
+                 select(cell_id) %>% 
+                 bind_rows(xx) %>% 
+                 mutate(is_mpa = is.na(delta)) %>% 
+                 mutate(fraction_protected = 1/n(),
+                        fraction_protected = cumsum(fraction_protected)) %>% 
+                 select(cell_id, is_mpa, fraction_protected)
+             })
+
+
+# Load original model
+
+og_results <- read_rds("05_spp_wts_smts_provs_MPAs/results/ranking_results_with_impacts.rds")
+
+og_results <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(og_results) %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected))
+
+og_top_cells <- og_results %>% 
+  filter(fraction_protected <= 0.3) %>% 
+  pull(cell_id)
+
+# Calculate fraction of runs in top x%
+
+uncertainty_raster <- uncertainty_runs_results %>% 
+  filter(cell_id %in% og_top_cells) %>% 
+  group_by(cell_id) %>% 
+  summarise(fraction_in_top_10 = sum(fraction_protected <= 0.3)/n()) %>% 
+  left_join(ocean_matrix) %>% 
+  select(x, y, fraction_in_top_10) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll, method = 'ngb') %>% 
+  mask(ocean_low_res_moll)
+
+uncertainty_map <- tmap::tm_shape(uncertainty_raster)+
+  tmap::tm_raster(title = "",
+                  palette  = viridis::viridis(n = 4, direction = 1),
+                  breaks = c(0, 0.75, 0.9, 0.95, 1),
+                  labels = c("<75", "75-90","90-95", ">95"),
+                  legend.is.portrait = T, 
+                  legend.reverse = T)+
+  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_fill(col = "grey", border.col = "transparent")+
+  tmap::tm_shape(MPAs)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_layout(title = "% of runs within top 30% Biodiversity Conservation Priorities",
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.04), 
+                  frame = F,
+                  legend.position = c(.99, "center"))
+
+tmap::tmap_save(uncertainty_map, 
+                filename = file.path(figs_output_dir, "uncertainty_map_top30.png"),
+                dpi = 300,  height = 4, width = 8 )
+```
+
+```{r}
+cv_raster <- uncertainty_runs_results %>% 
+  group_by(cell_id) %>% 
+  summarise(cv = raster::cv(fraction_protected)) %>% 
+  left_join(ocean_matrix) %>% 
+  select(x, y, cv) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll, method = 'ngb') %>% 
+  mask(ocean_low_res_moll)
+
+cv_map <- tmap::tm_shape(cv_raster)+
+  tmap::tm_raster(title = "CV",
+                  palette  = viridis::inferno(n = 10),
+                  legend.is.portrait = T, 
+                  legend.reverse = T,
+                  style = "cont")+
+  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_fill(col = "grey", border.col = "transparent")+
+  tmap::tm_shape(MPAs)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_layout(title = "Uncertainty in Biodiversity Conservation Priorities",
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.04), 
+                  frame = F,
+                  legend.position = c(.99, "center"))
+
+tmap::tmap_save(cv_map, 
+                filename = file.path(figs_output_dir, "cv_map.png"),
+                dpi = 300,  height = 4, width = 8 )
+```
+

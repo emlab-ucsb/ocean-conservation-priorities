@@ -1,0 +1,501 @@
+---
+title: "Food provision in Juanation"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+
+DIR_GCS <- "~/gcs/git-annex/Carta-Marina"
+
+DIR_GCS_data <- "~/gcs/spatial-datasets"
+
+ocean_low_res_moll <- raster("~/gcs/spatial-datasets/ocean/ocean-low-res-moll.tif")
+
+ocean_matrix <- ocean_low_res_moll %>% 
+  raster::as.data.frame(xy = T) %>% 
+  filter(ocean.low.res.moll == 1) %>% 
+  mutate(cell_id = as.character(group_indices(., x, y))) %>% 
+  select(-ocean.low.res.moll) %>% 
+  as_tibble()
+
+land_shp <- sf::read_sf("~/gcs/spatial-datasets/land/land_50.shp")
+
+land_shp_moll <- land_shp %>% 
+  st_transform(crs = projection(ocean_low_res_moll))
+
+z_pal <- list(breaks = c(0, 0.2, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
+              labels = c("0-20", "20-50", "50-70", "70-80", "80-85", "85-90", "90-95", "95-100"),
+              colors = c("#4575b4", "#74add1", "#abd9e9", "#e0f3f8" ,"#fee090" ,"#fdae61" ,"#f46d43", "#d73027"))
+
+variant_name <- "07_food"
+
+output_dir <- file.path(variant_name, "results")
+
+figs_output_dir <- file.path(variant_name, "figures")
+
+dir.create(variant_name)
+
+dir.create(figs_output_dir)
+
+dir.create(output_dir)
+```
+
+# Load  data 
+
+```{r, eval = F}
+stocks <- tibble(filename = list.files("../Zonation/data/stocks", full.names = T),
+                 stockid = str_remove(basename(filename), "\\.tif"))
+
+managed_stocks_info <- read_csv(file.path(DIR_GCS, "Food-provision/data/raw/ForZonationMegaData_Managed_BAU2.csv")) %>% 
+  select(stockid, k = Kfin, ex_rate = ExploitationRate, m, r)
+
+unmanaged_stocks_info <- read_csv(file.path(DIR_GCS, "Food-provision/data/raw/ForZonationMegaData_Unmanaged_BAU2.csv")) %>% 
+  select(stockid, k = Kfin, ex_rate = ExploitationRate, m, r)
+
+stocks_info <- stocks %>% 
+  left_join(bind_rows(unmanaged_stocks_info, managed_stocks_info))
+
+write_csv(stocks_info, "data/stocks_info_bau_1.csv")
+
+stocks_df <- stack(stocks$filename) %>%
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, everything()) %>%
+  as_tibble() 
+
+data.table::fwrite(stocks_df, 
+                   "data/stocks_df_bau_1.csv")
+```
+
+
+```{r}
+stocks_info <- read_csv("data/stocks_info_bau_1.csv")
+
+stocks_df <- data.table::fread("data/stocks_df_bau_1.csv") %>% 
+  as_tibble()
+```
+
+## Normalize and trim
+
+```{r}
+features_matrix <- stocks_df %>% 
+  select(-x,-y,-cell_id) %>% 
+  as.matrix()
+
+# stopifnot(
+#   sum(map_lgl(stocks_df %>%
+#                 select(-x,-y,-cell_id), is.numeric)) == ncol(features_matrix)
+#   ) # ALL numeric?
+
+Norm_features_matrix <- sweep(features_matrix, 2, colSums(features_matrix, na.rm = T), FUN = "/")
+
+rownames(Norm_features_matrix) <- stocks_df$cell_id
+
+# stopifnot(
+#   sum(colSums(Norm_features_matrix, na.rm = T)) == ncol(features_matrix)
+#   )  # Normalized OK?
+
+Norm_features_matrix <- Norm_features_matrix[rowSums(is.na(Norm_features_matrix)) != ncol(Norm_features_matrix), ]
+
+stopifnot(
+  identical(colnames(Norm_features_matrix), 
+          stocks_df %>% 
+            select(-x,-y,-cell_id) %>% 
+            colnames())
+  )  # Is the order of the features mantained?
+```
+
+# Current MPAs
+
+```{r}
+MPAs <- raster("../Zonation/data/masks/fully_highly_protected_reviewed_MPAs.tif")
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+  
+MPA_vect <- rownames(Norm_features_matrix) %>% 
+  enframe() %>% 
+  select(cell_id = value) %>% 
+  left_join(MPAs_df) %>% 
+  mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
+```
+
+# Ranking 
+
+## Initial conditions
+
+```{r}
+food_foo <- function(e, m, r, k, R){
+  
+  -e*k*m*(m+e)*((e*r + 2*e*m)*R + m*r - 2*e*m)/(r*(e*R + m)^3)
+  
+}
+
+param_e <- stocks_info$ex_rate
+param_m <- stocks_info$m
+param_r <- stocks_info$r
+param_k <- stocks_info$k
+```
+
+```{r}
+Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
+
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix))
+
+colnames(protected_cells) <- rownames(Norm_features_matrix)
+
+baseline_state <- protected_cells%*%Norm_features_matrix
+
+unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
+
+protected_matrix <- Norm_features_matrix[protected_cells, ]
+
+stocks_info$max_frac_k <-   matrixStats::colMaxs(unprotected_matrix, na.rm = T)
+
+stocks_info <- stocks_info %>% 
+  mutate(max_slope = food_foo(ex_rate, m, r, k, R = max_frac_k))
+
+max_slopes <- pull(stocks_info, max_slope)
+
+dim(protected_matrix)
+```
+
+# Run algorithm
+
+```{r}
+ranking <- list()
+
+current_pick <- 0
+
+current_state <- baseline_state 
+
+start_time <- Sys.time()
+
+while(nrow(unprotected_matrix) > 0){
+  
+  current_pick <- sum(current_pick, 1)
+  
+  slopes <- food_foo(param_e, param_m, param_r, param_k, current_state)
+  
+  delta <- unprotected_matrix%*%as.matrix(t(slopes))
+  
+  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  
+  best_cells <- delta[best_cell_indeces,] %>% 
+    enframe() %>% 
+    set_names(c('cell_id', "delta")) %>% 
+    mutate(pick_order = current_pick)
+  
+  ranking <- bind_rows(ranking, best_cells)
+  
+  current_state <- unprotected_matrix[best_cell_indeces, ] %>% 
+    colSums() +
+    current_state
+  
+  unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ]
+  
+}
+
+end_time <- Sys.time()
+
+end_time - start_time
+
+write_rds(ranking, 
+          file.path(output_dir, "ranking_results_bau_1.rds"))
+```
+
+```{r}
+ranking %>%
+  mutate(frac = 1/n(),
+         frac = cumsum(frac),
+         V = cumsum(delta)) %>%
+  ggplot()+
+  geom_line(aes(frac, V))
+```
+
+# Results
+
+```{r}
+ranking <- read_rds(file.path(output_dir, "ranking_results_bau_1.rds"))
+```
+
+## Benefit curves
+
+```{r}
+representation_curves <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking) %>% 
+  mutate(is_mpa = is.na(delta)) %>% 
+  full_join(ocean_matrix) %>% 
+  left_join(Norm_features_matrix %>% 
+              as_tibble(rownames = NA) %>% 
+              rownames_to_column("cell_id")) %>% 
+  replace(is.na(.), 0)
+
+benefit_curves <- representation_curves %>% 
+  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
+  mutate_all(.funs = cumsum) %>% 
+  apply(MARGIN = 1, 
+        function(x) param_e*(param_m*param_k*(1 - x)/(param_e*x+param_m))*(1 - (param_e*(1-x)*param_m)/((param_e*x + param_m)*param_r)) - param_e*((param_r - param_e)/param_r)*param_k) %>% 
+  t()
+  
+benefit_curves %>% 
+  as_tibble() %>% 
+  mutate(cell_id = representation_curves$cell_id) %>%
+  select(cell_id, everything()) %>% 
+  write_rds(file.path(output_dir, "food_benefit_curves_bau_1.rds"))
+
+network_level <- benefit_curves %>% 
+  rowSums() %>% 
+  enframe() 
+
+network_level %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected =  cumsum(fraction_protected)) %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, value))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Delta Catch",
+       caption = "") +
+  theme_classic()+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = min(network_level$value), 
+                ymax = max(network_level$value)),
+                fill = "#69B578", alpha = 0.01)+
+  scale_x_continuous(limits = c(0,1), expand = c(0, 0))+
+  scale_y_continuous(expand = c(0, 100))+
+  ggsave(file.path(figs_output_dir, "delta_catch_curve_bau_1.png"),
+         width = 7, 
+         height = 4)
+
+max(network_level$value)/10^6
+
+current_delta_catch <- network_level %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected =  cumsum(fraction_protected)) %>% 
+  filter(fraction_protected <= fraction_in_MPA) %>% 
+  summarise(current_delta_catch = max(value)/10^6)
+
+max(network_level$value)/10^6 - current_delta_catch
+```
+
+```{r}
+pixel_level <- representation_curves %>%
+  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>%
+  apply(MARGIN = 1,
+        function(x) param_e*(param_m*param_k*(1 - x)/(param_e*x+param_m))*(1 - (param_e*(1-x)*param_m)/((param_e*x + param_m)*param_r)) - param_e*((param_r - param_e)/param_r)*param_k) %>%
+  t() %>%
+  rowSums() %>%
+  enframe()
+```
+
+```{r}
+food_provision_results <- representation_curves %>% 
+  select(x, y, is_mpa) %>% 
+  cbind(pixel_delta_catch = pixel_level$value,
+        network_cummulative_delta_catch = network_level$value) %>% 
+  mutate(pixel_contribution_to_network = network_cummulative_delta_catch - lag(network_cummulative_delta_catch),
+         pixel_contribution_to_network = if_else(is.na(pixel_contribution_to_network), network_cummulative_delta_catch, pixel_contribution_to_network)) 
+
+write_csv(food_provision_results, 
+          file.path(output_dir, "food_provision_results_per_pixel_bau_1.csv"))
+```
+
+```{r, eval = F}
+food_provision_results <- read_csv("04_Food/results/food_provision_results_per_pixel_bau_1.csv")
+
+food_provision_results %>% 
+  select(x, y, pixel_delta_catch) %>% 
+  rasterFromXYZ(crs = "+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs") %>% 
+  writeRaster("04_Food/results/pixel_delta_catch_bau_1.tif")
+
+food_provision_results %>% 
+  select(x, y, network_cummulative_delta_catch) %>% 
+  rasterFromXYZ(crs = "+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs") %>% 
+  writeRaster("04_Food/results/network_delta_catch_bau_1.tif")
+
+food_provision_results %>% 
+  select(x, y, pixel_contribution_to_network) %>% 
+  rasterFromXYZ(crs = "+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs") %>% 
+  writeRaster("04_Food/results/pixel_contribution_to_network_delta_catch_bau_1.tif")
+```
+
+```{r}
+food_provision_results %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected =  cumsum(fraction_protected)) %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, pixel_contribution_to_network))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Delta Catch",
+       caption = "Juanation")+
+  theme_minimal()
+```
+
+## Priority Maps
+
+```{r}
+ranking_raster <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking) %>% 
+  mutate(is_mpa = is.na(delta)) %>% 
+  left_join(ocean_matrix) %>% 
+  tibble::rowid_to_column("ID") %>% 
+  mutate(rank = 1- scales::rescale(ID)) %>% 
+  select(x, y, rank) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll) %>% 
+  mask(ocean_low_res_moll) 
+
+writeRaster(ranking_raster, 
+            file.path(output_dir, "ranking_raster_bau_1.tif"), 
+            overwrite = T)
+
+ranking_map <- tmap::tm_shape(ranking_raster)+
+  tmap::tm_raster(title = "",
+                  palette  = z_pal$colors,
+                  breaks = z_pal$breaks,
+                  labels = z_pal$labels,
+                  legend.is.portrait = T, 
+                  legend.reverse = T)+
+  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_fill(col = "black", border.col = "transparent")+
+  tmap::tm_credits("Food") +
+  tmap::tm_shape(MPAs)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_layout(title = "Food Provision Conservation Priorities",
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.04), 
+                  frame = F,
+                  legend.position = c(.99, "center")) 
+
+tmap::tmap_save(ranking_map, 
+                filename = file.path(figs_output_dir, "priority_map_bau_1.png"),
+                dpi = 300,  height = 4, width = 8 )
+```
+
+```{r}
+dv_raster <- food_provision_results %>% 
+  select(x,y,dV = pixel_contribution_to_network) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll) %>% 
+  mask(ocean_low_res_moll) 
+
+writeRaster(dv_raster, 
+            file.path(output_dir, "delta_v_raster_bau_1.tif"), 
+            overwrite = T)
+```
+
+```{r}
+ranking_raster <- raster(file.path(output_dir, "ranking_raster_bau_1.tif"))
+
+plot(ranking_raster)
+
+ranking_raster %>% 
+  mask(MPAs, inverse = T) %>% 
+  writeRaster(file.path(output_dir, "ranking_raster_bau_1_sans_MPAs.tif"), 
+              overwrite = T)
+```
+
+
+# What does it take to get 90% of the benefits?
+
+```{r}
+network_level %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected =  cumsum(fraction_protected)) %>% 
+  slice(which.max(value))
+```
+
+```{r}
+food_provision_results <- read_csv(file.path(output_dir, "food_provision_results_per_pixel_bau_1.csv"))
+
+max_food_benefits <- food_provision_results %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected =  cumsum(fraction_protected)) %>% 
+  slice(which.max(network_cummulative_delta_catch)) 
+
+max_food_benefits_BAU <- food_provision_results %>% 
+  filter(is_mpa == 1) %>% 
+  slice(which.max(network_cummulative_delta_catch)) 
+
+diff_09 <- 0.9*(max_food_benefits$network_cummulative_delta_catch - max_food_benefits_BAU$network_cummulative_delta_catch) + max_food_benefits_BAU$network_cummulative_delta_catch
+
+diff_09 <- 0.9*max_food_benefits$network_cummulative_delta_catch
+
+food_provision_results %>% 
+  #filter(is_mpa != 1) %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected =  cumsum(fraction_protected),
+         V = network_cummulative_delta_catch) %>% 
+  filter(fraction_protected < max_food_benefits$fraction_protected) %>% 
+  slice(which.min(abs(V - diff_09)))
+```
+
+```{r}
+food_provision_results %>% 
+  mutate(tmp = abs(pixel_contribution_to_network)^(1/3),
+         tmp_2 = ifelse(pixel_contribution_to_network < 0, -tmp, tmp)) %>% 
+  ggplot()+
+  geom_raster(aes(x, y, fill = tmp_2))+
+  scale_fill_gradient2(labels = function(x){x^3},
+                       low = "darkred", mid = "white",
+                            high = "navy", space = "Lab")+
+  labs(title = "Change in global catch (Tonnes)", fill = "", y = "", x = "")+
+  theme_minimal()
+```
+
+# Map of the optimal food protection
+
+```{r}
+food_ranking_raster <- raster( file.path(output_dir, "ranking_raster_bau_1.tif"))
+
+optimal_percent_raster <- food_ranking_raster %>% 
+  mask(food_ranking_raster >= (1 - max_food_benefits$fraction_protected), maskvalue = 0)
+
+optimal_percent_map <- tmap::tm_shape(optimal_percent_raster)+
+  tmap::tm_raster(title = "",
+                  palette = rev("-Spectral"), 
+                  n = 20,
+                  
+                  style = "cont",
+                  legend.is.portrait = T, 
+                  legend.reverse = T)+
+  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_fill(col = "grey", border.col = "transparent")+
+  tmap::tm_credits("Food") +
+  tmap::tm_shape(MPAs)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_layout(title = "Food Provision Conservation Priorities",
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.04), 
+                  frame = F,
+                  legend.position = c(.99, "center"))
+
+tmap::tmap_save(optimal_percent_map, 
+                filename = file.path(DIR_GCS, "Supplement/fig_optimal_protection_food_bau_1.png"), 
+                dpi = 300,  height = 5, width = 8)
+```
+

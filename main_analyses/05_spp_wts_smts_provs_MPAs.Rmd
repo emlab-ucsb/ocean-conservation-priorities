@@ -1,0 +1,1202 @@
+---
+title: "Species + weights + seamounts + provinces + MPAs in Juanation"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+library(patchwork)
+
+source(here::here("common.R"))
+
+variant_name <- "05_spp_wts_smts_provs_MPAs"
+
+variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name)
+
+dir.create(variant_dir)
+```
+
+# Load data 
+
+```{r}
+features_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "all_bio_features_df.csv"))
+
+feature_names <- colnames(features_df)[c(-1,-2,-3)]
+
+n_features <- length(feature_names)
+```
+
+## Normalize and trim
+
+```{r}
+features_matrix <- features_df %>% 
+  select(-x,-y,-cell_id) %>% 
+  as.matrix()
+
+stopifnot(
+  sum(map_lgl(features_df, is.numeric)) == ncol(features_df) 
+  ) # ALL numeric?
+
+Norm_features_matrix <- sweep(features_matrix, 2, colSums(features_matrix, na.rm = T), FUN = "/")
+
+stopifnot(
+  sum(colSums(Norm_features_matrix, na.rm = T)) == ncol(features_matrix)
+  )  # Normalized OK?
+
+Norm_features_matrix <- Norm_features_matrix[rowSums(is.na(Norm_features_matrix)) != ncol(Norm_features_matrix), , drop = F]
+
+rownames(Norm_features_matrix) <- features_df$cell_id
+
+stopifnot(
+  identical(colnames(Norm_features_matrix), 
+          features_df %>% 
+            select(-x,-y,-cell_id) %>% 
+            colnames())
+  )  # Is the order of the features mantained?
+
+Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
+```
+
+## Feature weights 
+
+```{r}
+spp_wts <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "species_list", "spp_weights.csv")) %>% 
+  as_tibble() %>% 
+  rename(w = spp_weight)
+
+smts_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed","seamounts"), full.names = T)) %>% 
+  mutate(w = sum(spp_wts$w)/n())
+
+provs_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "biogeography"), full.names = T, pattern = "\\.tif")) %>% 
+  mutate(w = sum(spp_wts$w)/n())
+
+feature_wts <- c(spp_wts$w, smts_wts$w, provs_wts$w)
+
+names(feature_wts) <- feature_names
+```
+
+```{r}
+hist(feature_wts)
+mean(feature_wts)
+summary(feature_wts)
+
+sqrt(var(feature_wts)/length(feature_wts))
+```
+
+# Current MPAs
+
+```{r}
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+  
+MPA_vect <- rownames(Norm_features_matrix) %>% 
+  enframe() %>% 
+  select(cell_id = value) %>% 
+  left_join(MPAs_df) %>% 
+  mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
+```
+
+# Ranking
+
+## Scorched Earth
+
+### Initial conditions
+
+```{r}
+z <- 0.25
+
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix))
+
+unprotected_matrix <- Norm_features_matrix[!protected_cells, ,drop = F]
+
+baseline_state <- protected_cells%*%Norm_features_matrix
+
+protected_matrix <- Norm_features_matrix[protected_cells, , drop = T]
+
+max_slopes <- z*matrixStats::colMaxs(Norm_features_matrix, na.rm = T)^(z - 1)
+```
+
+### Run algorithm
+
+```{r}
+ranking <- list()
+
+current_pick <- 0
+
+current_state <- baseline_state
+
+start_time <- Sys.time()
+
+while(nrow(unprotected_matrix) > 0){
+  
+  current_pick <- sum(current_pick, 1)
+  
+  slopes <- feature_wts*pmin(max_slopes, z*current_state^(z - 1))
+  
+  delta <- unprotected_matrix%*%as.matrix(slopes)
+  
+  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  
+  best_cells <- delta[best_cell_indeces, ] %>% 
+    enframe() %>% 
+    set_names(c('cell_id', "delta")) %>% 
+    mutate(pick_order = current_pick)
+  
+  ranking <- bind_rows(ranking, best_cells)
+  
+  current_state <- unprotected_matrix[best_cell_indeces, , drop = F] %>% 
+    colSums() +
+    current_state
+  
+  unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ,drop = F]
+  
+}
+
+end_time <- Sys.time()
+
+end_time - start_time
+
+write_rds(ranking, 
+          file.path(variant_dir, "ranking_results_se.rds"))
+```
+
+## With impacts
+
+### Apply Impacts 
+
+```{r}
+bio_abatable_impacts_df <- raster(file.path(emLab_project_dir, 
+                                            "data", "02_processed", "impacts", "chi", "abatable_impacts_5_yr_avg_log.tif")) %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("x", "y", "Ia")) %>% 
+  inner_join(ocean_matrix) %>% 
+  as_tibble() %>% 
+  replace_na(list(Ia = 0))
+
+bio_unabatable_impacts_df <- raster(file.path(emLab_project_dir, 
+                                              "data", "02_processed", "impacts", "chi", "unabatable_impacts_5_yr_avg_log.tif")) %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("x", "y", "Iu")) %>% 
+  inner_join(ocean_matrix) %>% 
+  as_tibble()%>% 
+  replace_na(list(Iu = 0))
+
+remains_BAU <- Norm_features_matrix %>% 
+  sweep(1, (1 - bio_abatable_impacts_df$Ia), FUN = "*") %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*") %>% 
+  colSums(na.rm = T)
+
+remains_MPA <- Norm_features_matrix %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*") %>% 
+  colSums(na.rm = T)
+
+Norm_features_matrix_diff <- Norm_features_matrix %>% 
+  sweep(1, (bio_abatable_impacts_df$Ia - bio_abatable_impacts_df$Ia*bio_unabatable_impacts_df$Iu), FUN = "*")
+```
+
+```{r}
+B_bau <- remains_BAU^0.25
+
+B_mpa <- remains_MPA^0.25
+
+hist(B_bau)
+
+hist(B_mpa)
+
+# How much would remain under BAU?
+sum(remains_BAU^0.25)/n_features
+# How much would remain with full protection?
+sum(remains_MPA^0.25)/n_features
+# What is the % increase from
+(sum(remains_MPA^0.25) - sum(remains_BAU^0.25))/sum(remains_BAU^0.25)
+```
+
+### Initial conditions
+
+```{r}
+z <- 0.25
+
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix_diff))
+
+colnames(protected_cells) <- rownames(Norm_features_matrix_diff)
+
+unprotected_matrix <- Norm_features_matrix_diff[!protected_cells, ,drop = F]
+
+baseline_state <- remains_BAU + protected_cells%*%Norm_features_matrix_diff
+
+protected_matrix <- Norm_features_matrix_diff[protected_cells, ,drop =F]
+
+max_slopes <- z*baseline_state^(z - 1)
+```
+
+### Run algorithm
+
+```{r}
+ranking <- list()
+
+current_pick <- 0
+
+current_state <- baseline_state
+
+start_time <- Sys.time()
+
+while(nrow(unprotected_matrix) > 0){
+  
+  current_pick <- sum(current_pick, 1)
+  
+  slopes <- feature_wts*pmin(max_slopes, z*current_state^(z - 1))
+  
+  delta <- unprotected_matrix%*%t(as.matrix(slopes))
+  
+  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  
+  best_cells <- delta[best_cell_indeces, ] %>% 
+    enframe() %>% 
+    set_names(c('cell_id', "delta")) %>% 
+    mutate(pick_order = current_pick)
+  
+  ranking <- bind_rows(ranking, best_cells)
+  
+  current_state <- unprotected_matrix[best_cell_indeces, , drop = F] %>% 
+    colSums() +
+    current_state
+  
+  unprotected_matrix <- unprotected_matrix[-best_cell_indeces, , drop = F]
+  
+}
+
+end_time <- Sys.time()
+
+end_time - start_time
+
+write_rds(ranking, 
+          file.path(variant_dir, "ranking_results.rds"))
+```
+
+# Results
+
+## Benefit Curves
+
+### Scorched Earth 
+
+```{r}
+ranking_se <- read_rds(file.path(variant_dir, "ranking_results_se.rds"))
+
+rep_curves_se <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking_se) %>% 
+  mutate(is_mpa = is.na(delta)) %>% 
+  full_join(ocean_matrix) %>% 
+  left_join(Norm_features_matrix %>% 
+              as_tibble(rownames = NA) %>% 
+              rownames_to_column("cell_id")) %>% 
+  replace(is.na(.), 0) %>% 
+  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
+  mutate_all(.funs = cumsum) 
+
+benefit_curve_se <- rep_curves_se %>% 
+  mutate_all(.funs = ~(.)^0.25) %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected))
+
+benefit_curve_se %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(x = fraction_protected, y = V/max(V))) +
+  geom_vline(xintercept = c(0.1, 0.2, 0.3),
+             linetype = c("dashed","dotted","dotdash"))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Biodiversity Benefit",
+       caption = "Biodiversity + MPAs, scorched-earth")+
+  theme_classic()+
+  scale_x_continuous(limits = c(0,1), expand = c(0,0))+
+  scale_y_continuous(limits = c(0,1), expand = c(0,0))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = 0, 
+                ymax = 1),
+                fill = "#69B578", alpha = 0.01)+
+  ggsave(file.path(variant_dir, "benefit_curve_se.png"),
+         width = 7, height = 5)
+```
+
+```{r}
+avg_rep_curve_se <- as.matrix(rep_curves_se) %>% 
+  rowSums() %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected)) %>% 
+  mutate(V = V/n_features)
+
+avg_rep_curve_se %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(x = fraction_protected, y = V)) +
+  geom_vline(xintercept = c(0.1, 0.2, 0.3),
+             linetype = c("dashed","dotted","dotdash"))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Average feature representation",
+       caption = "Biodiversity + MPAs, Scorched Earth")+
+  theme_classic()+
+  scale_x_continuous(limits = c(0,1), expand = c(0,0))+
+  scale_y_continuous(limits = c(0,1), expand = c(0,0))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = 0, 
+                ymax = 1),
+                fill = "#69B578", alpha = 0.01)+
+  ggsave(file.path(variant_dir, "rep_curve_se.png"),
+         width = 7, height = 5)
+```
+
+### With Impacts 
+
+```{r}
+ranking <- read_rds(file.path(variant_dir, "ranking_results.rds"))
+
+benefit_curve <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking) %>% 
+  mutate(is_mpa = is.na(delta))  %>% 
+  full_join(ocean_matrix) %>% 
+  left_join(Norm_features_matrix_diff %>% 
+              as_tibble(rownames = NA) %>% 
+              rownames_to_column("cell_id")) %>% 
+  replace(is.na(.), 0) %>% 
+  select(-x, -y, -delta, -pick_order, -is_mpa) %>% 
+  mutate(cell_id = as.numeric(cell_id)) %>% 
+  mutate_at(vars(-cell_id),.funs = cumsum) %>% 
+  sweep(MARGIN = 2, c(0, remains_BAU), `+`) %>%
+  mutate_at(vars(-cell_id), .funs = ~(.)^0.25) 
+
+write_rds(benefit_curve, file.path(variant_dir, "benefit_curves.rds"))
+
+benefit_curve %>% 
+  select(-cell_id) %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
+  rowSums() %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected)) %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(x = fraction_protected, y = V/sum(feature_wts))) +
+  geom_vline(xintercept = c(0.1, 0.2, 0.3),
+             linetype = c("dashed","dotted","dotdash"))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Biodiversity Benefit",
+       caption = "Biodiversity + MPAs, with impacts")+
+  theme_classic()+
+  scale_x_continuous(limits = c(0,1), expand = c(0,0))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = min(benefit_curve$V)/sum(feature_wts), 
+                ymax = max(benefit_curve$V)/sum(feature_wts)),
+                fill = "#69B578", alpha = 0.01)+
+  ggsave(file.path(variant_dir, "benefit_curve.png"),
+         width = 7, height = 5)
+```
+
+```{r}
+rep_curves <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking) %>% 
+  mutate(is_mpa = is.na(delta))   %>% 
+  full_join(ocean_matrix) %>% 
+  left_join(Norm_features_matrix %>% 
+              as_tibble(rownames = NA) %>% 
+              rownames_to_column("cell_id")) %>% 
+  replace(is.na(.), 0) %>% 
+  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
+  mutate_all(.funs = cumsum) 
+  
+write_rds(rep_curves, 
+          file.path(variant_dir, "rep_curve.rds"))
+
+rep_curves %>% 
+  as.matrix() %>% 
+  rowSums() %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected)) %>% 
+  mutate(V = V/n_features) %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(x = fraction_protected, y = V)) +
+  geom_vline(xintercept = c(0.1, 0.2, 0.3),
+             linetype = c("dashed","dotted","dotdash"))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Average feature representation",
+       caption = "Biodiversity + MPAs, with impacts")+
+  theme_classic()+
+  scale_x_continuous(limits = c(0,1), expand = c(0,0))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = 0,
+                ymax = 1),
+                fill = "#69B578", alpha = 0.01)+
+  ggsave(file.path(variant_dir, "rep_curve.png"),
+         width = 7, height = 5)
+```
+
+## Priority Maps
+
+```{r}
+ranking_raster_se <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking_se) %>% 
+  mutate(is_mpa = is.na(delta)) %>% 
+  left_join(ocean_matrix) %>% 
+  tibble::rowid_to_column("ID") %>% 
+  mutate(rank = 1- scales::rescale(ID)) %>% 
+  select(x, y, rank) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll) %>% 
+  mask(ocean_low_res_moll) 
+
+writeRaster(ranking_raster_se, 
+            file.path(variant_dir, "ranking_raster_se.tif"), 
+            overwrite = T)
+
+ranking_raster <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking) %>% 
+  mutate(is_mpa = is.na(delta)) %>% 
+  left_join(ocean_matrix) %>% 
+  tibble::rowid_to_column("ID") %>% 
+  mutate(rank = 1- scales::rescale(ID)) %>% 
+  select(x, y, rank) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll) %>% 
+  mask(ocean_low_res_moll) 
+
+writeRaster(ranking_raster, 
+            file.path(variant_dir, "ranking_raster.tif"), 
+            overwrite = T)
+```
+
+```{r}
+dv_raster <- benefit_curve %>% 
+  select(-cell_id) %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  bind_cols(benefit_curve %>% 
+              transmute(cell_id = as.character(cell_id))) %>% 
+  left_join(ocean_matrix) %>% 
+  mutate(dV = V - lag(V)) %>% 
+  replace_na(list(dV = 0)) %>% 
+  select(x,y,dV) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll) %>% 
+  mask(ocean_low_res_moll) 
+
+writeRaster(dv_raster, 
+            file.path(variant_dir, "delta_v_raster.tif"), 
+            overwrite = T)
+```
+
+
+```{r}
+ranking_map_se <- tmap::tm_shape(ranking_raster_se)+
+  tmap::tm_raster(title = "",
+                  palette  = priorities_map_pal$colors,
+                  breaks = priorities_map_pal$breaks,
+                  labels = priorities_map_pal$labels,
+                  legend.is.portrait = T, 
+                  legend.reverse = T)+
+  tmap::tm_shape(land_50_moll)+
+  tmap::tm_fill(col = "black", border.col = "transparent")+
+  tmap::tm_credits("Biodiversity + MPAs, scorched earth") +
+  tmap::tm_shape(MPAs)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_layout(title = "Biodiversity Conservation Priorities",
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.04), 
+                  frame = F,
+                  legend.position = c(.99, "center")) 
+
+tmap::tmap_save(ranking_map_se, 
+                filename = file.path(variant_dir, "priority_map_se.png"),
+                dpi = 300,  height = 4, width = 8 )
+
+ranking_map <- tmap::tm_shape(ranking_raster)+
+  tmap::tm_raster(title = "",
+                  palette  = priorities_map_pal$colors,
+                  breaks = priorities_map_pal$breaks,
+                  labels = priorities_map_pal$labels,
+                  legend.is.portrait = T, 
+                  legend.reverse = T)+
+  tmap::tm_shape(land_50_moll)+
+  tmap::tm_fill(col = "black", border.col = "transparent")+
+  tmap::tm_credits("Biodiversity + MPAs, with impacts") +
+  tmap::tm_shape(MPAs)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_layout(title = "Biodiversity Conservation Priorities",
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.04), 
+                  frame = F,
+                  legend.position = c(.99, "center")) 
+
+tmap::tmap_save(ranking_map, 
+                filename = file.path(variant_dir, "priority_map.png"),
+                dpi = 300,  height = 4, width = 8 )
+```
+
+# What does it take to get 90% of the benefits?
+
+```{r}
+bio_benefit_curves <- read_rds(file.path(variant_dir, "benefit_curves.rds")) 
+
+agg_bio_benefit_curve <- bio_benefit_curves %>% 
+  select(-cell_id) %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected),
+         V_rescaled = scales::rescale(V))
+
+(f_to_90 <- agg_bio_benefit_curve %>% 
+  slice(which.min(abs(V_rescaled - 0.9))) %>% 
+  pull(fraction_protected))
+```
+
+How much in EEZ vs HS? 
+
+```{r}
+territories_mask <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories.tif")) # 1 equals high seas
+
+eez_mask <- ocean_low_res_moll %>% 
+  mask(territories_mask) 
+
+hs_mask <- ocean_low_res_moll %>% 
+  mask(territories_mask, inverse = T) 
+
+eez_mask_df_moll <- eez_mask %>% 
+  as.data.frame(xy = TRUE) %>% 
+  set_names(c("x", "y", "eez_mask")) %>% 
+  mutate(eez_mask = ifelse(eez_mask == 1, 1, NA)) %>% 
+  filter(!is.na(eez_mask)) %>% 
+  inner_join(ocean_matrix)
+```
+
+```{r}
+agg_bio_benefit_curve %>% 
+  mutate(cell_id = bio_benefit_curves$cell_id,
+         in_EEZ = cell_id %in% eez_mask_df_moll$cell_id) %>% 
+  summarize(f_EEZ_to_90 = length(V[in_EEZ & fraction_protected <= f_to_90])/length(V[in_EEZ]),
+            f_HS_to_90 = length(V[!in_EEZ & fraction_protected <= f_to_90])/length(V[!in_EEZ]))
+```
+
+# How much of the top 10% is in EEZ?
+
+```{r}
+agg_bio_benefit_curve %>% 
+  mutate(cell_id = bio_benefit_curves$cell_id,
+         in_EEZ = cell_id %in% eez_mask_df_moll$cell_id) %>% 
+  filter(fraction_protected <= 0.1) %>% 
+  group_by(in_EEZ) %>% 
+  summarise(n_cells = n()) %>% 
+  ungroup() %>% 
+  mutate(f_cell = n_cells/sum(n_cells))
+```
+
+# Results by group
+
+```{r}
+included_aquamaps_spp_info <- read_csv(file.path(emLab_project_dir, "data","02_processed", "species_list", "included_aquamaps_spp_list_with_ED_FD.csv"))
+
+included_seabirds_spp_info <- read_csv(file.path(emLab_project_dir, "data","02_processed", "species_list", "included_birdlife_spp_list_with_ED_FD.csv"))
+
+included_spp_list <- bind_rows(included_aquamaps_spp_info %>% 
+                                      select(valid_sci_name, genus, order, family, class, phylum, kingdom, iucn_category, ED, FD),
+                                    included_seabirds_spp_info %>% 
+                                      select(valid_sci_name, genus, order, family, class, phylum, kingdom, iucn_category,  ED, FD))
+
+smts_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "smts_df.csv")) %>% 
+  as_tibble() 
+
+provs_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "provinces_df.csv"))
+
+
+included_spp_list <- included_spp_list %>% 
+  select(valid_sci_name, class, phylum, iucn_category) %>% 
+  mutate(major_group = case_when(
+    class %in% c("Actinopterygii", "Sarcopterygii") ~ "Osteichthyes",
+    class %in% c("Elasmobranchii", "Holocephali") ~ "Chondrichthyes",
+    class %in% c("Mammalia") ~ "Mammalia",
+    class %in% c("Reptilia") ~ "Reptilia",
+    class %in% c("Aves") ~ "Aves",
+    phylum %in% c("Arthropoda") ~ "Arthropoda",
+    phylum %in% c("Cnidaria") ~ "Cnidaria",
+    phylum %in% c("Echinodermata") ~ "Echinodermata",
+    phylum %in% c("Mollusca") ~ "Mollusca",
+    phylum %in% c("Porifera") ~ "Porifera",
+    TRUE ~ "Other"
+  ))  %>% 
+  group_by(major_group) %>% 
+  mutate(valid_sci_name = str_replace_all(valid_sci_name, " ", "_"),
+         valid_sci_name = str_replace_all(valid_sci_name, "\\)", "\\."),
+         valid_sci_name = str_replace_all(valid_sci_name, "\\(", "\\.")
+         )
+
+included_smts <- colnames(smts_df)[-c(1,2,3)] %>% 
+  enframe() %>% 
+  select(valid_sci_name = value) %>% 
+  mutate(major_group = "Seamounts")
+
+included_provs <- colnames(provs_df)[-c(1,2,3)] %>% 
+  enframe() %>% 
+  select(valid_sci_name = value) %>% 
+  mutate(major_group = "Provinces")
+
+full_features_list <- bind_rows(included_spp_list,
+                                included_smts,
+                                included_provs) %>% 
+  mutate(group_code = group_indices())
+
+groups_info <- full_features_list %>% 
+  distinct(major_group, group_code) 
+```
+
+```{r}
+bio_rep_curves <- read_rds(file.path(variant_dir, "rep_curve.rds"))
+
+get_benefit_curves <- function(features, wts, group){
+  bio_benefit_curves %>% 
+    select(features) %>% 
+    as.matrix() %*% as.matrix(wts)  %>% 
+    as_tibble() %>% 
+    set_names(group) %>% 
+    mutate(fraction_protected = 1/n(),
+           fraction_protected = cumsum(fraction_protected))
+}
+
+get_representation_curves <- function(features, group){
+  
+  bio_rep_curves %>% 
+    select(features) %>% 
+    rowSums() %>% 
+    as_tibble() %>% 
+    mutate(fraction_protected = 1/n(),
+           fraction_protected = cumsum(fraction_protected),
+           !!quo_name(group) := value/length(features)) %>% 
+    select(-value)
+}
+
+results_by_group <- groups_info %>% 
+  mutate(features = map(group_code, 
+                       ~full_features_list %>% 
+                         filter(group_code == .x) %>% 
+                         pull(valid_sci_name))) %>% 
+  rowwise() %>% 
+  mutate(wts = list(feature_wts[names(feature_wts) %in% features])) %>% 
+  ungroup() %>% 
+  as_tibble() %>% 
+  mutate(benefit_curve = pmap(list(features, wts, major_group), .f = get_benefit_curves),
+         representation_curve = map2(features,  major_group, .f = get_representation_curves))
+```
+
+## Difference Made
+
+```{r}
+benefit_curves_by_group <- results_by_group$benefit_curve %>% 
+  reduce(left_join) %>% 
+  select(fraction_protected, everything()) %>% 
+  mutate(Total = rowSums(.[-1])) %>% 
+  gather(var, value, -fraction_protected) 
+
+benefit_curves_by_group %>% 
+  group_by(var) %>% 
+  mutate(value = scales::rescale(value)) %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  filter(!var %in% c("Total", "Porifera")) %>% 
+  ggplot(aes(fraction_protected, value, col = var))+
+  geom_line()+
+  paletteer::scale_color_paletteer_d("ggthemes::calc")+
+  theme_classic()+
+  labs(x = "Fraction Ocean Protected", y = "Difference made", col = "Feature group")+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "bio_benefit_curve_per_taxa.png"), 
+         dpi = 300,  height = 5, width = 8)
+```
+
+```{r}
+difference_made_per_feature <- bio_benefit_curves %>% 
+  select(-cell_id) %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected),
+         round_percent = cut(fraction_protected,
+                             breaks = seq(0, 1, by = 0.01),
+                             labels = FALSE, 
+                             right = TRUE)) %>% 
+  mutate_at(vars(-round_percent, -fraction_protected),
+            .funs = scales::rescale) %>% 
+  group_by(round_percent) %>% 
+  summarize_all(.funs = max) %>% 
+  gather(feature, V, -round_percent, -fraction_protected) %>% 
+  left_join(full_features_list %>% 
+              select(valid_sci_name, major_group, iucn_category),
+            by = c("feature" = "valid_sci_name"))
+
+difference_made_per_feature %>% 
+  filter(round_percent == 20) %>% 
+  ggplot()+
+  geom_boxplot(aes(x = major_group, y = V))+
+  labs(y = "Difference made", x = "")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  ggsave(filename = file.path(emLab_project_dir,"figures", "supplement","bio_benefit_per_taxa_at_20_percent_protection.png"), 
+         dpi = 300,  height = 5, width = 8)
+
+difference_made_per_feature %>% 
+  filter(round_percent == 20) %>% 
+  filter(!major_group %in% c("Seamounts", "Provinces")) %>% 
+  ggplot()+
+  geom_boxplot(aes(x = fct_reorder(iucn_category, V, mean), y = V))+
+  labs(y = "Difference made", x = "")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement","bio_benefit_per_IUCN_at_20_percent_protection.png"), 
+         dpi = 300,  height = 5, width = 8)
+```
+
+```{r}
+difference_made_per_feature %>% 
+  filter(fraction_protected <= fraction_in_MPA) %>% 
+  group_by(major_group) %>% 
+  summarise(mean_diff_made = mean(V))
+
+difference_made_per_feature %>% 
+  filter(round_percent == 20) %>% 
+  group_by(major_group) %>% 
+  summarise(mean_diff_made = mean(V))
+```
+
+## Representation
+
+```{r}
+representation_curves_by_group <- results_by_group$representation_curve %>% 
+  reduce(left_join) %>% 
+  select(fraction_protected, everything()) %>% 
+  mutate(Total = rowSums(.[-1])) %>% 
+  gather(var, value, -fraction_protected) 
+
+representation_curves_by_group %>% 
+  group_by(var) %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  filter(!var %in% c("Total", "Porifera")) %>% 
+  ggplot(aes(fraction_protected, value, col = var))+
+  geom_line()+
+  paletteer::scale_color_paletteer_d("ggthemes::calc")+
+  theme_classic()+
+  labs(x = "Fraction Ocean Protected", y = "Average Representation", col = "Feature group")+
+  ggsave(filename = file.path(emLab_project_dir, "figures","supplement","bio_representation_curve_per_taxa.png"), 
+         dpi = 300,  height = 5, width = 8)
+  
+representation_per_feature <- bio_rep_curves %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected),
+         round_percent = cut(fraction_protected,
+                             breaks = seq(0, 1, by = 0.01),
+                             labels = FALSE, 
+                             right = TRUE)) %>% 
+  group_by(round_percent) %>% 
+  summarize_all(.funs = max) %>% 
+  gather(feature, V, -round_percent, -fraction_protected) %>% 
+  left_join(full_features_list %>% 
+              select(valid_sci_name, major_group, iucn_category),
+            by = c("feature" = "valid_sci_name"))
+
+representation_per_feature %>% 
+  filter(!major_group %in% c("Seamounts", "Provinces")) %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  group_by(round_percent, iucn_category) %>% 
+  summarize(value = mean(V)) %>% 
+  ggplot(aes(round_percent, value, col = iucn_category))+
+  geom_line()+
+  paletteer::scale_color_paletteer_d("ggthemes::calc")+
+  theme_classic()+
+  labs(x = "Fraction Ocean Protected", y = "Average Representation", col = "IUCN category")+
+  ggsave(filename = file.path(emLab_project_dir, "figures","supplement", "bio_representation_curve_per_iucn_category.png"), 
+         dpi = 300,  height = 5, width = 8)
+```
+
+```{r}
+rep_per_group_plot <- representation_per_feature %>% 
+  filter(round_percent == 20) %>% 
+  ggplot(aes(x = major_group, y = V))+
+  geom_boxplot()+
+  stat_summary(fun.y=mean,  geom = "point", shape = 18, size = 2, color = "red", fill="red") +
+  labs(y = "Fraction in MPA", x = "")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) 
+
+ggsave(rep_per_group_plot, 
+       filename = file.path(emLab_project_dir, "figures","supplement", "bio_representation_per_group_at_20_percent_protection.png"), 
+         dpi = 300,  height = 5, width = 8)
+
+rep_per_iucn_plot <- representation_per_feature %>% 
+  filter(round_percent == 20) %>% 
+  filter(!major_group %in% c("Seamounts", "Provinces")) %>% 
+  ggplot(aes(x = fct_reorder(iucn_category, V, mean), y = V))+
+  geom_boxplot()+
+  stat_summary(fun.y=mean,  geom = "point", shape = 18, size = 2, color = "red", fill = "red") +
+  labs(y = "Fraction in MPA", x = "")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+  
+ggsave(rep_per_iucn_plot, filename = file.path(emLab_project_dir, "figures","supplement", "bio_representation_per_IUCN_at_20_percent_protection.png"), 
+         dpi = 300,  height = 5, width = 8)
+
+
+rep_per_iucn_plot + rep_per_group_plot + 
+  plot_layout(ncol = 1) + 
+  plot_annotation(tag_levels = 'a') +
+  ggsave(filename = file.path(emLab_project_dir, "figures","supplement", "bio_representation_20_percent_protection.png"), 
+         dpi = 300,  height = 8, width = 8)
+```
+
+```{r}
+representation_per_feature %>% 
+  filter(fraction_protected <= fraction_in_MPA) %>% 
+  group_by(major_group) %>% 
+  summarise(current_rep = mean(V)) %>% 
+  left_join(representation_per_feature %>% 
+              filter(round_percent == 20) %>% 
+              group_by(major_group) %>% 
+              summarise(rep_top_20 = mean(V))) 
+```
+
+```{r}
+representation_per_feature %>% 
+  filter(fraction_protected <= fraction_in_MPA) %>% 
+  group_by(iucn_category) %>% 
+  summarise(current_rep = mean(V)) %>% 
+  left_join(representation_per_feature %>% 
+              filter(round_percent == 20) %>% 
+              group_by(iucn_category) %>% 
+              summarise(rep_top_20 = mean(V))) %>% 
+  mutate(x_factor = rep_top_20/current_rep)
+```
+
+```{r}
+avg_rep_today <- representation_per_feature %>% 
+  filter(major_group %in% c("Provinces")) %>% 
+  filter(fraction_protected <= fraction_in_MPA) %>% 
+  group_by(feature) %>% 
+  summarise(current_rep = mean(V)) 
+
+avg_rep_top_20 <- representation_per_feature %>% 
+  filter(major_group %in% c("Provinces")) %>% 
+  filter(round_percent == 20) %>% 
+  group_by(feature) %>% 
+  summarise(rep_top_20 = mean(V))
+
+mean(avg_rep_top_20$rep_top_20)/mean(avg_rep_today$current_rep)
+```
+
+
+```{r}
+avg_rep_today %>% 
+  mutate(scenario = "today") %>% 
+  rename(rep = current_rep) %>% 
+  bind_rows(avg_rep_top_20 %>% 
+              rename(rep = rep_top_20) %>% 
+              mutate(scenario = "top_20")) %>% 
+  ggplot( aes(x = scenario, y = rep))+
+  geom_boxplot()+
+  labs(x = "", y = "Representation in MPAs")
+```
+
+```{r}
+rep_today_vs_future <- avg_rep_today %>% 
+  mutate(scenario = "today") %>% 
+  rename(rep = current_rep) %>% 
+  bind_rows(avg_rep_top_20 %>% 
+              rename(rep = rep_top_20) %>% 
+              mutate(scenario = "in top 20%")) 
+ 
+rep_means <- rep_today_vs_future %>% 
+  group_by(scenario) %>% 
+  summarize(mean_rep = mean(rep))
+ 
+rep_today_vs_future %>%   
+  ggplot()+
+  geom_density(aes(x = rep, y = ..scaled.., col = scenario), alpha = 0.3)+
+  geom_vline(data = rep_means, 
+             aes(xintercept = mean_rep, col = scenario), linetype ="dashed", size=1)+
+  scale_x_continuous(limits = c(0,1), expand = c(0,0))+
+  scale_y_continuous(limits = c(0,1), expand = c(0,0))+
+  scale_color_brewer(palette="Dark2")+
+  theme_minimal()+
+  labs(x = "Fraction in MPA", y = "Scaled density", col =  "")+
+  ggsave(filename = file.path(emLab_project_dir, "figures","supplement","bio_provinces_representation_density.png"), 
+         dpi = 300,  height = 5, width = 8)
+```
+
+# Results by country
+
+```{r}
+priorities_raster <- raster(file.path(variant_dir, "ranking_raster.tif"))
+
+eez_shp <- sf::st_read(file.path(emLab_shrd_data_dir, "marine-regions-EEZ-land-union-v3-202003", "EEZ_Land_v3_202030.shp")) %>% 
+  sf::st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  sf::st_transform(crs(ocean_low_res_moll)) %>% 
+  sf::st_simplify(dTolerance = 0) %>% 
+  janitor::clean_names()
+
+# eliminate Antarctica
+
+eez_shp <- eez_shp %>% 
+  filter(iso_ter1 != "ATA")
+
+eez_info <- eez_shp %>% 
+  st_drop_geometry() 
+```
+
+```{r}
+(n_cells <- ocean_low_res_moll %>% 
+    cellStats(function(x, ...) sum(!is.na(x))))
+  
+(n_cells_MPAs <- MPAs %>% 
+      cellStats(function(x, ...) sum(!is.na(x))))
+  
+(global_percent_protected <- 100*n_cells_MPAs/n_cells)
+```
+
+```{r}
+stats_by_country <- priorities_raster %>% 
+  mask(MPAs, updatevalue = 100, inverse = T) %>% 
+  raster::extract(eez_shp, df = T) %>% 
+  select(ID, cell_rank = 2) %>% 
+  group_by(ID) %>% 
+  summarize(n_cells = sum(cell_rank >= 0, na.rm = T),
+            n_protected_cells = sum(cell_rank >= 100, na.rm = T),
+            n_cells_top_20 = sum(cell_rank >= .80, na.rm = T),
+            n_cells_top_10 = sum(cell_rank >= .90, na.rm = T),
+            n_cells_top_5 = sum(cell_rank >= .95, na.rm = T)) %>% 
+  ungroup() %>% 
+  filter(n_cells > 0)
+            
+stats_by_country <- stats_by_country %>% 
+  mutate(fraction_protected = n_protected_cells/n_cells,
+         fraction_top_5 = n_cells_top_5/n_cells,
+         fraction_top_10 = n_cells_top_10/n_cells,
+         fraction_top_20 = n_cells_top_20/n_cells) %>% 
+  left_join(eez_info %>% 
+              rowid_to_column() %>% 
+              mutate(name = as.character(territory1),
+                     iso_code = as.character(iso_ter1)) %>% 
+              select(ID = rowid, mrgid_eez, name, iso_code, area_km2)) %>% 
+  select(ID, mrgid_eez, name,  iso_code,  everything())
+```
+
+```{r}
+# Add continent info for grouping
+stats_by_country <- stats_by_country %>% 
+  mutate(continent = countrycode::countrycode(iso_code, "iso3c", "continent")) 
+ 
+stats_by_country %>% 
+  filter(is.na(continent))
+
+table(stats_by_country$continent)
+
+stats_by_country <- stats_by_country %>% 
+  mutate(continent = case_when(
+    iso_code == "ATF" ~ "Southern\nIslands",
+    iso_code == "SGS" ~ "Southern\nIslands",
+    iso_code == "HMD" ~ "Southern\nIslands",
+    iso_code == "TAA" ~ "Europe",
+    iso_code == "ASC" ~ "Europe",
+    iso_code == "BVT" ~ "Southern\nIslands",
+    iso_code == "UMI" ~ "Oceania",
+    iso_code == "CCK" ~ "Oceania",
+    iso_code == "IOT" ~ "Europe",
+    iso_code == "MNP++" ~ "Oceania",
+    iso_code == "CW" ~ "Americas",
+    iso_code == "ANT" ~ "Americas",
+    iso_code == "CPT" ~ "Americas",
+    TRUE ~ continent
+  )) 
+
+stats_by_country <- stats_by_country %>% filter(iso_code != "-", iso_code != "VAT")
+
+stats_by_country <- stats_by_country %>%
+  mutate(name = name, 
+         name = gsub("Islands", "Isl", name),
+         name = gsub("Island", "Isl", name),
+         name = gsub("Democratic", "Dem", name),
+         name = gsub("Republic", "Rep", name),
+         name = gsub("South", "S", name),
+         name = gsub("American", "Am", name),
+         name = gsub("the United States", "US", name),
+         name = gsub("name", "Terr", name),
+         name = gsub("Saint", "St", name),
+         name = gsub(" and ", " & ", name),
+         name = gsub("Republique", "Rep", name),
+         name = gsub("Dem Rep of the", "Dem Rep of", name),
+         name = gsub("Georgia and the", "Georgia and", name),
+         name = gsub("St Vincent and the", "St Vincent and", name),
+         name = gsub("Howland Isl & Baker Isl", "Howland & Baker Isl", name),
+         name = gsub("Northern", "N", name), 
+         name = gsub("Reunion", "Reunion   ", name))
+
+stats_by_country$name[stats_by_country$iso_code == "IOT"] <- "Chagos"
+
+stats_by_country$name[stats_by_country$iso_code == "ATF"] <- "French S. & Antartic"
+
+stats_by_country$name[stats_by_country$iso_code == "UMI"] <- "U.S Minor Outlying Isl"
+
+stats_by_country$name[stats_by_country$iso_code == "MNP++"] <- "N Mariana Isl & Guam"
+
+stats_by_country$name[stats_by_country$iso_code == "SGS"] <- "S Georgia & S Sandwich"
+
+stats_by_country$name[stats_by_country$iso_code == "VIR"] <- "U.S Virgin Isl"
+
+stats_by_country$name[stats_by_country$iso_code == "SHN"] <- "St Helena, Ascension & Tristan da Cunha"
+
+```
+
+#### Distribution of % EEZ needed to reach targets
+
+```{r}
+stats_by_country %>% 
+  group_by(name) %>% 
+  summarize(n_cells = sum(n_cells),
+            n_cells_top_20 = sum(n_cells_top_20),
+            f_eez_top_20 = n_cells_top_20/n_cells,
+            n_cells_top_10 = sum(n_cells_top_10),
+            f_eez_top_10 = n_cells_top_10/n_cells,
+            n_cells_top_5 = sum(n_cells_top_5),
+            f_eez_top_5 = n_cells_top_5/n_cells) 
+```
+
+```{r}
+stats_by_country %>% 
+  group_by(name) %>% 
+  summarize(n_cells = sum(n_cells),
+            n_cells_top_20 = sum(n_cells_top_20),
+            f_eez_top_20 = n_cells_top_20/n_cells,
+            n_cells_top_10 = sum(n_cells_top_10),
+            f_eez_top_10 = n_cells_top_10/n_cells,
+            n_cells_top_5 = sum(n_cells_top_5),
+            f_eez_top_5 = n_cells_top_5/n_cells) %>% 
+  select(name, f_eez_top_5, f_eez_top_10, f_eez_top_20) %>% 
+  gather(var, val, -name) %>% 
+  mutate(var = factor(var, levels = c("f_eez_top_5", "f_eez_top_10", "f_eez_top_20"), labels = c("5%", "10%", "20%"))) %>% 
+  ggplot()+
+  geom_histogram(aes(val, fill = var), show.legend = F)+
+  theme_minimal()+
+  facet_wrap(~var, ncol = 1, strip.position="right")+
+  labs(x = "Fraction of EEZ proteced",
+       y = "Number of countries")+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "exploratory","bio_goals_fraction_EEZ_needed.png"), 
+         dpi = 300,  height = 5, width = 8)
+```
+
+#### % EEZ needed to reach 10%
+
+```{r}
+stats_by_country %>% 
+  top_n(50, wt = fraction_top_10) %>% 
+  pull(name)
+```
+
+```{r}
+# Create dataset
+data <- stats_by_country %>% 
+  filter(!iso_code %in% c("AZE", "KAZ", "TKM")) %>% 
+  filter(fraction_top_10 > 0) %>% 
+  ungroup() %>% 
+  mutate(continent = factor(continent),
+         value = fraction_top_10) %>% 
+  arrange(continent, value)
+
+# Set a number of 'empty bar' to add at the end of each group
+empty_bar = 3
+to_add = as_tibble( matrix(NA, empty_bar*nlevels(data$continent), ncol(data)) )
+colnames(to_add) = colnames(data)
+to_add$continent = rep(levels(data$continent), each = empty_bar)
+data = bind_rows(data, to_add)
+data = data %>% arrange(continent)
+data$id=seq(1, nrow(data))
+ 
+# Get the name and the y position of each label
+label_data=data
+number_of_bar=nrow(label_data)
+angle= 90 - 360 * (label_data$id-0.5) /number_of_bar     # I substract 0.5 because the letter must have the angle of the center of the bars. Not extreme right(1) or extreme left (0)
+label_data$hjust<-ifelse( angle < -90, 1, 0)
+label_data$angle<-ifelse(angle < -90, angle+180, angle)
+ 
+# prepare a data frame for base lines
+base_data=data %>% 
+  group_by(continent) %>% 
+  summarize(start=min(id), end=max(id) - empty_bar) %>% 
+  rowwise() %>% 
+  mutate(title=mean(c(start, end)))
+ 
+# prepare a data frame for grid (scales)
+grid_data = base_data
+grid_data$end = grid_data$end[ c( nrow(grid_data), 1:nrow(grid_data)-1)] + 1
+grid_data$start = grid_data$start - 1
+grid_data=grid_data[-1,]
+ 
+# Make the plot
+ggplot(data, aes(x=as.factor(id), y = 100*value, fill=continent)) +       # Note that id is a factor. If x is numeric, there is some space between the first bar
+  geom_bar(aes(x=as.factor(id), y= 100*value, fill=continent), stat="identity", alpha=0.5) +
+  # Add reference lines
+  geom_segment(data=grid_data, aes(x = end, y = 100, xend = start, yend = 100), colour = "grey", alpha=1, size=0.3 , inherit.aes = FALSE ) +
+  geom_segment(data=grid_data, aes(x = end, y = 80, xend = start, yend = 80), colour = "grey", alpha=1, size=0.3 , inherit.aes = FALSE ) +
+  geom_segment(data=grid_data, aes(x = end, y = 60, xend = start, yend = 60), colour = "grey", alpha=1, size=0.3 , inherit.aes = FALSE ) +
+  geom_segment(data=grid_data, aes(x = end, y = 40, xend = start, yend = 40), colour = "grey", alpha=1, size=0.3 , inherit.aes = FALSE ) +
+  geom_segment(data=grid_data, aes(x = end, y = 20, xend = start, yend = 20), colour = "grey", alpha=1, size=0.3 , inherit.aes = FALSE ) +
+  # Add text showing the value of each  lines
+  annotate("text", x = rep(max(data$id),5), y = c(20, 40, 60, 80, 100), label = c("20%", "40%", "60%", "80%", "100%"),
+           color="grey", size = 4 , angle=0, fontface="bold", hjust=.6) +
+  geom_bar(aes(x=as.factor(id), y=100*value, fill=continent), stat="identity", alpha=0.5) +
+  ylim(-30,100) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin = unit(rep(-1,4), "cm") 
+  ) +
+  coord_polar() +
+  geom_text(data=label_data, aes(x=id, y=100, label=name, hjust=hjust),
+            color="black", fontface="bold",alpha=0.6, size = 4, angle= label_data$angle, inherit.aes = FALSE )+
+  # Add continent information
+  geom_text(data=base_data, aes(x = title, y = 90, label=continent), hjust=c(1,1,0,0,0,0.5), colour = "black", alpha=0.8, size = 4, fontface="bold", inherit.aes = FALSE)+
+  ggsave(filename = file.path(emLab_project_dir,"figures","supplement", "propeller_plot_bio_top_10_all_countries.png"), height = 16, width = 17)
+```

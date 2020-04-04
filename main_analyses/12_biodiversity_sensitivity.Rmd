@@ -1,0 +1,428 @@
+---
+title: "Sensitivity to Z parameter"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+library(scales)
+
+DIR_GCS <- "~/gcs/git-annex/Carta-Marina"
+
+DIR_GCS_data <- "~/gcs/spatial-datasets"
+
+ocean_low_res_moll <- raster("~/gcs/spatial-datasets/ocean/ocean-low-res-moll.tif")
+
+ocean_matrix <- ocean_low_res_moll %>% 
+  raster::as.data.frame(xy = T) %>% 
+  filter(ocean.low.res.moll == 1) %>% 
+  mutate(cell_id = as.character(group_indices(., x, y))) %>% 
+  select(-ocean.low.res.moll) %>% 
+  as_tibble()
+
+land_shp <- sf::read_sf("~/gcs/spatial-datasets/land/land_50.shp")
+
+land_shp_moll <- land_shp %>% 
+  st_transform(crs = projection(ocean_low_res_moll))
+
+z_pal <- list(breaks = c(0, 0.2, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
+              labels = c("0-20", "20-50", "50-70", "70-80", "80-85", "85-90", "90-95", "95-100"),
+              colors = c("#4575b4", "#74add1", "#abd9e9", "#e0f3f8" ,"#fee090" ,"#fdae61" ,"#f46d43", "#d73027"))
+
+variant_name <- "12_biodiversity_sensitivity"
+
+output_dir <- file.path(variant_name, "results")
+
+figs_output_dir <- file.path(variant_name, "figures")
+
+dir.create(variant_name)
+
+dir.create(figs_output_dir)
+
+dir.create(output_dir)
+```
+
+# Load data 
+
+```{r}
+spp_df <- data.table::fread("data/spp_df.csv") %>% 
+  as_tibble()
+
+spp_info <- data.table::fread("data/spp_weights.csv") %>% 
+  as_tibble() %>% 
+  rename(w = spp_weight)
+
+smts_df <- data.table::fread("data/smts_df.csv") %>% 
+  as_tibble()
+
+smts_info <- tibble(filepath = list.files("../Zonation/data/seamounts/all", full.names = T)) %>% 
+  mutate(w = sum(spp_info$w)/n())
+
+sum(spp_info$w) ==  sum(smts_info$w)
+
+provs_df <- data.table::fread("data/provs_df.csv") %>% 
+  as_tibble()
+
+provs_info <- tibble(filepath = list.files(c("../Zonation/data/biogeography/Spalding",
+                                             "../Zonation/data/biogeography/GOODS"), 
+                                           full.names = T)) %>% 
+  mutate(w = sum(spp_info$w)/n())
+
+sum(spp_info$w) ==  sum(provs_info$w)
+```
+
+```{r}
+features_df <- spp_df %>% 
+  left_join(smts_df) %>% 
+  left_join(provs_df)
+
+n_features <- nrow(spp_info)  + nrow(smts_info) + nrow(provs_info) 
+
+feature_names <- colnames(features_df)[c(-1,-2,-3)]
+```
+
+## Normalize and trim
+
+```{r}
+features_matrix <- features_df %>% 
+  select(-x,-y,-cell_id) %>% 
+  as.matrix()
+
+stopifnot(
+  sum(map_lgl(features_df, is.numeric)) == ncol(features_df) 
+  ) # ALL numeric?
+
+Norm_features_matrix <- sweep(features_matrix, 2, colSums(features_matrix, na.rm = T), FUN = "/")
+
+stopifnot(
+  sum(colSums(Norm_features_matrix, na.rm = T)) == ncol(features_matrix)
+  )  # Normalized OK?
+
+Norm_features_matrix <- Norm_features_matrix[rowSums(is.na(Norm_features_matrix)) != ncol(Norm_features_matrix), , drop = F]
+
+rownames(Norm_features_matrix) <- features_df$cell_id
+
+stopifnot(
+  identical(colnames(Norm_features_matrix), 
+          features_df %>% 
+            select(-x,-y,-cell_id) %>% 
+            colnames())
+  )  # Is the order of the features mantained?
+
+Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
+```
+
+## Feature weights 
+
+```{r}
+feature_wts <- c(spp_info$w, smts_info$w, provs_info$w)
+  
+names(feature_wts) <- feature_names
+```
+
+# Current MPAs
+
+```{r}
+MPAs <- raster("../Zonation/data/masks/fully_highly_protected_reviewed_MPAs.tif")
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+  
+MPA_vect <- rownames(Norm_features_matrix) %>% 
+  enframe() %>% 
+  select(cell_id = value) %>% 
+  left_join(MPAs_df) %>% 
+  mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
+```
+
+# Apply Impacts 
+
+```{r}
+bio_abatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Abatable_impacts_5yr_avg_log.tif") %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("x", "y", "Ia")) %>% 
+  inner_join(ocean_matrix) %>% 
+  as_tibble() %>% 
+  replace_na(list(Ia = 0))
+
+bio_unabatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Unbatable_impacts_5yr_avg_log.tif") %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("x", "y", "Iu")) %>% 
+  inner_join(ocean_matrix) %>% 
+  as_tibble()%>% 
+  replace_na(list(Iu = 0))
+
+Norm_features_matrix_BAU <- Norm_features_matrix %>% 
+  sweep(1, (1 - bio_abatable_impacts_df$Ia), FUN = "*") %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*")
+
+remains_BAU <- colSums(Norm_features_matrix_BAU, na.rm = T)
+
+Norm_features_matrix_MPAs <- Norm_features_matrix %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*")
+
+remains_MPA <- colSums(Norm_features_matrix_MPAs, na.rm = T)
+
+Norm_features_matrix_diff <- Norm_features_matrix %>% 
+  sweep(1, (bio_abatable_impacts_df$Ia - bio_abatable_impacts_df$Ia*bio_unabatable_impacts_df$Iu), FUN = "*")
+```
+
+```{r}
+length(remains_BAU)
+
+hist(remains_BAU)
+
+hist(remains_MPA)
+# How much would remain under BAU?
+sum(remains_BAU^0.25)/n_features
+# How much would remain with full protection?
+sum(remains_MPA^0.25)/n_features
+# What is the % increase from
+(sum(remains_MPA^0.4) - sum(remains_BAU^0.4))/sum(remains_BAU^0.4)
+```
+
+# Ranking
+
+## Initial conditions
+
+```{r}
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix_diff))
+
+colnames(protected_cells) <- rownames(Norm_features_matrix_diff)
+
+OG_protected_matrix <- Norm_features_matrix_diff[protected_cells, , drop = T]
+
+OG_unprotected_matrix <- Norm_features_matrix_diff[!protected_cells, , drop = F]
+
+baseline_state <- remains_BAU + protected_cells%*%Norm_features_matrix_diff
+```
+
+## Run algorithm
+
+```{r}
+rm(list = setdiff(ls(), c("baseline_state", "OG_unprotected_matrix", "output_dir", "feature_wts")))
+
+gc()
+
+library(doParallel)
+
+registerDoParallel(cores = 4)
+
+foreach (z_val = c(0.1, 0.2, 0.3, 0.4)) %dopar% {
+
+  z <- z_val
+  
+  ranking <- list()
+  
+  current_pick <- 0
+  
+  current_state <- baseline_state
+  
+  max_slopes <- z*baseline_state^(z - 1)
+  
+  unprotected_matrix <- OG_unprotected_matrix
+
+  while(nrow(unprotected_matrix) > 0){
+    
+    current_pick <- sum(current_pick, 1)
+    
+    slopes <- feature_wts*pmin(max_slopes, z*current_state^(z - 1))
+    
+    delta <- unprotected_matrix%*%t(as.matrix(slopes))
+    
+    best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+    
+    best_cells <- delta[best_cell_indeces, ] %>% 
+      enframe() %>% 
+      set_names(c('cell_id', "delta")) %>% 
+      mutate(pick_order = current_pick)
+    
+    ranking <- bind_rows(ranking, best_cells)
+    
+    current_state <- unprotected_matrix[best_cell_indeces, , drop = F] %>% 
+      colSums() +
+      current_state
+    
+    unprotected_matrix <- unprotected_matrix[-best_cell_indeces, , drop = F]
+    
+  }
+  
+  write_rds(ranking, 
+            file.path(output_dir, paste0("ranking_results_z_", z,".rds")))
+  
+}
+```
+
+# Results
+
+```{r}
+read_z_run <- function(z_val){
+  
+  ranking_z <- read_rds(list.files(output_dir, full.names = T, pattern = as.character(z_val)))
+  
+  benefit_function <- MPAs_df %>% 
+    filter(!is.na(mpa)) %>% 
+    select(cell_id) %>% 
+    bind_rows(ranking_z %>% 
+                arrange(desc(delta))) %>% 
+    mutate(is_mpa = is.na(delta)) %>% 
+    full_join(ocean_matrix) %>% 
+    left_join(Norm_features_matrix_diff %>% 
+                as_tibble(rownames = NA) %>% 
+                rownames_to_column("cell_id")) %>% 
+    replace(is.na(.), 0) %>% 
+    select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
+    mutate_all(.funs = cumsum) %>% 
+    sweep(MARGIN = 2, remains_BAU, `+`) %>%
+    mutate_all(.funs = ~(.)^z_val) %>% 
+    as.matrix() %*% as.matrix(feature_wts) %>% 
+    as_tibble() %>% 
+    set_names("V") %>% 
+    mutate(fraction_protected = 1/n(),
+           fraction_protected = cumsum(fraction_protected),
+           z = z_val)
+  
+  
+}  
+  
+sensitivity_results <- c(0.1, 0.2, 0.3, 0.4) %>% 
+  map_dfr(read_z_run) 
+
+write_rds(sensitivity_results, 
+          file.path(output_dir, "sensitivity_results.rds"))
+```
+
+```{r}
+sensitivity_results <- read_rds(file.path(output_dir, "sensitivity_results.rds"))
+
+sensitivity_results %>%
+  group_by(z) %>% 
+  mutate(V = V/max(V)) %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, V, col = as.factor(z)))+
+  labs(col = "z", x = "Fraction of the ocean protected", y = "Biodiversity benefits")+
+  theme_classic()
+  ggsave(filename = file.path(DIR_GCS, "Supplement/fig_bio_z_sensitivity.png"), 
+         dpi = 300,  height = 5, width = 8)
+```
+
+```{r}
+sensitivity_results %>%
+  group_by(z) %>% 
+  mutate(V = scales::rescale(V)) %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, V, col = as.factor(z)))+
+  labs(col = "z", x = "Fraction of the ocean protected", y = "Biodiversity benefits")+
+  theme_classic()
+```
+
+```{r}
+make_rank_rasters <- function(z_val){
+  
+  ranking_z <- read_rds(list.files(output_dir, full.names = T, pattern = as.character(z_val)))
+  
+  ranking_raster <- MPAs_df %>% 
+    filter(!is.na(mpa)) %>% 
+    select(cell_id) %>% 
+    bind_rows(ranking_z) %>% 
+    mutate(is_mpa = is.na(delta)) %>% 
+    left_join(ocean_matrix) %>% 
+    tibble::rowid_to_column("ID") %>% 
+    mutate(rank = 1- scales::rescale(ID)) %>% 
+    select(x, y, rank) %>% 
+    rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+    projectRaster(ocean_low_res_moll) %>% 
+    mask(ocean_low_res_moll)
+  
+  writeRaster(ranking_raster, 
+              file.path(output_dir, paste0("ranking_raster_z_", z_val,".tif")), 
+              overwrite = T)
+  
+} 
+
+c(0.1, 0.2, 0.3, 0.4) %>% 
+  walk(make_rank_rasters) 
+```
+
+
+```{r}
+raster_z_01 <- raster("12_biodiversity_sensitivity/results/ranking_raster_z_0.1.tif")
+raster_z_04 <- raster("12_biodiversity_sensitivity/results/ranking_raster_z_0.4.tif")
+
+tmp_r <-  raster_z_04 - raster_z_01
+
+
+tmp_r %>% 
+  as.data.frame(xy = TRUE, centroids = T) %>% 
+  set_names(c("lon", "lat", "rank")) %>% 
+  filter(!is.na(rank)) %>% 
+  ggplot()+
+  geom_raster(aes(x = lon, y = lat, fill = rank))+
+  scale_fill_gradient2(high = "#4393c3", low = "#b2182b",
+                       breaks = c(-0.04, 0, 0.1),
+                       guide = guide_colorbar(title = "Ranking\ndifference",
+                                              direction = "vertical",
+                                              title.position = 'top',
+                                              title.hjust = 0.5,
+                                              label.hjust = -.02))+
+  geom_sf(data = land_shp_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
+  theme(legend.text = element_text(size = 6),
+        legend.text.align = 0,
+        axis.text.x = element_text(size = 6),
+        axis.text.y = element_text(size = 6),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = NA, color = NA), 
+        panel.background = element_rect(fill = NA, color = NA), 
+        legend.background = element_rect(fill = NA, color = NA),
+        panel.border = element_blank())+
+  ggsave(filename = file.path(DIR_GCS, "Supplement/fig_bio_z_sensitivity_diff_map.png"), 
+         dpi = 300,  height = 5, width = 8)
+```
+
+```{r}
+compare_rank_raster <- function(r1, r2, top_values){
+  
+  ranks1 <- raster::as.data.frame(r1, na.rm = T, xy = T)
+  
+  ranks2 <- raster::as.data.frame(r2, na.rm = T, xy = T) 
+  
+  df <- ranks1 %>% 
+    left_join(ranks2) %>% 
+    select(3:4)
+  
+  expand.grid(top_values = top_values,
+              df = list(df), 
+              m = c("pearson", "spearman", "kendall"),
+              stringsAsFactors = F) %>% 
+    mutate(filtered = map2(.x = df, .y = top_values, ~dplyr::filter_at(.x, 1, all_vars(. > (1-.y))))) %>%
+    mutate(cor = map2_dbl(.x = filtered, .y = m, ~cor.test(.x[[1]], .x[[2]], method = .y)$estimate)) %>%
+    select(-df,-filtered) %>%
+    spread(m, cor)
+}
+
+compare_rank_raster(raster_z_01, raster_z_04,  top_values = c(.3, .2, .1, .05, .01))
+```
+
