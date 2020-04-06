@@ -16,40 +16,15 @@ output:
 library(raster)
 library(sf)
 library(tidyverse)
+library(patchwork)
 
-DIR_GCS <- "~/gcs/git-annex/Carta-Marina"
-
-DIR_GCS_data <- "~/gcs/spatial-datasets"
-
-ocean_low_res_moll <- raster("~/gcs/spatial-datasets/ocean/ocean-low-res-moll.tif")
-
-ocean_matrix <- ocean_low_res_moll %>% 
-  raster::as.data.frame(xy = T) %>% 
-  filter(ocean.low.res.moll == 1) %>% 
-  mutate(cell_id = as.character(group_indices(., x, y))) %>% 
-  select(-ocean.low.res.moll) %>% 
-  as_tibble()
-
-land_shp <- sf::read_sf("~/gcs/spatial-datasets/land/land_50.shp")
-
-land_shp_moll <- land_shp %>% 
-  st_transform(crs = projection(ocean_low_res_moll))
-
-z_pal <- list(breaks = c(0, 0.2, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
-              labels = c("0-20", "20-50", "50-70", "70-80", "80-85", "85-90", "90-95", "95-100"),
-              colors = c("#4575b4", "#74add1", "#abd9e9", "#e0f3f8" ,"#fee090" ,"#fdae61" ,"#f46d43", "#d73027"))
+source(here::here("common.R"))
 
 variant_name <- "10_biodiversity_2050"
 
-output_dir <- file.path(variant_name, "results")
+variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name)
 
-figs_output_dir <- file.path(variant_name, "figures")
-
-dir.create(variant_name)
-
-dir.create(figs_output_dir)
-
-dir.create(output_dir)
+dir.create(variant_dir)
 ```
 
 # Approach 1: Design for the 2050
@@ -61,7 +36,7 @@ This approach plans for the future using the most relevant dataset. Thus, we use
 ### species 2050
 
 ```{r, eval = F}
-spp_files <- tibble(filepath = list.files(c("../Zonation/data/aquamaps_spp_distributions_2050/"), 
+spp_files <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "aquamaps_2050"), 
                                             full.names = T),
                    valid_sci_name = str_replace_all(str_remove(basename(filepath), "\\.tif"), "_", " "))
 
@@ -71,28 +46,30 @@ bio_features_df <- stack(spp_files$filepath) %>%
   select(x, y, cell_id, everything()) %>%
   as_tibble()
 
-data.table::fwrite(bio_features_df, "data/spp_2050_df.csv")
+data.table::fwrite(bio_features_df, 
+                   file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "aquamaps_spp_distributions_2050_df.csv"))
 ```
 
 ```{r}
-spp_2050_df <- data.table::fread("data/spp_2050_df.csv") %>% 
+spp_2050_df <- data.table::fread(file.path(emLab_project_dir, 
+                                           "data", "02_processed", "species_distributions", "aquamaps_spp_distributions_2050_df.csv")) %>% 
   as_tibble()
 
-spp_2050_files <- tibble(filepath = list.files(c("../Zonation/data/aquamaps_spp_distributions_2050"), 
-                                               full.names = T),
+spp_2050_files <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "aquamaps_2050"), 
+                                            full.names = T),
                          valid_sci_name = str_replace_all(str_remove(basename(filepath), ".tif"), "_", " "))
 
-spp_info <- data.table::fread("data/spp_weights.csv") %>% 
+spp_info <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "species_list", "spp_weights.csv")) %>% 
   as_tibble() %>% 
   rename(w = spp_weight) %>% 
-  mutate(new_file = str_replace(basename(filepath), "\\.tif", "_2050.tif")) %>% 
+  mutate(new_file = basename(filepath)) %>% 
   filter(new_file %in% basename(spp_2050_files$filepath)) %>% 
   select(-new_file)
 
-smts_df <- data.table::fread("data/smts_df.csv") %>% 
-  as_tibble()
+smts_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "smts_df.csv")) %>% 
+  as_tibble() 
 
-smts_info <- tibble(filepath = list.files("../Zonation/data/seamounts/all", full.names = T)) %>% 
+smts_info <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed","seamounts"), full.names = T)) %>% 
   mutate(w = sum(spp_info$w)/n())
 
 sum(spp_info$w) ==  sum(smts_info$w)
@@ -147,7 +124,7 @@ names(feature_wts) <- feature_names
 ### Current MPAs
 
 ```{r}
-MPAs <- raster("../Zonation/data/masks/fully_highly_protected_reviewed_MPAs.tif")
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
 
 MPAs_df <- MPAs %>% 
   raster::as.data.frame(xy = T) %>%
@@ -225,7 +202,7 @@ end_time <- Sys.time()
 end_time - start_time
 
 write_rds(ranking, 
-          file.path(output_dir, "ranking_results_approach_1.rds"))
+          file.path(variant_dir, "ranking_results_approach_1.rds"))
 ```
 
 ## Results
@@ -233,7 +210,7 @@ write_rds(ranking,
 ### Benefit curve
 
 ```{r}
-ranking <- read_rds(file.path(output_dir, "ranking_results_approach_1.rds"))
+ranking <- read_rds(file.path(variant_dir, "ranking_results_approach_1.rds"))
 
 representation_curves <- MPAs_df %>% 
   filter(!is.na(mpa)) %>% 
@@ -264,7 +241,7 @@ benefit_curve %>%
              linetype = c("dashed","dotted","dotdash"))+
   labs(x = "Fraction Ocean Protected",
        y = "Biodiversity Benefit",
-       caption = "Biodiversity + Climate Change, approach 1, Juanation")+
+       caption = "Biodiversity + Climate Change, approach 1")+
   theme_classic()+
   scale_x_continuous(limits = c(0,1), expand = c(0,0))+
   scale_y_continuous(limits = c(0,1), expand = c(0,0))+
@@ -273,7 +250,7 @@ benefit_curve %>%
                 ymin = 0, 
                 ymax = 1),
                 fill = "#69B578", alpha = 0.01)+
-  ggsave(file.path(figs_output_dir, "benefit_curve_approach_1.png"),
+  ggsave(file.path(variant_dir, "benefit_curve_approach_1.png"),
          width = 7, height = 4)
 ```
 
@@ -294,21 +271,21 @@ ranking_raster <- MPAs_df %>%
   mask(ocean_low_res_moll) 
 
 writeRaster(ranking_raster, 
-            file.path(output_dir, "ranking_raster.tif"), 
+            file.path(variant_dir, "ranking_raster_approach_1.tif"), 
             overwrite = T)
 ```
 
 ```{r}
-ranking_raster <- raster( file.path(output_dir, "ranking_raster.tif"))
+ranking_raster <- raster( file.path(variant_dir, "ranking_raster_approach_1.tif"))
 
 ranking_map <- tmap::tm_shape(ranking_raster)+
   tmap::tm_raster(title = "",
-                  palette  = z_pal$colors,
-                  breaks = z_pal$breaks,
-                  labels = z_pal$labels,
+                  palette  = priorities_map_pal$colors,
+                  breaks = priorities_map_pal$breaks,
+                  labels = priorities_map_pal$labels,
                   legend.is.portrait = T, 
                   legend.reverse = T)+
-  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_shape(land_50_moll)+
   tmap::tm_fill(col = "black", border.col = "transparent")+
   tmap::tm_credits("Biodiversity + Climate change, approach 1") +
   tmap::tm_shape(MPAs)+
@@ -320,28 +297,28 @@ ranking_map <- tmap::tm_shape(ranking_raster)+
                   legend.position = c(.99, "center")) 
 
 tmap::tmap_save(ranking_map, 
-                filename = file.path(figs_output_dir, "priority_map_approach_1.png"),
+                filename = file.path(variant_dir, "priority_map_approach_1.png"),
                 dpi = 300,  height = 4, width = 8 )
 ```
 
 #### diff map
 
 ```{r}
-raster_today <- raster("05_spp_wts_smts_provs_MPAs/results/ranking_raster_with_impacts.tif")
+raster_today <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs","ranking_raster.tif"))
 
 comparison_raster <- overlay(ranking_raster, raster_today, fun = function(x, y){if_else(x >= 0.95 & y >= 0.95, 1, 
-                                                                            if_else(x <= 0.5 & y <= 0.5, -1, 
-                                                                                    if_else(abs(x-y) <= 0.01, 0, 
-                                                                                            if_else(x > y, 0.5, -0.5))))})
+                                                                                        if_else(x <= 0.5 & y <= 0.5, -1, 
+                                                                                                if_else(abs(x-y) <= 0.01, 0, 
+                                                                                                        if_else(x > y, 0.5, -0.5))))})
 diff_map <- comparison_raster %>%
   tmap::tm_shape()+
   tmap::tm_raster(title = "",
                   palette = "seq",
                   style = "cat",
-                  labels = rev(c("irreplaceable (top 10%)", "increasing", "comparable", "decreasing", "least (bottom 50%)")),
+                  labels = rev(c("irreplaceable (top 5%)", "increasing", "comparable", "decreasing", "least (bottom 50%)")),
                   legend.is.portrait = T, 
                   legend.reverse = T)+
-  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_shape(land_50_moll)+
   tmap::tm_fill(col = "gray", border.col = "transparent")+
   tmap::tm_shape(MPAs)+
   tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
@@ -353,7 +330,7 @@ diff_map <- comparison_raster %>%
                   legend.position = c(.88, .1))
 
 tmap::tmap_save(diff_map, 
-               filename = file.path(figs_output_dir, "map_2050_vs_today_approach_1.png"),
+               filename = file.path(variant_dir, "map_2050_vs_today_approach_1.png"),
                 dpi = 300,  height = 4, width = 8 )
 
 ```
@@ -365,13 +342,10 @@ Here we keep all layer and impacts and only swap the species distributions.
 ## Load data 
 
 ```{r}
-provs_df <- data.table::fread("data/provs_df.csv") %>% 
-  as_tibble()
-
-provs_info <- tibble(filepath = list.files(c("../Zonation/data/biogeography/Spalding",
-                                             "../Zonation/data/biogeography/GOODS"), 
-                                           full.names = T)) %>% 
+provs_info <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "biogeography"), full.names = T, pattern = "\\.tif")) %>% 
   mutate(w = sum(spp_info$w)/n())
+
+provs_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "provinces_df.csv"))
 
 sum(spp_info$w) ==  sum(provs_info$w)
 ```
@@ -428,7 +402,7 @@ names(feature_wts) <- feature_names
 ### Current MPAs
 
 ```{r}
-MPAs <- raster("../Zonation/data/masks/fully_highly_protected_reviewed_MPAs.tif")
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
 
 MPAs_df <- MPAs %>% 
   raster::as.data.frame(xy = T) %>%
@@ -447,31 +421,32 @@ MPA_vect <- rownames(Norm_features_matrix) %>%
 
 ### Apply Impacts 
 
+
 ```{r}
-bio_abatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Abatable_impacts_5yr_avg_log.tif") %>% 
+bio_abatable_impacts_df <- raster(file.path(emLab_project_dir, 
+                                            "data", "02_processed", "impacts", "chi", "abatable_impacts_5_yr_avg_log.tif")) %>% 
   raster::as.data.frame(xy = T) %>% 
   set_names(c("x", "y", "Ia")) %>% 
   inner_join(ocean_matrix) %>% 
   as_tibble() %>% 
   replace_na(list(Ia = 0))
 
-bio_unabatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Unbatable_impacts_5yr_avg_log.tif") %>% 
+bio_unabatable_impacts_df <- raster(file.path(emLab_project_dir, 
+                                              "data", "02_processed", "impacts", "chi", "unabatable_impacts_5_yr_avg_log.tif")) %>% 
   raster::as.data.frame(xy = T) %>% 
   set_names(c("x", "y", "Iu")) %>% 
   inner_join(ocean_matrix) %>% 
   as_tibble()%>% 
   replace_na(list(Iu = 0))
 
-Norm_features_matrix_BAU <- Norm_features_matrix %>% 
+remains_BAU <- Norm_features_matrix %>% 
   sweep(1, (1 - bio_abatable_impacts_df$Ia), FUN = "*") %>% 
-  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*")
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*") %>% 
+  colSums(na.rm = T)
 
-remains_BAU <- colSums(Norm_features_matrix_BAU, na.rm = T)
-
-Norm_features_matrix_MPAs <- Norm_features_matrix %>% 
-  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*")
-
-remains_MPA <- colSums(Norm_features_matrix_MPAs, na.rm = T)
+remains_MPA <- Norm_features_matrix %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*") %>% 
+  colSums(na.rm = T)
 
 Norm_features_matrix_diff <- Norm_features_matrix %>% 
   sweep(1, (bio_abatable_impacts_df$Ia - bio_abatable_impacts_df$Ia*bio_unabatable_impacts_df$Iu), FUN = "*")
@@ -536,7 +511,7 @@ end_time <- Sys.time()
 end_time - start_time
 
 write_rds(ranking, 
-          file.path(output_dir, "ranking_results_approach_2.rds"))
+          file.path(variant_dir, "ranking_results_approach_2.rds"))
 ```
 
 ## Results
@@ -544,7 +519,7 @@ write_rds(ranking,
 ### Benefit curve
 
 ```{r}
-ranking_approach_2 <- read_rds(file.path(output_dir, "ranking_results_approach_2.rds"))
+ranking_approach_2 <- read_rds(file.path(variant_dir, "ranking_results_approach_2.rds"))
 
 benefit_curve_approach_2 <- MPAs_df %>% 
   filter(!is.na(mpa)) %>% 
@@ -583,7 +558,7 @@ benefit_curve_approach_2 %>%
                 ymin = min(benefit_curve_approach_2$V)/sum(feature_wts), 
                 ymax = max(benefit_curve_approach_2$V)/sum(feature_wts)),
                 fill = "#69B578", alpha = 0.01)+
-  ggsave(file.path(figs_output_dir, "benefit_curve_approach_2.png"),
+  ggsave(file.path(variant_dir, "benefit_curve_approach_2.png"),
          width = 7, height = 4)
 ```
 
@@ -604,19 +579,19 @@ ranking_raster_approach_2 <- MPAs_df %>%
   mask(ocean_low_res_moll) 
 
 writeRaster(ranking_raster_approach_2, 
-            file.path(output_dir, "ranking_raster_approach_2.tif"), 
+            file.path(variant_dir, "ranking_raster_approach_2.tif"), 
             overwrite = T)
 ```
 
 ```{r}
 ranking_map_approach_2 <- tmap::tm_shape(ranking_raster_approach_2)+
   tmap::tm_raster(title = "",
-                  palette  = z_pal$colors,
-                  breaks = z_pal$breaks,
-                  labels = z_pal$labels,
+                  palette  = priorities_map_pal$colors,
+                  breaks = priorities_map_pal$breaks,
+                  labels = priorities_map_pal$labels,
                   legend.is.portrait = T, 
                   legend.reverse = T)+
-  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_shape(land_50_moll)+
   tmap::tm_fill(col = "black", border.col = "transparent")+
   tmap::tm_credits("Biodiversity + Climate change, approach 2") +
   tmap::tm_shape(MPAs)+
@@ -628,27 +603,27 @@ ranking_map_approach_2 <- tmap::tm_shape(ranking_raster_approach_2)+
                   legend.position = c(.99, "center")) 
 
 tmap::tmap_save(ranking_map_approach_2, 
-                filename = file.path(figs_output_dir, "priority_map_approach_2.png"),
+                filename = file.path(variant_dir, "priority_map_approach_2.png"),
                 dpi = 300,  height = 4, width = 8 )
 ```
 
 ```{r}
-raster_today <- raster("05_spp_wts_smts_provs_MPAs/results/ranking_raster_with_impacts.tif")
-
-comparison_raster_approach_2 <- overlay(ranking_raster_approach_2, raster_today, fun = function(x, y){if_else(x >= 0.95 & y >= 0.95, 1, 
-                                                                            if_else(x <= 0.5 & y <= 0.5, -1, 
-                                                                                    if_else(abs(x-y) <= 0.01, 0, 
-                                                                                            if_else(x > y, 0.5, -0.5))))})
+comparison_raster_approach_2 <- overlay(ranking_raster_approach_2, 
+                                        raster_today,
+                                        fun = function(x, y){if_else(x >= 0.95 & y >= 0.95, 1, 
+                                                                     if_else(x <= 0.5 & y <= 0.5, -1, 
+                                                                             if_else(abs(x-y) <= 0.01, 0, 
+                                                                                     if_else(x > y, 0.5, -0.5))))})
 
 diff_map_approach_2 <- comparison_raster_approach_2 %>%
   tmap::tm_shape()+
   tmap::tm_raster(title = "",
                   palette = "seq",
                   style = "cat",
-                  labels = rev(c("irreplaceable (top 10%)", "increasing", "comparable", "decreasing", "least (bottom 50%)")),
+                  labels = rev(c("irreplaceable (top 5%)", "increasing", "comparable", "decreasing", "least (bottom 50%)")),
                   legend.is.portrait = T, 
                   legend.reverse = T)+
-  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_shape(land_50_moll)+
   tmap::tm_fill(col = "gray", border.col = "transparent")+
   tmap::tm_shape(MPAs)+
   tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
@@ -660,7 +635,6 @@ diff_map_approach_2 <- comparison_raster_approach_2 %>%
                   legend.position = c(.88, .1))
 
 tmap::tmap_save(diff_map_approach_2, 
-               filename = file.path(figs_output_dir, "map_2050_vs_today_approach_2.png"),
+               filename = file.path(variant_dir, "map_2050_vs_today_approach_2.png"),
                 dpi = 300,  height = 4, width = 8 )
-
 ```

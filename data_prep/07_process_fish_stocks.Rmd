@@ -12,7 +12,8 @@ output:
     highlight: haddock
 ---
 
-```{r setup, message=F,warning=F}
+
+```{r setup, message=F, warning=F}
 knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',message = FALSE, warning = FALSE)
 
 library(raster)
@@ -20,16 +21,18 @@ library(tidyverse)
 library(sf)
 library(rredlist)
 library(furrr)
-library(rgdal)
-library(patchwork)
+library(doParallel)
+library(parallel)
+library(foreach)
+library(paletteer)
 
-source("../common.R")
+source(here::here("common.R"))
 ```
 
 ```{r}
-stocks <- read_rds("../../../gcs/git-annex/Carta-Marina/Food-provision/data/raw/Cleanmegacell.rds") 
+stocks <- read_rds(file.path(emLab_project_dir, "data", "02_processed", "food_provision", "Cleanmegacell.rds"))
 
-cells <- read_rds("../../../gcs/git-annex/Carta-Marina/Food-provision/data/raw/CleanCoordmegacell.rds")
+cells <- read_rds(file.path(emLab_project_dir, "data", "02_processed", "food_provision", "CleanCoordmegacell.rds"))
 
 stocks_distributions <- bind_cols(stocks, cells) %>% 
   select(lon, lat, everything()) %>% 
@@ -52,14 +55,9 @@ stocks_distributions <- bind_cols(stocks, cells) %>%
 ```{r}
 empty_raster <- raster(resolution = 0.5)
 
-library(parallel)
-library(foreach)
-library(doParallel)
-
 registerDoParallel(80) #register cores
 
 unique_stock_ids <- unique(stocks_distributions$stock_id)
-#unique_stock_ids <- t
 
 foreach(stock = unique_stock_ids) %dopar% { 
   
@@ -79,8 +77,7 @@ foreach(stock = unique_stock_ids) %dopar% {
   stock_raster <- mask(stock_raster, ocean_low_res_moll)
   
   raster::writeRaster(stock_raster, 
-                      file.path(DIR_GCS, 
-                                paste0("Food-provision/data/processed/stock_distributions/", stock, ".tif")),
+                      file.path(emLab_project_dir, "data", "02_processed", "stock_distributions", paste0(stock, ".tif")),
                       overwrite = T)
 }
 ```

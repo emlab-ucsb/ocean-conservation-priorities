@@ -172,9 +172,7 @@ max_slopes <- z*baseline_state^(z - 1)
 ### Random selection
 
 ```{r}
-registerDoParallel(cores = 10) #register cores
-
-foreach(i = seq(1:100)) %dopar% { 
+for(i in seq(1:100)){ 
   
   random_rank <- tibble(cell_id = as.character(sample(rownames(unprotected_matrix))))
   
@@ -208,7 +206,7 @@ foreach(i = seq(1:100)) %dopar% {
 ## Benefit Curve
 
 ```{r}
-random_results <- list.files(output_dir, full.names = T) %>% 
+random_results <- list.files(file.path(variant_dir, "random_runs"), full.names = T) %>% 
   map(read_csv) %>% 
   reduce(bind_rows)
 
@@ -228,7 +226,7 @@ random_results %>%
                 ymin = min(random_results$V)/sum(feature_wts), 
                 ymax = max(random_results$V)/sum(feature_wts)),
                 fill = "#69B578", alpha = 0.01)+
-  ggsave(file.path(figs_output_dir, "random_benefit_curve.png"),
+  ggsave(file.path(variant_dir, "random_benefit_curve.png"),
          width = 7, height = 4)
 ```
 
@@ -240,7 +238,5 @@ random_results %>%
   slice(which.min(abs(V_rescaled - 0.9))) %>% 
   ungroup() %>% 
   summarise(mean(fraction_protected))
-
-85/20
 ```
 
