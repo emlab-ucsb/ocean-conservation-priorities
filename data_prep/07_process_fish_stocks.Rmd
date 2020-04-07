@@ -42,27 +42,16 @@ stocks_distributions <- bind_cols(stocks, cells) %>%
 # Generate stock rasters
 
 ```{r}
-# produced_stocks <- tibble(filename = list.files(file.path(DIR_GCS, paste0("Food-provision/data/processed/stock_distributions")), full.names = T),
-#                      stockid = str_remove(basename(filename), "\\.tif"))
-```
-
-```{r}
-# tmp <- unique(stocks_distributions$stock_id)
-# 
-# t <- tmp[!tmp %in% produced_stocks$stockid]
-```
-
-```{r}
 empty_raster <- raster(resolution = 0.5)
 
-registerDoParallel(80) #register cores
+registerDoParallel(50) #register cores
 
 unique_stock_ids <- unique(stocks_distributions$stock_id)
 
 foreach(stock = unique_stock_ids) %dopar% { 
   
   stock_data <- stocks_distributions %>% 
-    filter(stock_id == stock,
+    filter(stock_id == "Fis-27719",
            suitability > 0) %>% 
     select(lon, lat, suitability)
   
@@ -77,32 +66,10 @@ foreach(stock = unique_stock_ids) %dopar% {
   stock_raster <- mask(stock_raster, ocean_low_res_moll)
   
   raster::writeRaster(stock_raster, 
-                      file.path(emLab_project_dir, "data", "02_processed", "stock_distributions", paste0(stock, ".tif")),
+                      file.path(emLab_project_dir, "data", "02_processed", "stock_distributions", paste0("Fis-27719", ".tif")),
                       overwrite = T)
 }
 ```
 
-```{r}
-# all_stocks <- tibble(filename = list.files(file.path(DIR_GCS, paste0("Food-provision/data/processed/stock_distributions")), full.names = T),
-#                      stockid = str_remove(basename(filename), "\\.tif"))
-# 
-# included_stocks <- read_csv(file.path(DIR_GCS, "Food-provision/data/raw/FP_stock_info.csv"))
-# 
-# all_stocks %>% 
-#   filter(!stockid %in% included_stocks$stockid) %>% 
-#   pull(filename)
-
-#  file.remove()
-```
-
-
-```{r}
-hist(included_stocks$Hopt)
-
-included_stocks %>% 
-  filter(stockid != "ILLEXNWATLC") %>% 
-  ggplot()+
-  geom_point(aes(Ropt, Hopt))
-```
 
 
