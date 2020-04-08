@@ -20,7 +20,7 @@ library(patchwork)
 
 source(here::here("common.R"))
 
-variant_name <- "07_food"
+variant_name <- "16_food_alternative_effort_models"
 
 variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name)
 
@@ -127,34 +127,50 @@ baseline_state <- protected_cells%*%Norm_features_matrix
 stocks_info$ex_rate[stocks_info$ex_rate >= 1] <- 0.99999
 ```
 
-## Effort goes away
+## Effort goes outside
 
 ### functions
 
 ```{r}
-estimate_slopes <- function(e = stocks_info$ex_rate, 
-                            m = stocks_info$m,
-                            r = stocks_info$r, 
-                            k = stocks_info$k,
-                            R){
+estimate_slopes_a1 <- function(e = stocks_info$ex_rate, 
+                               m = stocks_info$m,
+                               r = stocks_info$r, 
+                               k = stocks_info$k, 
+                               R){
   
-  slope <- -e*k*m*(m+e)*((e*r + 2*e*m)*R + m*r - 2*e*m)/(r*(e*R + m)^3)
+  A <- (1 - e)^(1/(1 - R))
+  
+  part_a <- A*log(1 - e)*k*m*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - R)*((1 - A)*R + m))
+  
+  part_b <- (1 - A)*k*m*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - A)*R + m)
+  
+  part_c <- (1 - A)*k*m*(1 - R)*(- A*log(1 - e)*R/(1 - R)^2 - A + 1)*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - A)*R + m)^2
+  
+  part_d <- (1 - A)*k*m*(1 - R)*(A*log(1 - e)*m/(r*(1 - R)*((1 - A)*R + m)) + (1 - A)*m/(r*((1 - A)*R + m)) + (1 - A)*m*(1 - R)*(-A*log(1 - e)*R/(1 - R)^2 - A + 1)/(r*((1 - A)*R + m)^2))/((1 - A)*R + m)
+  
+  slope <- - part_a - part_b - part_c + part_d
   
   return(slope)
   
 }
 
-estimate_delta_catch <- function(x, 
-                                 e = stocks_info$ex_rate,
-                                 m = stocks_info$m, 
-                                 r = stocks_info$r, 
-                                 k = stocks_info$k){
+estimate_delta_catch_a1 <- function(x, 
+                                    e = stocks_info$ex_rate, 
+                                    m = stocks_info$m,
+                                    r = stocks_info$r, 
+                                    k = stocks_info$k) {
+  
+  R_bau <- 0
   
   x[x > 1] <- 1 
   
-  delta_catch <- e*(m*k*(1 - x)/(e*x + m))*(1 - (e*(1 - x)*m)/((e*x + m)*r)) - e*((r - e)/r)*k
+  exp_rate <- 1 - (1 - e)^(1/(1 - x))
   
-  return(delta_catch)
+  part_a <- exp_rate*(m*k)*(1 - x)/(exp_rate*x + m)*(1 - exp_rate*(1 - x)*m/((exp_rate*x + m)*r))
+  
+  part_b <- e*(m*k*(1 - R_bau)/(e*R_bau + m)*(1 - e*(1 - R_bau)*m/((e*R_bau + m)*r)))
+  
+  return(part_a - part_b)
   
 }
 ```
@@ -178,8 +194,10 @@ while(nrow(unprotected_matrix) > 0){
   
   current_pick <- sum(current_pick, 1)
   
-  slopes <- estimate_slopes(R = current_state)
+  slopes <- estimate_slopes_a1(R = current_state)
   
+  slopes[is.na(slopes)] <- 0
+
   delta <- unprotected_matrix%*%as.matrix(t(slopes))
   
   best_cell_indeces <- doBy::which.maxn(delta, n = 100)
@@ -204,16 +222,15 @@ end_time <- Sys.time()
 end_time - start_time
 
 write_rds(ranking,
-          file.path(variant_dir, "ranking_results.rds"))
+          file.path(variant_dir, "ranking_results_a1.rds"))
 ```
-
 
 # Results
 
 ## benefit curve
 
 ```{r}
-ranking <- read_rds(file.path(variant_dir, "ranking_results.rds"))
+ranking <- read_rds(file.path(variant_dir, "ranking_results_a1.rds"))
 
 ranked_rep_levels <- MPAs_df %>% 
   filter(!is.na(mpa)) %>% 
@@ -229,7 +246,7 @@ ranked_rep_levels <- MPAs_df %>%
 network_delta_catch_per_stock <- ranked_rep_levels %>% 
   select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
   mutate_all(.funs = cumsum) %>% 
-  apply(MARGIN = 1, estimate_delta_catch)  %>% 
+  apply(MARGIN = 1, estimate_delta_catch_a1)  %>% 
   t() 
 
 network_delta_catch <- network_delta_catch_per_stock %>% 
@@ -238,7 +255,7 @@ network_delta_catch <- network_delta_catch_per_stock %>%
   
 pixel_delta_catch <- ranked_rep_levels %>%
   select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>%
-  apply(MARGIN = 1, estimate_delta_catch)  %>% 
+  apply(MARGIN = 1, estimate_delta_catch_a1)  %>% 
   t() %>%
   rowSums() %>%
   enframe()
@@ -251,13 +268,13 @@ results_per_pixel <- ranked_rep_levels %>%
          pixel_contribution_to_network = if_else(is.na(pixel_contribution_to_network), network_cummulative_delta_catch, pixel_contribution_to_network)) 
 
 write_csv(results_per_pixel, 
-          file.path(variant_dir, "results_per_pixel.csv"))
+          file.path(variant_dir, "results_per_pixel_a1.csv"))
 
 network_delta_catch_per_stock %>% 
   as_tibble() %>% 
   mutate(cell_id = ranked_rep_levels$cell_id) %>%
   select(cell_id, everything()) %>% 
-  write_rds(file.path(variant_dir, "network_delta_catch_per_stock.rds"))
+  write_rds(file.path(variant_dir, "network_delta_catch_per_stock_a1.rds"))
 ```
 
 ```{r}
@@ -269,7 +286,7 @@ network_delta_catch %>%
   geom_line(aes(fraction_protected, value))+
   labs(x = "Fraction Ocean Protected",
        y = "Delta Catch",
-       caption = "") +
+       caption = "a1, all effort is displaced") +
   theme_classic()+
   geom_rect(aes(xmin = 0, 
                 xmax = fraction_in_MPA, 
@@ -278,7 +295,7 @@ network_delta_catch %>%
                 fill = "#69B578", alpha = 0.01)+
   scale_x_continuous(limits = c(0,1), expand = c(0, 0))+
   scale_y_continuous(expand = c(0, 100))+
-  ggsave(file.path(variant_dir, "delta_catch_curve.png"),
+  ggsave(file.path(variant_dir, "delta_catch_curve_a1.png"),
          width = 7, 
          height = 4)
 
@@ -296,7 +313,7 @@ results_per_pixel %>%
 ## max delta catch
 
 ```{r}
-max(network_delta_catch$value)/10^6
+max(network_delta_catch$value, na.rm = T)/10^6
 
 bau_delta_catch <- network_delta_catch %>% 
   mutate(fraction_protected = 1/n(),
@@ -304,7 +321,7 @@ bau_delta_catch <- network_delta_catch %>%
   filter(fraction_protected <= fraction_in_MPA) %>% 
   summarise(current_delta_catch = max(value)) %>% pull()
 
-(max_delta_catch <- max(network_delta_catch$value) - bau_delta_catch)/10^6
+(max_delta_catch <- max(network_delta_catch$value, na.rm = T) - bau_delta_catch)/10^6
 
 optimal_protection_level <- network_delta_catch %>% 
   mutate(fraction_protected = 1/n(),
@@ -379,6 +396,7 @@ optimal_protection_map <- ranking_raster %>%
   tmap::tm_raster(title = "",
                   palette = rev("-Spectral"), 
                   n = 20,
+                  
                   style = "cont",
                   legend.is.portrait = T, 
                   legend.reverse = T)+
@@ -414,5 +432,63 @@ results_per_pixel %>%
   ggsave(file.path(variant_dir, "pixel_contribution_map.png"),dpi = 300,  height = 4, width = 8)
 ```
 
+## max changes in catch per stock
 
+```{r}
+cells_per_stock <- ranked_rep_levels %>% 
+  select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
+  summarize_all(~sum(.x > 0)) %>% 
+  pivot_longer(everything(), names_to = "stockid", values_to = "n_cells")
+
+network_delta_catch_per_stock_a1 <- read_rds(file.path(variant_dir, "network_delta_catch_per_stock_a1.rds"))
+
+max_catch_per_stock_a1 <- network_delta_catch_per_stock_a1 %>% 
+  select(-cell_id) %>% 
+  summarize_all(max) %>% 
+  pivot_longer(everything(), names_to = "stockid", values_to = "max_delta_catch_a1") 
+
+network_delta_catch_per_stock_a0 <- read_rds("~/Google Drive File Stream/Shared drives/emlab/projects/current-projects/ocean-conservation-priorities/data/03_output/07_food/network_delta_catch_per_stock.rds")
+
+max_catch_per_stock_a0 <- network_delta_catch_per_stock_a0 %>% 
+  select(-cell_id) %>% 
+  summarize_all(max) %>% 
+  pivot_longer(everything(), names_to = "stockid", values_to = "max_delta_catch_a0") 
+
+comparing_assumptions <- max_catch_per_stock_a1 %>% 
+  left_join(max_catch_per_stock_a0) %>% 
+  left_join(cells_per_stock, by = "stockid") %>% 
+  mutate(stockid = str_replace_all(stockid, "\\.", "-")) %>% 
+  left_join(stocks_info %>% select(-filename), by = "stockid")
+
+comparing_assumptions %>% write_csv(file.path(variant_dir, "max_delta_catch_per_stock.csv"))
+```
+
+```{r}
+comparing_assumptions <- read_csv(file.path(variant_dir, "max_delta_catch_per_stock.csv"))
+
+comparing_assumptions %>% 
+  mutate(diff = max_delta_catch_a1 - max_delta_catch_a0,
+         diff_n = ifelse(diff < 0, -abs(diff)^(1/3), abs(diff)^(1/3)),
+         percent_change = 100*(max_delta_catch_a1 - max_delta_catch_a0)/max_delta_catch_a0,
+         m = as.factor(m)) %>%
+  ggplot()+
+  geom_point(aes(x = n_cells, y = diff_n, col = k, shape = m))+
+  scale_x_log10()+
+  labs(y = "Difference in delta H (cubic root transform)", x  = "stock range size (log 10 # of cells)")
+  
+  comparing_assumptions %>% 
+  mutate(diff = max_delta_catch_a1 - max_delta_catch_a0,
+         diff_n = ifelse(diff < 0, -abs(diff)^(1/3), abs(diff)^(1/3)),
+         percent_change = 100*(max_delta_catch_a1 - max_delta_catch_a0)/max_delta_catch_a0,
+         m = as.factor(m)) %>%
+  ggplot()+
+  geom_point(aes(x = ex_rate, y = diff_n, col = k, shape = m))+
+  labs(y = "Difference in delta H (cubic root transform)", x  = "Exploitation rate")
+```
+
+```{r}
+sum(comparing_assumptions$max_delta_catch_a0)/10^6
+
+sum(comparing_assumptions$max_delta_catch_a1)/10^6
+```
 

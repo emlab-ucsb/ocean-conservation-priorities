@@ -16,80 +16,25 @@ output:
 library(raster)
 library(sf)
 library(tidyverse)
-library(scales)
+library(patchwork)
 
-DIR_GCS <- "~/gcs/git-annex/Carta-Marina"
-
-DIR_GCS_data <- "~/gcs/spatial-datasets"
-
-ocean_low_res_moll <- raster("~/gcs/spatial-datasets/ocean/ocean-low-res-moll.tif")
-
-ocean_matrix <- ocean_low_res_moll %>% 
-  raster::as.data.frame(xy = T) %>% 
-  filter(ocean.low.res.moll == 1) %>% 
-  mutate(cell_id = as.character(group_indices(., x, y))) %>% 
-  select(-ocean.low.res.moll) %>% 
-  as_tibble()
-
-land_shp <- sf::read_sf("~/gcs/spatial-datasets/land/land_50.shp")
-
-land_shp_moll <- land_shp %>% 
-  st_transform(crs = projection(ocean_low_res_moll))
-
-z_pal <- list(breaks = c(0, 0.2, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
-              labels = c("0-20", "20-50", "50-70", "70-80", "80-85", "85-90", "90-95", "95-100"),
-              colors = c("#4575b4", "#74add1", "#abd9e9", "#e0f3f8" ,"#fee090" ,"#fdae61" ,"#f46d43", "#d73027"))
+source(here::here("common.R"))
 
 variant_name <- "14_upgrade_weak_MPAs"
 
-output_dir <- file.path(variant_name, "results")
+variant_dir <- file.path(emLab_project_dir, "data", "03_output", variant_name)
 
-figs_output_dir <- file.path(variant_name, "figures")
-
-dir.create(variant_name)
-
-dir.create(figs_output_dir)
-
-dir.create(output_dir)
+dir.create(variant_dir)
 ```
 
 # Load data 
 
 ```{r}
-spp_df <- data.table::fread("data/spp_df.csv") %>% 
-  as_tibble()
-
-spp_info <- data.table::fread("data/spp_weights.csv") %>% 
-  as_tibble() %>% 
-  rename(w = spp_weight)
-
-smts_df <- data.table::fread("data/smts_df.csv") %>% 
-  as_tibble()
-
-smts_info <- tibble(filepath = list.files("../Zonation/data/seamounts/all", full.names = T)) %>% 
-  mutate(w = sum(spp_info$w)/n())
-
-sum(spp_info$w) ==  sum(smts_info$w)
-
-provs_df <- data.table::fread("data/provs_df.csv") %>% 
-  as_tibble()
-
-provs_info <- tibble(filepath = list.files(c("../Zonation/data/biogeography/Spalding",
-                                             "../Zonation/data/biogeography/GOODS"), 
-                                           full.names = T)) %>% 
-  mutate(w = sum(spp_info$w)/n())
-
-sum(spp_info$w) ==  sum(provs_info$w)
-```
-
-```{r}
-features_df <- spp_df %>% 
-  left_join(smts_df) %>% 
-  left_join(provs_df)
-
-n_features <- nrow(spp_info)  + nrow(smts_info) + nrow(provs_info) 
+features_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "all_bio_features_df.csv"))
 
 feature_names <- colnames(features_df)[c(-1,-2,-3)]
+
+n_features <- length(feature_names)
 ```
 
 ## Normalize and trim
@@ -98,6 +43,8 @@ feature_names <- colnames(features_df)[c(-1,-2,-3)]
 features_matrix <- features_df %>% 
   select(-x,-y,-cell_id) %>% 
   as.matrix()
+
+rownames(features_matrix) <- features_df$cell_id
 
 stopifnot(
   sum(map_lgl(features_df, is.numeric)) == ncol(features_df) 
@@ -126,20 +73,34 @@ Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
 ## Feature weights 
 
 ```{r}
-feature_wts <- c(spp_info$w, smts_info$w, provs_info$w)
-  
+spp_wts <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "species_list", "spp_weights.csv")) %>% 
+  as_tibble() %>% 
+  rename(w = spp_weight)
+
+smts_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed","seamounts"), full.names = T)) %>% 
+  mutate(w = sum(spp_wts$w)/n())
+
+provs_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "biogeography"), full.names = T, pattern = "\\.tif")) %>% 
+  mutate(w = sum(spp_wts$w)/n())
+
+feature_wts <- c(spp_wts$w, smts_wts$w, provs_wts$w)
+
 names(feature_wts) <- feature_names
+
+sum(spp_wts$w) == sum(smts_wts$w)
+
+sum(smts_wts$w) == sum(provs_wts$w)
 ```
 
-# Current MPAs
+## Current MPAs
 
 ```{r}
-MPAs <- raster("../Zonation/data/masks/reviewed_all_implemented_MPAs_raster_moll.tif")
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "reviewed_implemented_MPAs_all_protection_levels.tif"))
 
 MPAs_df <- MPAs %>% 
   raster::as.data.frame(xy = T) %>%
   inner_join(ocean_matrix) %>% 
-  select(x, y, cell_id, mpa = reviewed_all_implemented_MPAs_raster_moll) %>%
+  select(x, y, cell_id, mpa = reviewed_implemented_MPAs_all_protection_levels) %>%
   as_tibble() 
 
 fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
@@ -151,37 +112,33 @@ MPA_vect <- rownames(Norm_features_matrix) %>%
   mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
 ```
 
-# Ranking
-
-## With impacts
-
-### Apply Impacts 
+## Apply Impacts 
 
 ```{r}
-bio_abatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Abatable_impacts_5yr_avg_log.tif") %>% 
+bio_abatable_impacts_df <- raster(file.path(emLab_project_dir, 
+                                            "data", "02_processed", "impacts", "chi", "abatable_impacts_5_yr_avg_log.tif")) %>% 
   raster::as.data.frame(xy = T) %>% 
   set_names(c("x", "y", "Ia")) %>% 
   inner_join(ocean_matrix) %>% 
   as_tibble() %>% 
   replace_na(list(Ia = 0))
 
-bio_unabatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Unbatable_impacts_5yr_avg_log.tif") %>% 
+bio_unabatable_impacts_df <- raster(file.path(emLab_project_dir, 
+                                              "data", "02_processed", "impacts", "chi", "unabatable_impacts_5_yr_avg_log.tif")) %>% 
   raster::as.data.frame(xy = T) %>% 
   set_names(c("x", "y", "Iu")) %>% 
   inner_join(ocean_matrix) %>% 
   as_tibble()%>% 
   replace_na(list(Iu = 0))
 
-Norm_features_matrix_BAU <- Norm_features_matrix %>% 
+remains_BAU <- Norm_features_matrix %>% 
   sweep(1, (1 - bio_abatable_impacts_df$Ia), FUN = "*") %>% 
-  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*")
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*") %>% 
+  colSums(na.rm = T)
 
-remains_BAU <- colSums(Norm_features_matrix_BAU, na.rm = T)
-
-Norm_features_matrix_MPAs <- Norm_features_matrix %>% 
-  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*")
-
-remains_MPA <- colSums(Norm_features_matrix_MPAs, na.rm = T)
+remains_MPA <- Norm_features_matrix %>% 
+  sweep(1, (1 - bio_unabatable_impacts_df$Iu), FUN = "*") %>% 
+  colSums(na.rm = T)
 
 Norm_features_matrix_diff <- Norm_features_matrix %>% 
   sweep(1, (bio_abatable_impacts_df$Ia - bio_abatable_impacts_df$Ia*bio_unabatable_impacts_df$Iu), FUN = "*")
@@ -263,7 +220,7 @@ end_time <- Sys.time()
 end_time - start_time
 
 write_rds(ranking, 
-          file.path(output_dir, "ranking_results_with_impacts.rds"))
+          file.path(variant_dir, "ranking_results.rds"))
 ```
 
 # Results
@@ -273,12 +230,12 @@ write_rds(ranking,
 ### With Impacts 
 
 ```{r}
-ranking_with_impacts <- read_rds(file.path(output_dir, "ranking_results_with_impacts.rds"))
+ranking <- read_rds(file.path(variant_dir, "ranking_results.rds"))
 
-benefit_curve_with_impacts <- MPAs_df %>% 
+benefit_curve <- MPAs_df %>% 
   filter(!is.na(mpa)) %>% 
   select(cell_id) %>% 
-  bind_rows(ranking_with_impacts) %>% 
+  bind_rows(ranking) %>% 
   mutate(is_mpa = is.na(delta))  %>% 
   full_join(ocean_matrix) %>% 
   left_join(Norm_features_matrix_diff %>% 
@@ -291,10 +248,10 @@ benefit_curve_with_impacts <- MPAs_df %>%
   sweep(MARGIN = 2, c(0, remains_BAU), `+`) %>%
   mutate_at(vars(-cell_id), .funs = ~(.)^0.25) 
 
-write_rds(benefit_curve_with_impacts, 
-          file.path(output_dir, "bio_benefit_curves.rds"))
+write_rds(benefit_curve, 
+          file.path(variant_dir, "benefit_curves.rds"))
 
-benefit_curve_with_impacts %>% 
+benefit_curve %>% 
   select(-cell_id) %>% 
   as.matrix() %*% as.matrix(feature_wts) %>% 
   #rowSums() %>% 
@@ -309,23 +266,23 @@ benefit_curve_with_impacts %>%
              linetype = c("dashed","dotted","dotdash"))+
   labs(x = "Fraction Ocean Protected",
        y = "Biodiversity Benefit",
-       caption = "Biodiversity national, with impacts, Juanation")+
+       caption = "Biodiversity national, with impacts")+
   theme_classic()+
   scale_x_continuous(limits = c(0,1), expand = c(0,0))+
   geom_rect(aes(xmin = 0, 
                 xmax = fraction_in_MPA, 
-                ymin = min(benefit_curve_with_impacts$V)/sum(feature_wts), 
-                ymax = max(benefit_curve_with_impacts$V)/sum(feature_wts)),
+                ymin = min(benefit_curve$V)/sum(feature_wts), 
+                ymax = max(benefit_curve$V)/sum(feature_wts)),
                 fill = "#69B578", alpha = 0.01)+
-  ggsave(file.path(figs_output_dir, "benefit_curve_with_impacts.png"),
+  ggsave(file.path(variant_dir, "benefit_curve.png"),
          width = 7, height = 4)
 ```
 
 ```{r}
-representation_curves_with_impacts <- MPAs_df %>% 
+representation_curves<- MPAs_df %>% 
   filter(!is.na(mpa)) %>% 
   select(cell_id) %>% 
-  bind_rows(ranking_with_impacts) %>% 
+  bind_rows(ranking) %>% 
   mutate(is_mpa = is.na(delta))   %>% 
   full_join(ocean_matrix) %>% 
   left_join(Norm_features_matrix %>% 
@@ -335,10 +292,10 @@ representation_curves_with_impacts <- MPAs_df %>%
   select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
   mutate_all(.funs = cumsum) 
   
-write_rds(representation_curves_with_impacts, 
-          file.path(output_dir, "representation_curves_with_impacts.rds"))
+write_rds(representation_curves, 
+          file.path(variant_dir, "representation_curves.rds"))
 
-representation_curves_with_impacts %>% 
+representation_curves %>% 
   as.matrix() %>% 
   rowSums() %>% 
   as_tibble() %>% 
@@ -353,7 +310,7 @@ representation_curves_with_impacts %>%
              linetype = c("dashed","dotted","dotdash"))+
   labs(x = "Fraction Ocean Protected",
        y = "Average feature representation",
-       caption = "Biodiversity + MPAs, with impacts, Juanation")+
+       caption = "Biodiversity + MPAs, with impacts")+
   theme_classic()+
   scale_x_continuous(limits = c(0,1), expand = c(0,0))+
   geom_rect(aes(xmin = 0, 
@@ -361,17 +318,17 @@ representation_curves_with_impacts %>%
                 ymin = 0,
                 ymax = 1),
                 fill = "#69B578", alpha = 0.01)+
-  ggsave(file.path(figs_output_dir, "representation_curve_with_impacts.png"),
+  ggsave(file.path(variant_dir, "representation_curve.png"),
          width = 7, height = 5)
 ```
 
 ## Priority Maps
 
 ```{r}
-ranking_raster_with_impacts <- MPAs_df %>% 
+ranking_raster <- MPAs_df %>% 
   filter(!is.na(mpa)) %>% 
   select(cell_id) %>% 
-  bind_rows(ranking_with_impacts) %>% 
+  bind_rows(ranking) %>% 
   mutate(is_mpa = is.na(delta)) %>% 
   left_join(ocean_matrix) %>% 
   tibble::rowid_to_column("ID") %>% 
@@ -381,41 +338,42 @@ ranking_raster_with_impacts <- MPAs_df %>%
   projectRaster(ocean_low_res_moll) %>% 
   mask(ocean_low_res_moll) 
 
-writeRaster(ranking_raster_with_impacts, 
-            file.path(output_dir, "ranking_raster_with_impacts.tif"), 
+writeRaster(ranking_raster, 
+            file.path(variant_dir, "ranking_raster.tif"), 
             overwrite = T)
 ```
 
 ```{r}
-ranking_map_with_impacts <- tmap::tm_shape(ranking_raster_with_impacts)+
+ranking_map <- tmap::tm_shape(ranking_raster)+
   tmap::tm_raster(title = "",
-                  palette  = z_pal$colors,
-                  breaks = z_pal$breaks,
-                  labels = z_pal$labels,
+                  palette  = priorities_map_pal$colors,
+                  breaks = priorities_map_pal$breaks,
+                  labels = priorities_map_pal$labels,
                   legend.is.portrait = T, 
                   legend.reverse = T)+
-  tmap::tm_shape(land_shp_moll)+
+  tmap::tm_shape(land_50_moll)+
   tmap::tm_fill(col = "black", border.col = "transparent")+
-  tmap::tm_credits("sBiodiversity + MPAs, with impacts") +
+  tmap::tm_credits("Biodiversity + MPAs, with impacts") +
   tmap::tm_shape(MPAs)+
-  tmap::tm_raster(col = "reviewed_all_implemented_MPAs_raster_moll", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_raster(col = "reviewed_implemented_MPAs_all_protection_levels", palette = "#00A600FF", legend.show	= F)+
   tmap::tm_layout(title = "Biodiversity Conservation Priorities",
                   title.position = c("center", .95),
                   inner.margins = c(0.12, 0, 0.08, 0.04), 
                   frame = F,
                   legend.position = c(.99, "center")) 
 
-tmap::tmap_save(ranking_map_with_impacts, 
-                filename = file.path(figs_output_dir, "priority_map_with_impacts.png"),
+tmap::tmap_save(ranking_map, 
+                filename = file.path(variant_dir, "priority_map.png"),
                 dpi = 300,  height = 4, width = 8 )
 ```
 
 # Where would upgrading weak MPAs take us?
 
 ```{r}
-bio_benefit_curves_upgrade_MPAs <- read_rds(file.path(output_dir, "bio_benefit_curves.rds"))
-bio_benefit_curves_today_MPAs <- read_rds("05_spp_wts_smts_provs_MPAs/results/bio_benefit_curves.rds")
+bio_benefit_curves_upgrade_MPAs <- read_rds(file.path(variant_dir, "benefit_curves.rds"))
 
+bio_benefit_curves_today_MPAs <- read_rds("~/Google Drive File Stream/Shared drives/emlab/projects/current-projects/ocean-conservation-priorities/data/03_output/05_spp_wts_smts_provs_MPAs/benefit_curves.rds")
+  
 bio_curve_upgrade <- bio_benefit_curves_upgrade_MPAs %>% 
   select(-cell_id) %>% 
   as.matrix() %*% as.matrix(feature_wts) %>% 
@@ -453,7 +411,7 @@ full_join(bio_curve_today %>%
   scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
   scale_y_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
   expand_limits(y = c(0, 1.1),
-                x = c(0, 1))+
+                x = c(0, 1))
     ggsave(filename = file.path(DIR_GCS, "Supplement/fig_upgraded_MPAs_bio_benefit.png"), 
          dpi = 300,  height = 5, width = 8)
 ```
@@ -469,57 +427,3 @@ bio_curve_upgrade %>%
 ```
 
 
-
-# What does it take to get 90% of the benefits?
-
-```{r}
-bio_benefit_curves <- read_rds(file.path(output_dir, "bio_benefit_curves.rds")) 
-
-agg_bio_benefit_curve <- bio_benefit_curves %>% 
-  select(-cell_id) %>% 
-  as.matrix() %*% as.matrix(feature_wts) %>% 
-  as_tibble() %>% 
-  set_names("V") %>% 
-  mutate(fraction_protected = 1/n(),
-         fraction_protected = cumsum(fraction_protected),
-         V_rescaled = scales::rescale(V))
-
-(f_to_90 <- agg_bio_benefit_curve %>% 
-  slice(which.min(abs(V_rescaled - 0.9))) %>% 
-  pull(fraction_protected))
-```
-
-How much in EEZ vs HS? 
-
-```{r}
-eez_mask <- raster("../../../gcs/git-annex/Carta-Marina/masks/data/processed/EEZ_mask.tif") # 1 equals high seas
-
-eez_mask_df_moll <- eez_mask %>% 
-  as.data.frame(xy = TRUE) %>% 
-  set_names(c("x", "y", "eez_mask")) %>% 
-  mutate(eez_mask = ifelse(eez_mask == 1, 1, NA)) %>% 
-  filter(!is.na(eez_mask)) %>% 
-  inner_join(ocean_matrix)
-```
-
-
-```{r}
-agg_bio_benefit_curve %>% 
-  mutate(cell_id = bio_benefit_curves$cell_id,
-         in_EEZ = cell_id %in% eez_mask_df_moll$cell_id) %>% 
-  summarize(f_EEZ_to_90 = length(V[in_EEZ & fraction_protected <= f_to_90])/length(V[in_EEZ]),
-            f_HS_to_90 = length(V[!in_EEZ & fraction_protected <= f_to_90])/length(V[!in_EEZ]))
-```
-
-# How much of the top 10% is in EEZ?
-
-```{r}
-agg_bio_benefit_curve %>% 
-  mutate(cell_id = bio_benefit_curves$cell_id,
-         in_EEZ = cell_id %in% eez_mask_df_moll$cell_id) %>% 
-  filter(fraction_protected <= 0.1) %>% 
-  group_by(in_EEZ) %>% 
-  summarise(n_cells = n()) %>% 
-  ungroup() %>% 
-  mutate(f_cell = n_cells/sum(n_cells))
-```

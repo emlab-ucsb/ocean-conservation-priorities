@@ -16,88 +16,32 @@ output:
 library(raster)
 library(sf)
 library(tidyverse)
+library(patchwork)
+library(parallel)
+library(foreach)
 library(doParallel)
 
-DIR_GCS <- "~/gcs/git-annex/Carta-Marina"
-
-DIR_GCS_data <- "~/gcs/spatial-datasets"
-
-ocean_low_res_moll <- raster("~/gcs/spatial-datasets/ocean/ocean-low-res-moll.tif")
-
-land_shp <- sf::read_sf("~/gcs/spatial-datasets/land/land_50.shp")
-
-land_shp_moll <- land_shp %>% 
-  st_transform(crs = projection(ocean_low_res_moll))
-
-#land_raster_moll <- rasterize(land_shp_moll, ocean_low_res_moll, getCover = T)
-#writeRaster(land_raster_moll, "~/gcs/spatial-datasets/land/land_raster_moll.tif")
-
-land_raster_moll <- raster("~/gcs/spatial-datasets/land/land_raster_moll.tif")
-
-ocean_matrix <- ocean_low_res_moll %>% 
-  mask(land_raster_moll, maskvalue = 1) %>% 
-  raster::as.data.frame(xy = T) %>% 
-  filter(ocean.low.res.moll == 1) %>% 
-  mutate(cell_id = as.character(group_indices(., x, y))) %>% 
-  select(-ocean.low.res.moll) %>% 
-  as_tibble()
-
-z_pal <- list(breaks = c(0, 0.2, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
-              labels = c("0-20", "20-50", "50-70", "70-80", "80-85", "85-90", "90-95", "95-100"),
-              colors = c("#4575b4", "#74add1", "#abd9e9", "#e0f3f8" ,"#fee090" ,"#fdae61" ,"#f46d43", "#d73027"))
+source(here::here("common.R"))
 
 variant_name <- "15_biodiversity_uncertainty"
 
-output_dir <- file.path(variant_name, "results")
+variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name)
 
-figs_output_dir <- file.path(variant_name, "figures")
-
-dir.create(variant_name)
-
-dir.create(figs_output_dir)
-
-dir.create(output_dir)
+dir.create(variant_dir)
 ```
 
 # Load data 
 
-```{r features}
-spp_df <- data.table::fread("data/spp_df.csv") %>% 
-  as_tibble()
-
-spp_info <- data.table::fread("data/spp_weights.csv") %>% 
-  as_tibble() %>% 
-  rename(w = spp_weight)
-
-smts_df <- data.table::fread("data/smts_df.csv") %>% 
-  as_tibble()
-
-smts_info <- tibble(filepath = list.files("../Zonation/data/seamounts/all", full.names = T)) %>% 
-  mutate(w = sum(spp_info$w)/n())
-
-sum(spp_info$w) ==  sum(smts_info$w)
-
-provs_df <- data.table::fread("data/provs_df.csv") %>% 
-  as_tibble()
-
-provs_info <- tibble(filepath = list.files(c("../Zonation/data/biogeography/Spalding",
-                                             "../Zonation/data/biogeography/GOODS"), 
-                                           full.names = T)) %>% 
-  mutate(w = sum(spp_info$w)/n())
-
-sum(spp_info$w) ==  sum(provs_info$w)
-
-features_df <- spp_df %>% 
-  left_join(smts_df) %>% 
-  left_join(provs_df)
-
-n_features <- nrow(spp_info)  + nrow(smts_info) + nrow(provs_info) 
+```{r}
+features_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "all_bio_features_df.csv"))
 
 feature_names <- colnames(features_df)[c(-1,-2,-3)]
+
+n_features <- length(feature_names)
 ```
 
 ```{r mpas}
-MPAs <- raster("../Zonation/data/masks/fully_highly_protected_reviewed_MPAs.tif")
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
 
 MPAs_df <- MPAs %>% 
   raster::as.data.frame(xy = T) %>%
@@ -107,14 +51,16 @@ MPAs_df <- MPAs %>%
 ```
 
 ```{r impacts}
-bio_abatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Abatable_impacts_5yr_avg_log.tif") %>% 
+bio_abatable_impacts_df <- raster(file.path(emLab_project_dir, 
+                                            "data", "02_processed", "impacts", "chi", "abatable_impacts_5_yr_avg_log.tif")) %>% 
   raster::as.data.frame(xy = T) %>% 
   set_names(c("x", "y", "Ia")) %>% 
   inner_join(ocean_matrix) %>% 
   as_tibble() %>% 
   replace_na(list(Ia = 0))
 
-bio_unabatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts/data/processed/Unbatable_impacts_5yr_avg_log.tif") %>% 
+bio_unabatable_impacts_df <- raster(file.path(emLab_project_dir, 
+                                              "data", "02_processed", "impacts", "chi", "unabatable_impacts_5_yr_avg_log.tif")) %>% 
   raster::as.data.frame(xy = T) %>% 
   set_names(c("x", "y", "Iu")) %>% 
   inner_join(ocean_matrix) %>% 
@@ -122,18 +68,35 @@ bio_unabatable_impacts_df <- raster("../../../gcs/git-annex/Carta-Marina/Impacts
   replace_na(list(Iu = 0))
 ```
 
+
 ## Feature weights 
 
 ```{r}
-feature_wts <- c(spp_info$w, smts_info$w, provs_info$w)
-  
+spp_wts <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "species_list", "spp_weights.csv")) %>% 
+  as_tibble() %>% 
+  rename(w = spp_weight)
+
+smts_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed","seamounts"), full.names = T)) %>% 
+  mutate(w = sum(spp_wts$w)/n())
+
+provs_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "biogeography"), full.names = T, pattern = "\\.tif")) %>% 
+  mutate(w = sum(spp_wts$w)/n())
+
+feature_wts <- c(spp_wts$w, smts_wts$w, provs_wts$w)
+
 names(feature_wts) <- feature_names
+
+sum(spp_wts$w) == sum(smts_wts$w)
+
+sum(smts_wts$w) == sum(provs_wts$w)
 ```
 
 ```{r}
 features_matrix <- features_df %>% 
   select(-x,-y,-cell_id) %>% 
   as.matrix()
+
+rownames(features_matrix) <- features_df$cell_id
 ```
 
 ## Algorithm
@@ -153,18 +116,20 @@ random_cell_removal <- function(v, f){
 }
 ```
 
-Do what follows 3000 times
+Do what follows 1000 times
 
 ```{r}
 gc()
 
 registerDoParallel(cores = 150)
 
-foreach (i = c(101:1000)) %dopar% {
+foreach (i = c(1:1000)) %dopar% {
 
 # RANDOMIZE
 
 feature_wts <- feature_wts + runif(n = length(feature_wts), min = -sd(feature_wts), max = sd(feature_wts))
+
+feature_wts[feature_wts < 0] <- 0
 
 removed_fraction <-  runif(n = 1, min = 0, max = 0.3)
 
@@ -264,7 +229,7 @@ while(nrow(features_matrix) > 0){
 }
 
 write_rds(ranking, 
-          file.path(output_dir, 
+          file.path(variant_dir, 
                     paste0(paste("run", i,"f",100*round(removed_fraction, 2), sep = "_"), ".rds")))
 }
 ```

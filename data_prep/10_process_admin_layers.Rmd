@@ -171,6 +171,35 @@ writeRaster(reviewed_fully_highly_protected_MPAs_raster_moll,
             overwrite = T)
 ```
 
+```{r}
+reviewed_implemented_MPAs_raster_moll <- all_MPAs %>% 
+  filter((is_mpa == TRUE & status != "Proposed" & implemented == TRUE) | 
+           mpa_id %in% MPAs_to_add$mpa_id | country == "GAB") %>% 
+  filter(mpa_id != 68808627) %>% # remove Pacifico mexicano profundo
+  st_transform("+proj=moll") %>% 
+  fasterize::fasterize(ocean_low_res_moll) %>% 
+  mask(ocean_low_res_moll)
+
+reviewed_implemented_MPAs_raster_moll_map <- tmap::tm_shape(reviewed_implemented_MPAs_raster_moll)+
+    tmap::tm_raster(title = "",
+                    palette = c("green"),
+                    style = "cont")+
+    tmap::tm_shape(land_50_moll)+
+    tmap::tm_polygons(col = "black", border.col = "transparent")+
+    tmap::tm_layout(title = "Reviewed implemented MPAs",
+                    title.position = c("center", .95),
+                    inner.margins = c(0.12, 0.04, 0.08, 0.04), 
+                    frame = F)
+
+tmap::tmap_save(reviewed_implemented_MPAs_raster_moll_map,
+                filename = file.path(emLab_project_dir, "figures", "exploratory", "implemented_reviewed_MPAs_all_protection_levels.png"),
+                dpi = 300,  height = 4, width = 8 )
+
+writeRaster(reviewed_implemented_MPAs_raster_moll, 
+            filename = file.path(emLab_project_dir, "data", "02_processed", "masks", "reviewed_implemented_MPAs_all_protection_levels.tif"),
+            overwrite = T)
+```
+
 # Territories EEZs
 
 ```{r}

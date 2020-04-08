@@ -39,10 +39,6 @@ feature_names <- colnames(features_df)[c(-1,-2,-3)]
 
 n_features <- length(feature_names)
 
-features_matrix <- features_df %>% 
-  select(-x,-y,-cell_id) %>% 
-  as.matrix()
-
 rownames(features_matrix) <- features_df$cell_id
 ```
 
