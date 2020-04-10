@@ -1,0 +1,115 @@
+---
+title: "Figure 5: Climate change"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+library(ggplot2)
+
+DIR_GCS <- "~/gcs/git-annex/Carta-Marina"
+
+DIR_GCS_data <- "~/gcs/spatial-datasets"
+
+ocean_low_res_moll <- raster("~/gcs/spatial-datasets/ocean/ocean-low-res-moll.tif")
+
+ocean_matrix <- ocean_low_res_moll %>% 
+  raster::as.data.frame(xy = T) %>% 
+  filter(ocean.low.res.moll == 1) %>% 
+  mutate(cell_id = as.character(group_indices(., x, y))) %>% 
+  select(-ocean.low.res.moll) %>% 
+  as_tibble()
+
+land_shp <- sf::read_sf("~/gcs/spatial-datasets/land/land_50.shp")
+
+land_shp_moll <- land_shp %>% 
+  st_transform(crs = projection(ocean_low_res_moll))
+
+z_pal <- list(breaks = c(0, 0.2, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
+              labels = c("0-20", "20-50", "50-70", "70-80", "80-85", "85-90", "90-95", "95-100"),
+              colors = c("#4575b4", "#74add1", "#abd9e9", "#e0f3f8" ,"#fee090" ,"#fdae61" ,"#f46d43", "#d73027"))
+
+n_ocean_cells <- ocean_low_res_moll %>% cellStats(function(x, ...) sum(!is.na(x))) 
+```
+
+```{r}
+MPAs <- raster("../Zonation/data/masks/fully_highly_protected_reviewed_MPAs.tif")
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+```
+
+# 2050 - today
+
+```{r}
+bio_ranks_today <- raster("../Juanation/05_spp_wts_smts_provs_MPAs/results/ranking_raster_with_impacts.tif")
+bio_ranks_2050 <- raster("../Juanation/10_biodiversity_2050/results/ranking_raster.tif")
+
+
+comparison_raster_2050_vs_today <- overlay(bio_ranks_2050, bio_ranks_today, fun = function(x, y){if_else(x >= 0.9 & y >= 0.9, 1, 
+                                                                                                         if_else(x <= 0.5 & y <= 0.5, -1, 
+                                                                                                                 if_else(abs(x-y) <= 0.01, 0, 
+                                                                                                                         if_else(x > y, 0.5, -0.5))))})
+
+
+```
+
+```{r}
+ext_fig_2 <- comparison_raster_2050_vs_today %>% 
+  as.data.frame(xy = TRUE, centroids = T) %>% 
+  set_names(c("lon", "lat", "rank")) %>% 
+  filter(!is.na(rank)) %>% 
+  ggplot()+
+  geom_raster(aes(x = lon, y = lat, fill = as.factor(rank)))+
+  geom_raster(data = MPAs_df %>% 
+                filter(!is.na(mpa)), aes(x = x, y = y), fill = "#47A025")+
+  geom_sf(data = land_shp_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
+  scale_fill_manual(values  = rev(c('#d7191c', '#fdae61', '#ffffbf', '#abd9e9', '#2c7bb6')),
+                    labels = rev(c("irreplaceable\n(top 10%)", "increasing", "comparable", "decreasing", "least priority\n(bottom 50%)")),
+                    guide = guide_legend(
+                      title = "",
+                      title.position = 'top',
+                      title.hjust = 0.5,
+                      label.hjust = -.02,
+                      reverse = T,
+                      keywidth = 0.3))+
+  theme(legend.text = element_text(size = 6),
+        legend.text.align = 0,
+        legend.position = "right",
+        axis.text.x = element_text(size = 6),
+        axis.text.y = element_text(size = 6),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = NA, color = NA), 
+        panel.background = element_rect(fill = NA, color = NA), 
+        legend.background = element_rect(fill = NA, color = NA),
+        panel.border = element_blank())
+
+ggsave(ext_fig_2, filename = "ext_figure_2.png", dpi = 300,  height = 4, width = 7)
+ggsave(ext_fig_2, filename = "ext_figure_2.pdf", dpi = 300,  height = 4, width = 7)
+```
+
+```{r}
+100*comparison_raster_2050_vs_today %>% cellStats(function(x, ...) sum(x == 1, na.rm = T))/n_ocean_cells
+```
+

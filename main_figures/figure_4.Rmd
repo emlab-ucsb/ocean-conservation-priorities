@@ -1,0 +1,703 @@
+---
+title: "Figure 7: Propeller plot"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+
+
+DIR_GCS <- "~/gcs/git-annex/Carta-Marina"
+
+DIR_GCS_data <- "~/gcs/spatial-datasets"
+
+ocean_low_res_moll <- raster("~/gcs/spatial-datasets/ocean/ocean-low-res-moll.tif")
+
+ocean_matrix <- ocean_low_res_moll %>% 
+  raster::as.data.frame(xy = T) %>% 
+  filter(ocean.low.res.moll == 1) %>% 
+  mutate(cell_id = as.character(group_indices(., x, y))) %>% 
+  select(-ocean.low.res.moll) %>% 
+  as_tibble()
+
+land_shp <- sf::read_sf("~/gcs/spatial-datasets/land/land_50.shp")
+
+land_shp_moll <- land_shp %>% 
+  st_transform(crs = projection(ocean_low_res_moll))
+
+z_pal <- list(breaks = c(0, 0.2, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
+              labels = c("0-20", "20-50", "50-70", "70-80", "80-85", "85-90", "90-95", "95-100"),
+              colors = c("#4575b4", "#74add1", "#abd9e9", "#e0f3f8" ,"#fee090" ,"#fdae61" ,"#f46d43", "#d73027"))
+
+circle_theme <- theme(axis.line=element_blank(),
+                      axis.text.y=element_blank(),
+                      axis.ticks=element_blank(),
+                      axis.title.x=element_blank(),
+                      axis.title.y=element_blank(),
+                      legend.position="none",
+                      panel.background=element_blank(),
+                      panel.border=element_blank(),
+                      panel.grid.major=element_blank(),
+                      panel.grid.minor=element_blank(),
+                      plot.background=element_blank(),
+                      axis.text.x = element_blank())
+
+theme_map <- function(...) {
+  theme_minimal() +
+    theme(
+      text = element_text(family = "Ubuntu Regular", color = "#22211d"),
+      axis.line = element_blank(),
+      axis.text.x = element_blank(),
+      axis.text.y = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+      panel.grid.minor = element_blank(),
+      plot.background = element_rect(fill = NA, color = NA), 
+      panel.background = element_rect(fill = NA, color = NA), 
+      legend.background = element_rect(fill = NA, color = NA),
+      panel.border = element_blank(),
+      ...
+    )
+}
+
+MPAs <- raster("../Zonation/data/masks/fully_highly_protected_reviewed_MPAs.tif")
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+
+eez_shp <- sf::st_read("../../../gcs/spatial-datasets/marine_regions_eez_with_land/EEZ_land_v2_201410.shp") %>% 
+  sf::st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  sf::st_transform("+proj=moll") %>% 
+  sf::st_simplify(dTolerance = 0)
+
+eez_shp <- eez_shp %>% 
+  filter(ISO_3digit != "ATA")
+
+n_ocean_cells <- cellStats(ocean_low_res_moll, function(x, ...) sum(!is.na(x)))
+
+(n_cells_MPAs <- MPAs %>% cellStats(function(x, ...) sum(!is.na(x))))
+  
+(global_percent_protected <- 100*n_cells_MPAs/n_ocean_cells)
+```
+
+# Biodiversity
+
+```{r}
+biodiversity_priorities_raster <- raster("../Juanation/05_spp_wts_smts_provs_MPAs/results/ranking_raster_with_impacts.tif")
+
+delta_bio_V_raster <- raster("../Juanation/05_spp_wts_smts_provs_MPAs/results/delta_v_raster_with_impacts.tif")
+
+n_ocean_cells_top_5 <- cellStats(biodiversity_priorities_raster, function(x, ...) sum(x >= 0.95, na.rm = T))
+n_ocean_cells_top_10 <- cellStats(biodiversity_priorities_raster, function(x, ...) sum(x >= 0.9, na.rm = T))
+n_ocean_cells_top_20 <- cellStats(biodiversity_priorities_raster, function(x, ...) sum(x >= 0.8, na.rm = T))
+n_ocean_cells_top_30 <- cellStats(biodiversity_priorities_raster, function(x, ...) sum(x >= 0.7, na.rm = T))
+
+
+bio_stats_by_country <- biodiversity_priorities_raster %>% 
+  mask(MPAs, updatevalue = 100, inverse = T) %>% 
+  raster::extract(eez_shp, df = T) %>% 
+  select(ID, cell_rank = 2) %>% 
+  group_by(ID) %>% 
+  summarize(n_cells = sum(cell_rank >= 0, na.rm = T),
+            n_protected_cells = sum(cell_rank >= 100, na.rm = T),
+            n_cells_top_20 = sum(cell_rank >= .80, na.rm = T),
+            n_cells_top_10 = sum(cell_rank >= .90, na.rm = T),
+            n_cells_top_5 = sum(cell_rank >= .95, na.rm = T)) %>% 
+  ungroup() %>% 
+  filter(n_cells > 0) %>% 
+  left_join(eez_shp %>% 
+              st_set_geometry(NULL) %>% 
+              rowid_to_column() %>% 
+              mutate(Country = as.character(Country),
+                     ISO_3digit = as.character(ISO_3digit)) %>% 
+              select(ID = rowid, object_id = OBJECTID, iso3 =  ISO_3digit, Country)) %>% 
+  select(object_id, iso3, Country,  everything(), -ID) %>% 
+  mutate(goal = "biodiversity") %>% 
+  filter(n_cells > 0)
+
+bio_contribution_to_top_10 <- delta_bio_V_raster %>% 
+  mask(MPAs, inverse = T) %>% 
+  mask(biodiversity_priorities_raster >= 0.9, maskvalue = 0) %>% 
+  raster::extract(eez_shp, df = T) %>% 
+  select(ID, dV = 2) %>% 
+  group_by(ID) %>% 
+  summarize(sum_dV = sum(dV, na.rm = T)) %>% 
+  left_join(eez_shp %>% 
+              st_set_geometry(NULL) %>% 
+              rowid_to_column() %>% 
+              mutate(Country = as.character(Country),
+                     ISO_3digit = as.character(ISO_3digit)) %>% 
+              select(ID = rowid, object_id = OBJECTID, iso3 =  ISO_3digit, Country)) %>% 
+  select(object_id, iso3, Country,  everything(), -ID) 
+
+bio_stats_by_country <- bio_stats_by_country %>% 
+  left_join(bio_contribution_to_top_10) %>% 
+  rename(sum_delta_v_10_percent = sum_dV)
+```
+
+# Carbon
+
+```{r}
+carbon_priorities_raster <- raster("../Juanation/06_carbon/results/ranking_raster_with_impacts.tif")
+delta_carbon_V_raster <- raster("../Juanation/06_carbon/results/delta_v_raster_with_impacts.tif")
+
+carbon_stats_by_country <- carbon_priorities_raster %>% 
+  mask(MPAs, updatevalue = 100, inverse = T) %>% 
+  raster::extract(eez_shp, df = T) %>% 
+  select(ID, cell_rank = 2) %>% 
+  group_by(ID) %>% 
+  summarize(n_cells = sum(cell_rank >= 0, na.rm = T),
+            n_protected_cells = sum(cell_rank >= 100, na.rm = T),
+            n_cells_top_20 = sum(cell_rank >= .80, na.rm = T),
+            n_cells_top_10 = sum(cell_rank >= .90, na.rm = T),
+            n_cells_top_5 = sum(cell_rank >= .95, na.rm = T)) %>% 
+  ungroup() %>% 
+  filter(n_cells > 0) %>% 
+  left_join(eez_shp %>% 
+              st_set_geometry(NULL) %>% 
+              rowid_to_column() %>% 
+              mutate(Country = as.character(Country),
+                     ISO_3digit = as.character(ISO_3digit)) %>% 
+              select(ID = rowid, object_id = OBJECTID, iso3 =  ISO_3digit, Country)) %>% 
+  select(object_id, iso3, Country,  everything(), -ID) %>% 
+  mutate(goal = "carbon") %>% 
+  filter(n_cells > 0)
+
+carbon_contribution_to_top_10 <- delta_carbon_V_raster %>% 
+  mask(MPAs, inverse = T) %>% 
+  mask(carbon_priorities_raster >= 0.9, maskvalue = 0) %>% 
+  raster::extract(eez_shp, df = T) %>% 
+  select(ID, dV = 2) %>% 
+  group_by(ID) %>% 
+  summarize(sum_dV = sum(dV, na.rm = T)) %>% 
+  left_join(eez_shp %>% 
+              st_set_geometry(NULL) %>% 
+              rowid_to_column() %>% 
+              mutate(Country = as.character(Country),
+                     ISO_3digit = as.character(ISO_3digit)) %>% 
+              select(ID = rowid, object_id = OBJECTID, iso3 =  ISO_3digit, Country)) %>% 
+  select(object_id, iso3, Country,  everything(), -ID) 
+
+carbon_stats_by_country <- carbon_stats_by_country %>% 
+  left_join(carbon_contribution_to_top_10) %>% 
+  rename(sum_delta_v_10_percent = sum_dV)
+```
+
+# Food
+
+```{r}
+food_priorities_raster <- raster("../Juanation/07_food/results/ranking_raster_bau_1.tif")
+delta_food_V_raster <- raster("../Juanation/07_food/results/delta_v_raster_bau_1.tif")
+
+food_stats_by_country <- food_priorities_raster %>% 
+  mask(MPAs, updatevalue = 100, inverse = T) %>% 
+  raster::extract(eez_shp, df = T) %>% 
+  select(ID, cell_rank = 2) %>% 
+  group_by(ID) %>% 
+  summarize(n_cells = sum(cell_rank >= 0, na.rm = T),
+            n_protected_cells = sum(cell_rank >= 100, na.rm = T),
+            n_cells_top_20 = sum(cell_rank >= .80, na.rm = T),
+            n_cells_top_10 = sum(cell_rank >= .90, na.rm = T),
+            n_cells_top_5 = sum(cell_rank >= .95, na.rm = T)) %>% 
+  ungroup() %>% 
+  filter(n_cells > 0) %>% 
+  left_join(eez_shp %>% 
+              st_set_geometry(NULL) %>% 
+              rowid_to_column() %>% 
+              mutate(Country = as.character(Country),
+                     ISO_3digit = as.character(ISO_3digit)) %>% 
+              select(ID = rowid, object_id = OBJECTID, iso3 =  ISO_3digit, Country)) %>% 
+  select(object_id, iso3, Country,  everything(), -ID) %>% 
+  mutate(goal = "food") %>% 
+  filter(n_cells > 0)
+
+food_contribution_to_top_10 <- delta_food_V_raster %>% 
+  mask(MPAs, inverse = T) %>% 
+  mask(food_priorities_raster >= 0.9, maskvalue = 0) %>% 
+  raster::extract(eez_shp, df = T) %>% 
+  select(ID, dV = 2) %>% 
+  group_by(ID) %>% 
+  summarize(sum_dV = sum(dV, na.rm = T)) %>% 
+  left_join(eez_shp %>% 
+              st_set_geometry(NULL) %>% 
+              rowid_to_column() %>% 
+              mutate(Country = as.character(Country),
+                     ISO_3digit = as.character(ISO_3digit)) %>% 
+              select(ID = rowid, object_id = OBJECTID, iso3 =  ISO_3digit, Country)) %>% 
+  select(object_id, iso3, Country,  everything(), -ID) 
+
+food_stats_by_country <- food_stats_by_country %>% 
+  left_join(food_contribution_to_top_10) %>% 
+  rename(sum_delta_v_10_percent = sum_dV)
+```
+
+# Combined goals and clean country names
+
+```{r}
+## Combine goals ----
+
+stats_by_country <- bind_rows(bio_stats_by_country, 
+                              carbon_stats_by_country,
+                              food_stats_by_country) %>% 
+  mutate(continent = countrycode::countrycode(iso3, "iso3c", "continent")) %>% 
+  mutate(fraction_protected = n_protected_cells/n_cells,
+         fraction_top_5 = n_cells_top_5/n_cells,
+         fraction_top_10 = n_cells_top_10/n_cells,
+         fraction_top_20 = n_cells_top_20/n_cells,
+         contribution_top_5 = n_cells_top_5/n_ocean_cells_top_5,
+         contribution_top_10 = n_cells_top_5/n_ocean_cells_top_10,
+         contribution_top_20 = n_cells_top_5/n_ocean_cells_top_20)
+
+stats_by_country <- stats_by_country %>% 
+  mutate(continent = case_when(
+    iso3 == "ATF" ~ "Southern\nIslands",
+    iso3 == "SGS" ~ "Southern\nIslands",
+    iso3 == "HMD" ~ "Southern\nIslands",
+    iso3 == "TAA" ~ "Europe",
+    iso3 == "ASC" ~ "Europe",
+    iso3 == "BVT" ~ "Southern\nIslands",
+    iso3 == "UMI" ~ "Oceania",
+    iso3 == "CCK" ~ "Oceania",
+    iso3 == "IOT" ~ "Europe",
+    iso3 == "MNP++" ~ "Oceania",
+    iso3 == "CW" ~ "Americas",
+    iso3 == "ANT" ~ "Americas",
+    iso3 == "CPT" ~ "Americas",
+    TRUE ~ continent
+  )) 
+
+stats_by_country <- stats_by_country %>% filter(iso3 != "-", iso3 != "VTC")
+
+stats_by_country <- stats_by_country %>%
+  mutate(Country = Country, 
+         Country = gsub("Islands", "Isl", Country),
+         Country = gsub("Island", "Isl", Country),
+         Country = gsub("Democratic", "Dem", Country),
+         Country = gsub("Republic", "Rep", Country),
+         Country = gsub("South", "S", Country),
+         Country = gsub("American", "Am", Country),
+         Country = gsub("the United States", "US", Country),
+         Country = gsub("Country", "Terr", Country),
+         Country = gsub("Saint", "St", Country),
+         Country = gsub(" and ", " & ", Country),
+         Country = gsub("Republique", "Rep", Country),
+         Country = gsub("Dem Rep of the", "Dem Rep of", Country),
+         Country = gsub("Georgia and the", "Georgia and", Country),
+         Country = gsub("St Vincent and the", "St Vincent and", Country),
+         Country = gsub("Howland Isl & Baker Isl", "Howland & Baker Isl", Country),
+         Country = gsub("Northern", "N", Country), 
+         Country = gsub("Reunion", "Reunion   ", Country))
+
+stats_by_country$Country[stats_by_country$iso3 == "IOT"] <- "Chagos"
+
+stats_by_country$Country[stats_by_country$iso3 == "ATF"] <- "ATF"
+
+stats_by_country$Country[stats_by_country$iso3 == "UMI"] <- "U.S Minor Outlying Isl"
+
+stats_by_country$Country[stats_by_country$iso3 == "MNP++"] <- "MNP++"
+
+stats_by_country$Country[stats_by_country$iso3 == "SGS"] <- "SGS"
+
+stats_by_country$Country[stats_by_country$iso3 == "VIR"] <- "U.S Virgin Isl"
+
+stats_by_country$Country[stats_by_country$iso3 == "SHN"] <- "SHN"
+
+stats_by_country$Country[stats_by_country$iso3 == "GBR"] <- "GBR"
+
+stats_by_country$Country[stats_by_country$iso3 == "UMI"] <- "UMI"
+
+stats_by_country$Country[stats_by_country$iso3 == "PNG"] <- "PNG"
+
+stats_by_country$Country[stats_by_country$iso3 == "DOM"] <- "DOM"
+
+stats_by_country$Country[stats_by_country$iso3 == "HMD"] <- "HMD"
+
+stats_by_country <- stats_by_country %>% 
+  janitor::clean_names()
+```
+
+# Most important countries 
+
+```{r}
+# bio_top_countries <- stats_by_country %>% 
+#   filter(goal == "biodiversity") %>% 
+#   top_n(100, wt = (n_cells_top_20 - n_protected_cells)/n_ocean_cells_top_20) %>% 
+#   pull(country)
+
+bio_top_countries <- stats_by_country %>% 
+  filter(goal == "biodiversity") %>% 
+  top_n(100, wt = sum_delta_v_10_percent) %>% 
+  pull(country)
+
+# carbon_top_countries <- stats_by_country %>% 
+#   filter(goal == "carbon") %>% 
+#   top_n(100, wt = (n_cells_top_20 - n_protected_cells)/n_ocean_cells_top_20) %>% 
+#   pull(country)
+
+carbon_top_countries <-stats_by_country %>% 
+  filter(goal == "carbon") %>% 
+  top_n(100, wt = sum_delta_v_10_percent) %>% 
+  pull(country)
+
+# food_top_countries <- stats_by_country %>% 
+#   filter(goal == "food") %>% 
+#   top_n(100, wt = (n_cells_top_20 - n_protected_cells)/n_ocean_cells_top_20) %>% 
+#   pull(country)
+
+food_top_countries <- stats_by_country %>% 
+  filter(goal == "food") %>% 
+  top_n(100, wt = sum_delta_v_10_percent) %>% 
+  pull(country)
+```
+
+# Make plots
+
+## Biodiversity
+
+```{r}
+plotting_data <- stats_by_country %>% 
+  filter(country %in% bio_top_countries) %>% 
+  filter(goal == "biodiversity") %>% 
+  ungroup() %>% 
+  mutate(continent = factor(continent),
+         value = fraction_top_10 - fraction_protected) %>% 
+  select(object_id, country, continent, goal, value) %>% 
+  arrange(continent, value)
+
+plotting_data <- plotting_data %>% 
+  add_row(continent = rep(unique(plotting_data$continent), 3)) %>% 
+  arrange(continent) %>% 
+  rowid_to_column("id")
+
+label_data <- plotting_data %>%  
+  mutate(angle = 90 - 360 * (id - 0.5) /nrow(plotting_data)) %>% # I substract 0.5 because the letter must have the angle of the center of the bars. Not extreme right(1) or extreme left (0)
+  mutate(hjust = ifelse(angle < -90, 1, 0),
+         angle = ifelse(angle < -90, angle+180, angle))
+
+# prepare a data frame for base lines
+base_data <- plotting_data %>% 
+  group_by(continent) %>% 
+  summarize(start = min(id), 
+            end = max(id) - 3) %>% 
+  rowwise() %>% 
+  mutate(title = mean(c(start, end))) %>% 
+  ungroup()
+
+#base_data$hjust <- c(1, 0.7, 0 , 0, 0.4, 0.5)
+
+# prepare a data frame for grid (scales)
+grid_data <- base_data %>%
+  mutate(end = data.table::shift(end + 1, n = 1, type = "shift", fill = max(end) + 1),
+         start = start -1) %>% 
+  slice(-1)
+
+max_value <- 100*max(plotting_data$value, na.rm = T)
+
+y_max <- 20 * ceiling(max_value/20)
+
+#v <- seq(20, y_max, by = 20)
+v <- c(20,40,60,80,100)
+
+grid_data <- grid_data %>% 
+  mutate(v = list(v)) %>% 
+  unnest()
+
+propeller_bio_plot <- plotting_data %>% 
+  ggplot(aes(x = as.factor(id), y = 100*value, fill = continent))+
+  geom_col(width = 0.8) +
+  geom_segment(data = grid_data, 
+               aes(x = end, y = v, xend = start, yend = v), colour = "grey", size=0.3 , inherit.aes = FALSE ) +
+  annotate("text", 
+           x = rep(max(plotting_data$id), length(v)), 
+           y = v , label = paste0(head(v), "%"), color = "grey", size = 4 , angle = 0, fontface = "bold", hjust = 0.7)+
+  ylim(-40, y_max)+ 
+  theme_minimal() +
+  coord_polar()+
+  theme(
+    legend.position = "none",
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin = unit(rep(0,4), "cm")
+  )+
+  geom_text(data = label_data, 
+            aes(x = id, y = y_max, label = country, hjust = hjust), 
+            color="black",  size = 4, angle = label_data$angle, inherit.aes = FALSE)+
+  geom_text(data = base_data, 
+            aes(x = title, y = 35, label = continent),  colour = "black", alpha = 0.8, size = 4, fontface = "bold", inherit.aes = FALSE) +
+  theme_map()+
+  circle_theme 
+
+ggsave(propeller_bio_plot, 
+       filename = file.path(DIR_GCS, "Supplement/fig_propeller_bio.png"), 
+       dpi = 300,  height = 13, width = 13)
+```
+
+## Carbon
+
+```{r}
+plotting_data <- stats_by_country %>% 
+  filter(country %in% carbon_top_countries) %>% 
+  filter(goal == "carbon") %>% 
+  ungroup() %>% 
+  mutate(continent = factor(continent),
+         value = fraction_top_10 - fraction_protected) %>% 
+  select(object_id, country, continent, goal, value) %>% 
+  arrange(continent, value)
+
+plotting_data <- plotting_data %>% 
+  add_row(continent = rep(unique(plotting_data$continent), 3)) %>% 
+  arrange(continent) %>% 
+  rowid_to_column("id")
+
+label_data <- plotting_data %>%  
+  mutate(angle = 90 - 360 * (id - 0.5) /nrow(plotting_data)) %>% # I substract 0.5 because the letter must have the angle of the center of the bars. Not extreme right(1) or extreme left (0)
+  mutate(hjust = ifelse(angle < -90, 1, 0),
+         angle = ifelse(angle < -90, angle+180, angle))
+
+# prepare a data frame for base lines
+base_data <- plotting_data %>% 
+  group_by(continent) %>% 
+  summarize(start = min(id), 
+            end = max(id) - 3) %>% 
+  rowwise() %>% 
+  mutate(title = mean(c(start, end))) %>% 
+  ungroup()
+
+#base_data$hjust <- c(1, 0.7, 0 , 0, 0.4, 0.5)
+
+# prepare a data frame for grid (scales)
+grid_data <- base_data %>%
+  mutate(end = data.table::shift(end + 1, n = 1, type = "shift", fill = max(end) + 1),
+         start = start -1) %>% 
+  slice(-1)
+
+max_value <- 100*max(plotting_data$value, na.rm = T)
+
+y_max <- 20 * ceiling(max_value/20)
+
+#v <- seq(20, y_max, by = 20)
+v <- c(20,40,60,80,100)
+
+grid_data <- grid_data %>% 
+  mutate(v = list(v)) %>% 
+  unnest()
+
+propeller_carbon_plot <- plotting_data %>% 
+  ggplot(aes(x = as.factor(id), y = 100*value, fill = continent))+
+  geom_col(width = 0.8) +
+  geom_segment(data = grid_data, 
+               aes(x = end, y = v, xend = start, yend = v), colour = "grey", size=0.3 , inherit.aes = FALSE ) +
+  annotate("text", 
+           x = rep(max(plotting_data$id), length(v)), 
+           y = v , label = paste0(head(v), "%"), color = "grey", size = 4 , angle = 0, fontface = "bold", hjust = 0.7)+
+  ylim(-40, y_max)+ 
+  theme_minimal() +
+  coord_polar()+
+  theme(
+    legend.position = "none",
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin = unit(rep(0,4), "cm")
+  )+
+  geom_text(data = label_data, 
+            aes(x = id, y = y_max, label = country, hjust = hjust), 
+            color="black",  size = 4, angle = label_data$angle, inherit.aes = FALSE)+
+  geom_text(data = base_data, 
+            aes(x = title, y = 35, label = continent),  colour = "black", alpha = 0.8, size = 4, fontface = "bold", inherit.aes = FALSE) +
+  theme_map()+
+  circle_theme 
+
+ggsave(propeller_carbon_plot, 
+       filename = file.path(DIR_GCS, "Supplement/fig_propeller_carbon.png"), 
+       dpi = 300,  height = 10, width = 10)
+```
+
+## Food
+
+```{r}
+plotting_data <- stats_by_country %>% 
+  filter(country %in% food_top_countries) %>% 
+  filter(goal == "food") %>% 
+  ungroup() %>% 
+  mutate(continent = factor(continent),
+         value = fraction_top_10 - fraction_protected) %>% 
+  select(object_id, country, continent, goal, value) %>% 
+  arrange(continent, value)
+
+plotting_data <- plotting_data %>% 
+  add_row(continent = rep(unique(plotting_data$continent), 3)) %>% 
+  arrange(continent) %>% 
+  rowid_to_column("id")
+
+label_data <- plotting_data %>%  
+  mutate(angle = 90 - 360 * (id - 0.5) /nrow(plotting_data)) %>% # I substract 0.5 because the letter must have the angle of the center of the bars. Not extreme right(1) or extreme left (0)
+  mutate(hjust = ifelse(angle < -90, 1, 0),
+         angle = ifelse(angle < -90, angle+180, angle))
+
+# prepare a data frame for base lines
+base_data <- plotting_data %>% 
+  group_by(continent) %>% 
+  summarize(start = min(id), 
+            end = max(id) - 3) %>% 
+  rowwise() %>% 
+  mutate(title = mean(c(start, end))) %>% 
+  ungroup()
+
+#base_data$hjust <- c(1, 0.7, 0 , 0, 0.4, 0.5)
+
+# prepare a data frame for grid (scales)
+grid_data <- base_data %>%
+  mutate(end = data.table::shift(end + 1, n = 1, type = "shift", fill = max(end) + 1),
+         start = start -1) %>% 
+  slice(-1)
+
+max_value <- 100*max(plotting_data$value, na.rm = T)
+
+y_max <- 20 * ceiling(max_value/20)
+
+#v <- seq(20, y_max, by = 20)
+v <- c(20,40,60,80,100)
+
+grid_data <- grid_data %>% 
+  mutate(v = list(v)) %>% 
+  unnest()
+
+propeller_food_plot <- plotting_data %>% 
+  ggplot(aes(x = as.factor(id), y = 100*value, fill = continent))+
+  geom_col(width = 0.8) +
+  geom_segment(data = grid_data, 
+               aes(x = end, y = v, xend = start, yend = v), colour = "grey", size=0.3 , inherit.aes = FALSE ) +
+  annotate("text", 
+           x = rep(max(plotting_data$id), length(v)), 
+           y = v , label = paste0(head(v), "%"), color = "grey", size = 4 , angle = 0, fontface = "bold", hjust = 0.7)+
+  ylim(-40, y_max)+ 
+  theme_minimal() +
+  coord_polar()+
+  theme(
+    legend.position = "none",
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin = unit(rep(0,4), "cm")
+  )+
+  geom_text(data = label_data, 
+            aes(x = id, y = y_max, label = country, hjust = hjust), 
+            color="black",  size = 4, angle = label_data$angle, inherit.aes = FALSE)+
+  geom_text(data = base_data, 
+            aes(x = title, y = 35, label = continent),  colour = "black", alpha = 0.8, size = 4, fontface = "bold", inherit.aes = FALSE) +
+  theme_map()+
+  circle_theme 
+
+ggsave(propeller_food_plot, 
+       filename = file.path(DIR_GCS, "Supplement/fig_propeller_food.png"), 
+       dpi = 300,  height = 10, width = 10)
+```
+
+
+## Efficiency 
+
+```{r}
+bio_benefit_curves <- read_rds("../Juanation/05_spp_wts_smts_provs_MPAs/results/bio_benefit_curves.rds") %>% 
+  mutate(cell_id = as.character(cell_id))
+
+spp_info <- data.table::fread("../Juanation/data/spp_weights.csv") %>% 
+  as_tibble() %>% 
+  rename(w = spp_weight)
+
+smts_info <- tibble(filepath = list.files("../Zonation/data/seamounts/all", full.names = T)) %>% 
+  mutate(w = sum(spp_info$w)/n())
+
+provs_info <- tibble(filepath = list.files(c("../Zonation/data/biogeography/Spalding",
+                                             "../Zonation/data/biogeography/GOODS"), 
+                                           full.names = T)) %>% 
+  mutate(w = sum(spp_info$w)/n())
+
+feature_wts <- c(spp_info$w, smts_info$w, provs_info$w)
+```
+
+```{r}
+global_bio_curve <- bio_benefit_curves %>% 
+  select(-cell_id) %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         cell_id = bio_benefit_curves$cell_id,
+         fraction_protected = cumsum(fraction_protected)) %>% 
+  filter(fraction_protected > fraction_in_MPA)
+```
+
+```{r}
+national_benefit_curve <- read_csv("../Juanation/08_biodiversity_national/results/benefit_curve.csv") %>% 
+  filter(fraction_protected > fraction_in_MPA)
+
+random_benefit_curves <- list.files("../Juanation/09_biodiversity_random/results/", full.names = T) %>% 
+  map(read_csv) %>% 
+  reduce(bind_rows) %>% 
+  filter(fraction_protected > fraction_in_MPA)
+```
+
+```{r}
+efficiency_plot <- ggplot()+
+  geom_line(data = global_bio_curve %>% 
+              mutate(V = scales::rescale(V)),
+            aes(x = fraction_protected, y = V, col = "Global"))+
+  geom_line(data = national_benefit_curve %>% 
+              mutate(V = scales::rescale(V)),
+            aes(x = fraction_protected, y = scales::rescale(V), col = "National"))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = 0,
+                ymax = 1),
+            fill = "#5FAD41")+
+  geom_line(data = random_benefit_curves %>%
+              mutate(V = scales::rescale(V)),
+            aes(x = fraction_protected, y = V, col = "Random", group = run), alpha = 0.7)+
+  labs(x = "Fraction Ocean Protected",
+       y = "Biodiversity benefit",
+       col = "")+
+  theme_classic()+
+  scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1), breaks = c(0,0.25,0.5,0.75,1), limits = c(0,1))+
+  scale_y_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1), breaks = c(0,0.25,0.5,0.75,1))+
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        plot.margin = margin(0, 5, 0, 5, "cm"))+
+  expand_limits(y = c(0, 1.01),
+                x = c(0, 1.05))+
+  scale_color_manual(values = c("#2D728F", "#D62839", "grey"),
+                     labels = c("Global", "National", "Random"))
+```
+
+```{r}
+fig_4 <- propeller_bio_plot + efficiency_plot + 
+         plot_annotation(tag_levels = "a")+
+         plot_layout(ncol = 1, heights = c(2.6, 1)) 
+
+ggsave(plot = fig_4, filename = "figure_4.png",  dpi = 300,  height = 12, width = 11)
+ggsave(plot = fig_4, filename = "figure_4.pdf", dpi = 300,  height = 12, width = 11)
+
+```
+

@@ -1,0 +1,314 @@
+---
+title: "Figure 3: Triple wins"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+library(patchwork)
+
+source(here::here("common.R"))
+```
+
+```{r}
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+```
+
+# Overlap maps
+
+```{r}
+bio_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "ranking_raster.tif"))
+carbon_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster.tif"))
+food_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster.tif"))
+
+find_overlap <- function(top_p_bio, top_p_carbon, top_p_food){
+  
+  overlay(bio_ranking, carbon_ranking, food_ranking, MPAs,
+        fun = function(x, y, z, m){ifelse(!is.na(m), 4, 
+                                          ifelse(x >= top_p_bio & y >= top_p_carbon & z >= top_p_food, 3,
+                                                 ifelse((x >= top_p_bio & y >= top_p_carbon) | (x >= top_p_bio & z >= top_p_food) | (y >= top_p_carbon & z >= top_p_food), 2,
+                                                        ifelse(x >= top_p_bio | y >= top_p_carbon | z >= top_p_food, 1, NA))))}) 
+
+}
+
+```
+
+## top 10%
+
+```{r}
+overlap_raster_top_10 <- find_overlap(top_p_bio = 0.9, top_p_carbon = 0.9, top_p_food = 0.9) 
+
+overlap_raster_top_10 %>% 
+  as.data.frame(xy = TRUE) %>% 
+  set_names(c("lon", "lat", "rank")) %>% 
+  filter(!is.na(rank), rank > 1) %>% 
+  ggplot()+
+  geom_raster(aes(x = lon, y = lat, fill = as.factor(rank)))+
+  geom_sf(data = land_50_moll, col = NA, fill = "grey")+
+  scale_fill_manual(values = 
+                      #c(viridis::viridis(3), "darkgreen"),
+                      c("1" = "#88e1f2", "2" = "#ffa41b", "3" = "#c02739", "4" = "darkgreen"),
+                    labels = c("1", "2", "3", "MPAs"),
+                    guide = guide_legend(
+                      title = "# of goals ",
+                      title.position = 'top',
+                      direction = "horizontal",
+                      keyheight = unit(3, units = "mm"),
+                      keywidth = unit(1, units = "cm"),
+                      title.hjust = 0.5,
+                      label.hjust = 0.5,
+                      nrow = 1,
+                      reverse = F,
+                      label.position = "bottom"))+
+  theme(axis.line = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+    panel.grid.minor = element_blank(),
+    plot.background = element_rect(fill = NA, color = NA), 
+    panel.background = element_rect(fill = NA, color = NA), 
+    legend.background = element_rect(fill = NA, color = NA),
+    panel.border = element_blank(),
+    legend.position = "bottom",
+    legend.margin=margin(0,0,0,0),
+    legend.box.spacing = unit(0, 'cm'))
+```
+
+```{r}
+n_ocean_cells <- ocean_low_res_moll %>% cellStats(function(x, ...) sum(!is.na(x))) 
+
+n_cells_3_goals_top_10 <- overlap_raster_top_10 %>% cellStats(function(x, ...) sum(x == 3, na.rm = T))
+
+n_cells_2_goals_top_10 <- overlap_raster_top_10 %>% cellStats(function(x, ...) sum(x == 2, na.rm = T)) 
+
+100*n_cells_3_goals_top_10/n_ocean_cells
+
+100*n_cells_2_goals_top_10/n_ocean_cells
+```
+
+## Needed to reach 90% benefits
+
+```{r}
+bio_90_percent <- 0.2026721
+carbon_90_percent <- 0.09000515
+food_90_percent <- 0.05658422
+
+overlap_raster_90_percent <- find_overlap(top_p_bio = 1 - bio_90_percent, top_p_carbon = 1 - carbon_90_percent, top_p_food = 1 - food_90_percent) 
+
+overlap_map_90_percent <- overlap_raster_90_percent %>% 
+  as.data.frame(xy = TRUE) %>% 
+  set_names(c("lon", "lat", "rank")) %>% 
+  filter(!is.na(rank), rank > 0) %>% 
+  ggplot()+
+  geom_raster(aes(x = lon, y = lat, fill = as.factor(rank)))+
+  geom_sf(data = land_50_moll, col = NA, fill = "grey")+
+  scale_fill_manual(values = c(viridis::viridis(n = 3), "4" = "lightblue"),
+                    labels = c("1", "2", "3", "MPAs"),
+                    guide = guide_legend(
+                      title = "Number of goals ",
+                      title.position = 'top',
+                      direction = "horizontal",
+                      keyheight = unit(1.5, units = "mm"),
+                      keywidth = unit(0.5, units = "cm"),
+                      title.hjust = 0.5,
+                      label.hjust = 0.5,
+                      nrow = 1,
+                      reverse = T,
+                      label.position = "top"))+
+  theme(axis.line = element_blank(),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 10),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = NA, color = NA), 
+        panel.background = element_rect(fill = NA, color = NA), 
+        legend.background = element_rect(fill = NA, color = NA),
+        panel.border = element_blank(),
+        legend.position = "bottom",
+        legend.margin=margin(0,0,0,0),
+        legend.box.spacing = unit(0, 'cm'))
+```
+
+```{r}
+n_cells_3_goals_90_percent <- overlap_raster_90_percent %>% cellStats(function(x, ...) sum(x == 3, na.rm = T))
+
+n_cells_2_goals_90_percent <- overlap_raster_90_percent %>% cellStats(function(x, ...) sum(x == 2, na.rm = T)) 
+
+100*n_cells_3_goals_90_percent/n_ocean_cells
+
+100*n_cells_2_goals_90_percent/n_ocean_cells
+```
+
+# Radar plot
+
+```{r}
+co_benefits_biodiversity <- read_csv("../Juanation/11_multiple_objectives/results/co_benefits_biodiversity.csv")
+co_benefits_food <- read_csv("../Juanation/11_multiple_objectives/results/co_benefits_food.csv")
+co_benefits_carbon <- read_csv("../Juanation/11_multiple_objectives/results/co_benefits_carbon.csv")
+```
+
+
+```{r}
+co_benefits_matrix <- co_benefits_biodiversity %>% 
+  slice(which.min(abs(fraction_protected - 0.1))) %>% 
+  mutate(priority = "biodiversity") %>% 
+  bind_rows(co_benefits_carbon %>% 
+              slice(which.min(abs(fraction_protected - 0.1))) %>% 
+              mutate(priority = "carbon")) %>% 
+  bind_rows(co_benefits_food %>% 
+              slice(which.min(abs(fraction_protected - 0.1))) %>% 
+              mutate(priority = "food")) %>% 
+  select(priority, biodiversity, carbon, food) %>% 
+  mutate_if(is.numeric, ~./(max(.)))
+```
+
+```{r}
+radar_top10 <- ggradar::ggradar(co_benefits_matrix, 
+                                base.size = 3,
+                                font.radar = "sans",
+                                axis.label.size = 3,
+                                grid.label.size	= 3,
+                                group.line.width = 1,
+                                legend.position	= "bottom", 
+                                legend.text.size = 3, 
+                                group.point.size = 1)+
+  theme_minimal()+
+  theme(legend.margin = margin(0,0,0,0),
+        legend.box.spacing = unit(-1, 'cm'),
+        legend.position = "bottom")+
+  theme(
+    legend.key.width = unit(0.5, 'cm'),
+    text = element_text(family = "Ubuntu Regular", color = "#22211d"),
+    axis.line = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.background = element_rect(fill = NA, color = NA), 
+    panel.background = element_rect(fill = NA, color = NA), 
+    legend.background = element_rect(fill = NA, color = NA),
+    panel.border = element_blank()
+  )
+```
+
+# Co-benefit curves
+
+Here we ask, if we prioritize one goal only, how much do we get of the others as co-benefit?
+
+```{r}
+# multi_objective_matrix <- read_rds("../Juanation/11_multiple_objectives/results/multi_objective_norm_features_diff_matrix.rds")
+# 
+# bio_ranking <- read_rds("../Juanation/05_spp_wts_smts_provs_MPAs/results/ranking_results_with_impacts.rds")
+# carbon_ranking <- read_rds("../Juanation/06_carbon/results/ranking_results_with_impacts.rds")
+# food_ranking <- read_rds("../Juanation/07_food/results/ranking_results.rds")
+```
+
+```{r}
+max_food <- 10.7*10^6
+
+co_benefits_biodiversity <- read_csv("../Juanation/11_multiple_objectives/results/co_benefits_biodiversity.csv")
+co_benefits_carbon <- read_csv("../Juanation/11_multiple_objectives/results/co_benefits_carbon.csv")
+co_benefits_food <- read_csv("../Juanation/11_multiple_objectives/results/co_benefits_food.csv")
+
+multi_objective_curves_biodiversity_priority <- co_benefits_biodiversity %>% 
+  mutate(food = food/max_food,
+         biodiversity = scales::rescale(biodiversity),
+         carbon = scales::rescale(carbon)) %>% 
+  gather(var, value, -fraction_protected) %>% 
+  filter(fraction_protected >= fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, value, col = var), show.legend = F)+
+  geom_hline(yintercept = 0, linetype = 2)+
+  theme_classic()+
+  scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1), breaks = c(0,0.25,0.5,0.75,1), limits = c(0,1))+
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10))+
+  labs(y = "Conservation Benefit", x = "", col = "Objective")+
+  scale_color_manual(values = c("#55ae95", "#3f4d71", "#fd7792")
+                       #wesanderson::wes_palette("Darjeeling1", n = 3)
+                     )
+  wesanderson::wes_palette("Darjeeling1", n = 3)
+  paletteer::scale_color_paletteer_d(package = "ggsci", palette = "default_locuszoom", direction = 1)
+
+multi_objective_curves_carbon_priority <- co_benefits_carbon %>% 
+  mutate(food = food/max_food,
+         biodiversity = scales::rescale(biodiversity),
+         carbon = scales::rescale(carbon)) %>% 
+  gather(var, value, -fraction_protected) %>% 
+  filter(fraction_protected >= fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, value, col = var), show.legend = T)+
+  geom_hline(yintercept = 0, linetype = 2)+
+  theme_classic()+
+  theme( legend.position = "bottom",
+         legend.margin = margin(0,0,0,0),
+         legend.box.spacing = unit(0, 'cm'),
+         legend.text = element_text(size = 10),
+         legend.box.margin = margin(0, 0,0,0),
+         axis.text = element_text(size = 8),
+         axis.title = element_text(size = 10),
+         plot.background = element_rect(fill = NA, color = NA), 
+         panel.background = element_rect(fill = NA, color = NA), 
+         legend.background = element_rect(fill = NA, color = NA),
+         panel.border = element_blank())+
+  labs(y = "", x = "Fraction Ocean Protected", col = "")+
+  scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1), breaks = c(0,0.25,0.5,0.75,1), limits = c(0,1))+
+  paletteer::scale_color_paletteer_d(package = "ggsci", palette = "default_locuszoom", direction = 1)
+
+multi_objective_curves_food_priority <- co_benefits_food %>% 
+  mutate(food = food/max_food,
+         biodiversity = scales::rescale(biodiversity),
+         carbon = scales::rescale(carbon)) %>% 
+  gather(var, value, -fraction_protected) %>% 
+  filter(fraction_protected >= fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, value, col = var), show.legend = F)+
+  geom_hline(yintercept = 0, linetype = 2)+
+  theme_classic()+
+  theme(axis.text = element_text(size = 8))+
+  scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1), breaks = c(0,0.25,0.5,0.75,1), limits = c(0,1))+
+  labs(y = "", x = "", col = "Objective")+
+  paletteer::scale_color_paletteer_d(package = "ggsci", palette = "default_locuszoom", direction = 1)
+
+fig2 <- overlap_map_90_percent / (multi_objective_curves_biodiversity_priority | multi_objective_curves_carbon_priority | multi_objective_curves_food_priority) + plot_layout(ncol = 1, heights = c(2,1)) + plot_annotation(tag_levels = "a")
+
+ggsave(fig2, filename = "figure_2.pdf", dpi = 300,  height = 6, width = 8)
+ggsave(fig2, filename = "figure_2.png", dpi = 300,  height = 6, width = 8)
+```
+
+```{r}
+co_benefits_food %>% 
+  slice(which.max(co_benefits_food$food))
+```
+
+

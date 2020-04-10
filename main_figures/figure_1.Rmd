@@ -1,0 +1,495 @@
+---
+title: "Figure 1: Priority Maps and benefit curves"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+library(patchwork)
+
+source(here::here("common.R"))
+```
+
+# Read MPAS
+
+```{r}
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+```
+
+# Read EEZ vs High Seas mask
+
+```{r}
+territories_mask <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories.tif")) # 1 equals high seas
+
+eez_mask <- ocean_low_res_moll %>% 
+  mask(territories_mask) 
+
+hs_mask <- ocean_low_res_moll %>% 
+  mask(territories_mask, inverse = T) 
+
+eez_mask_df_moll <- eez_mask %>% 
+  as.data.frame(xy = TRUE) %>% 
+  set_names(c("x", "y", "eez_mask")) %>% 
+  mutate(eez_mask = ifelse(eez_mask == 1, 1, NA)) %>% 
+  filter(!is.na(eez_mask)) %>% 
+  inner_join(ocean_matrix)
+```
+
+# Biodiversity
+
+```{r}
+bio_benefit_curves <- read_rds(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "benefit_curves.rds")) %>% 
+  mutate(cell_id = as.character(cell_id))
+
+spp_wts <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "species_list", "spp_weights.csv")) %>% 
+  as_tibble() %>% 
+  rename(w = spp_weight)
+
+smts_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed","seamounts"), full.names = T)) %>% 
+  mutate(w = sum(spp_wts$w)/n())
+
+provs_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "biogeography"), full.names = T, pattern = "\\.tif")) %>% 
+  mutate(w = sum(spp_wts$w)/n())
+
+feature_wts <- c(spp_wts$w, smts_wts$w, provs_wts$w)
+```
+
+
+```{r}
+bio_curve <- bio_benefit_curves %>% 
+  select(-cell_id) %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         cell_id = bio_benefit_curves$cell_id,
+         fraction_protected = cumsum(fraction_protected))
+
+bio_curve_grouped_and_rescaled <- bio_curve %>% 
+  mutate(percent_index = 1:nrow(bio_benefit_curves) %/% 1,
+         percent_index = scales::rescale(percent_index),
+         V_rescaled = scales::rescale(V),
+         dV = V_rescaled - lag(V_rescaled),
+         in_EEZ = cell_id %in% eez_mask_df_moll$cell_id) %>% 
+  replace_na(list(dV = 0)) %>% 
+  group_by(percent_index) %>% 
+  summarise(V = sum(dV),
+            V_eez = sum(dV[in_EEZ], na.rm = T),
+            V_HS = sum(dV[!in_EEZ],na.rm = T)) %>% 
+  ungroup() %>% 
+  gather(var, value, -percent_index) %>% 
+  group_by(var) %>% 
+  mutate(cv = cumsum(value)) %>% 
+  filter(percent_index >= fraction_in_MPA)
+
+bio_curves_plot <- bio_curve_grouped_and_rescaled %>% 
+  ggplot()+
+  geom_line(aes(percent_index, cv, col = var))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Biodiversity benefit",
+       col = "")+
+  theme_classic()+
+  scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
+  scale_y_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
+  expand_limits(y = c(0, 1.1),
+                x = c(0, 1))+
+  scale_color_manual(values = paletteer::paletteer_d("wesanderson::Darjeeling1", 3),
+                     labels = c("Global", "EEZ", "High Seas"))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = 0,
+                ymax = 1),
+                fill = "lightblue", alpha = 1)
+```
+
+```{r}
+bio_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "ranking_raster.tif"))
+
+bio_ranking_df <- bio_ranking %>% 
+  as.data.frame(xy = TRUE, centroids = T) %>% 
+  set_names(c("lon", "lat", "rank")) %>% 
+  mutate(rank = rank*100) %>% 
+  filter(!is.na(rank))
+
+min_global_MPA_rank <- bio_ranking %>% 
+      mask(MPAs) %>% 
+      cellStats(function(x, ...) min(x, na.rm = T)) %>% 
+      as.numeric()
+
+global_breaks <- sort(unique(c(0, 50, 60, 70, 80, 85, 90, 95, 100*min_global_MPA_rank, 100)))
+
+global_labels <- global_breaks[-1]
+
+global_colors <- priorities_map_pal$colors
+
+global_colors <- viridis::viridis(n = 8)
+  #Turbo(out.colors = 8)
+
+global_colors[global_labels > 100*min_global_MPA_rank] <- "lightblue"
+
+global_labels <- 100 - global_labels
+
+global_labels[global_labels ==  (100-100*min_global_MPA_rank)] <- " "
+
+#global_labels[global_labels == 100] <- ""
+
+global_legend_key_widths <- tibble(r = as.numeric(as.character(global_breaks[-1]/100)),
+                                  r_lag = lag(r)) %>% 
+  replace_na(list(r_lag = 0)) %>%
+  mutate(l = r - r_lag) %>% 
+  mutate(w = ifelse(r <= 0.7, l/0.7*0.2, l/0.3*0.4),
+         w1 = l*0.6) %>% pull(w1)
+
+bio_map <- bio_ranking_df %>% 
+  mutate(rank_cut = cut(rank, 
+                        breaks = global_breaks,
+                        labels = global_labels,
+                        include.lowest = T)) %>% 
+  ggplot()+
+  geom_raster(aes(x = lon, y = lat, fill = rank_cut))+
+  geom_raster(data = MPAs_df %>% 
+  filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
+  geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
+  scale_fill_manual(values  = global_colors,
+                    guide = guide_legend(
+                      title = "Top % of the Ocean",
+                      direction = "horizontal",
+                      keyheight = unit(0.01, "npc"),
+                      #keywidth = unit(rev(global_legend_key_widths), "npc"),
+                      title.position = 'top',
+                      title.hjust = 0.5,
+                      label.hjust = -.02,
+                      nrow = 1,
+                      byrow = T,
+                      reverse = T,
+                      label.position = "bottom"))+
+  theme(legend.text = element_text(size = 6),
+        legend.text.align = 0,
+        legend.position = "bottom",
+        axis.text.x = element_text(size = 6),
+        axis.text.y = element_text(size = 6),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = NA, color = NA), 
+        panel.background = element_rect(fill = NA, color = NA), 
+        legend.background = element_rect(fill = NA, color = NA),
+        panel.border = element_blank())
+```
+
+# Carbon
+
+```{r}
+carbon_benefit_curves <- read_rds(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "carbon_benefit.rds")) %>% 
+  mutate(cell_id = as.character(cell_id))
+
+carbon_curve <- carbon_benefit_curves %>% 
+  select(-cell_id) %>% 
+  rowSums() %>% 
+  as_tibble() %>% 
+  set_names("V") %>%
+  mutate(fraction_protected = 1/n(),
+         cell_id = carbon_benefit_curves$cell_id,
+         fraction_protected = cumsum(fraction_protected))
+
+carbon_curves_plot <- carbon_curve %>% 
+  mutate(percent_index = 1:nrow(carbon_curve) %/% 1,
+         percent_index = scales::rescale(percent_index),
+         V_rescaled = scales::rescale(V),
+         dV = V_rescaled - lag(V_rescaled),
+         in_EEZ = cell_id %in% eez_mask_df_moll$cell_id) %>% 
+  replace_na(list(dV = 0)) %>% 
+  group_by(percent_index) %>% 
+  summarise(V = sum(dV),
+            V_eez = sum(dV[in_EEZ], na.rm = T),
+            V_HS = sum(dV[!in_EEZ],na.rm = T)) %>% 
+  ungroup() %>% 
+  gather(var, value, -percent_index) %>% 
+  group_by(var) %>% 
+  mutate(cv = cumsum(value)) %>% 
+  filter(percent_index >= fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(percent_index, cv, col = var))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Carbon benefit",
+       col = "")+
+  theme_classic()+
+  scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
+  scale_y_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
+  expand_limits(y = c(0, 1.1),
+                x = c(0, 1))+
+  scale_color_manual(values = paletteer::paletteer_d("wesanderson::Darjeeling1", 3),
+                     labels = c("Global", "EEZ", "High Seas"))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = 0,
+                ymax = 1),
+                fill = "lightblue", alpha = 1)
+```
+
+```{r}
+carbon_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster.tif"))
+
+carbon_ranking_df <- carbon_ranking %>% 
+  as.data.frame(xy = TRUE, centroids = T) %>% 
+  set_names(c("lon", "lat", "rank")) %>% 
+  mutate(rank = rank*100) %>% 
+  filter(!is.na(rank))
+
+min_global_MPA_rank <- carbon_ranking %>% 
+      mask(MPAs) %>% 
+      cellStats(function(x, ...) min(x, na.rm = T)) %>% 
+      as.numeric()
+
+global_breaks <- sort(unique(c(0, 50, 60, 70, 80, 85, 90, 95, 100*min_global_MPA_rank, 100)))
+
+global_labels <- global_breaks[-1]
+
+global_colors <- priorities_map_pal$colors
+
+global_colors <- viridis::viridis(n = 8)
+
+global_colors[global_labels > 100*min_global_MPA_rank] <- "lightblue"
+
+global_labels <- 100 - global_labels
+
+global_labels[global_labels ==  (100-100*min_global_MPA_rank)] <- " "
+
+#global_labels[global_labels == 100] <- ""
+
+global_legend_key_widths <- tibble(r = as.numeric(as.character(global_breaks[-1]/100)),
+                                  r_lag = lag(r)) %>% 
+  replace_na(list(r_lag = 0)) %>%
+  mutate(l = r - r_lag) %>% 
+  mutate(w = ifelse(r <= 0.7, l/0.7*0.2, l/0.3*0.4),
+         w1 = l*0.6) %>% pull(w1)
+
+carbon_map <- carbon_ranking_df %>% 
+  mutate(rank_cut = cut(rank, 
+                        breaks = global_breaks,
+                        labels = global_labels,
+                        include.lowest = T)) %>% 
+  ggplot()+
+  geom_raster(aes(x = lon, y = lat, fill = rank_cut))+
+  geom_raster(data = MPAs_df %>% 
+  filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
+  geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
+  scale_fill_manual(values  = global_colors,
+                    guide = guide_legend(
+                      title = "Top % of the Ocean",
+                      direction = "horizontal",
+                      keyheight = unit(0.01, "npc"),
+                      #keywidth = unit(rev(global_legend_key_widths), "npc"),
+                      title.position = 'top',
+                      title.hjust = 0.5,
+                      label.hjust = -.02,
+                      nrow = 1,
+                      byrow = T,
+                      reverse = T,
+                      label.position = "bottom"))+
+  theme(legend.text = element_text(size = 6),
+        legend.text.align = 0,
+        legend.position = "bottom",
+        axis.text.x = element_text(size = 6),
+        axis.text.y = element_text(size = 6),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = NA, color = NA), 
+        panel.background = element_rect(fill = NA, color = NA), 
+        legend.background = element_rect(fill = NA, color = NA),
+        panel.border = element_blank())
+```
+
+# Food
+
+```{r}
+food_benefit_curves <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "network_delta_catch_per_stock.rds")) %>% 
+  mutate(cell_id = as.character(cell_id))
+
+food_curve <- food_benefit_curves %>% 
+  select(-cell_id) %>% 
+  rowSums() %>% 
+  as_tibble() %>% 
+  set_names("V") %>%
+  mutate(fraction_protected = 1/n(),
+         cell_id = food_benefit_curves$cell_id,
+         fraction_protected = cumsum(fraction_protected))
+
+max_food <- max(food_curve$V)/10^6
+
+(food_curves_plot <- food_curve %>% 
+    mutate(percent_index = 1:nrow(food_curve) %/% 1,
+           percent_index = scales::rescale(percent_index),
+           V_rescaled = V/max(V),
+           dV = V_rescaled - lag(V_rescaled),
+           in_EEZ = cell_id %in% eez_mask_df_moll$cell_id) %>% 
+    replace_na(list(dV = 0)) %>% 
+    group_by(percent_index) %>% 
+    summarise(V = sum(dV),
+              V_eez = sum(dV[in_EEZ], na.rm = T),
+              V_HS = sum(dV[!in_EEZ],na.rm = T)) %>% 
+    ungroup() %>% 
+    gather(var, value, -percent_index) %>% 
+    group_by(var) %>% 
+    mutate(cv = cumsum(value)) %>% 
+    filter(percent_index >= fraction_in_MPA) %>% 
+    ggplot()+
+    geom_line(aes(percent_index, cv, col = var))+
+    geom_hline(yintercept = 0, linetype = 2 )+
+    labs(x = "Fraction Ocean Protected",
+         y = "Food Provision Benefit",
+         col = "")+
+    theme_classic()+
+    theme(legend.text = element_text(size = 10),
+          legend.text.align = 0,
+          legend.position = "bottom")+
+    scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
+    scale_y_continuous(expand = c(0,0), sec.axis = sec_axis(~ . *max_food, name = "MMT"))+
+    expand_limits(y = c(0, 1.1),
+                  x = c(0, 1))+
+    scale_color_manual(values = paletteer::paletteer_d("wesanderson::Darjeeling1", 3),
+                       labels = c("Global", "EEZ", "High Seas"),
+                       guide = guide_legend(keyheight = 1.5)
+                      )+
+    geom_rect(aes(xmin = 0, 
+                  xmax = fraction_in_MPA, 
+                  ymin = min(food_curve$V)/10^6/max_food,
+                  ymax = 1),
+              fill = "lightblue", alpha = 1))
+```
+
+```{r}
+food_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster.tif"))
+
+food_ranking_df <- food_ranking %>% 
+  as.data.frame(xy = TRUE, centroids = T) %>% 
+  set_names(c("lon", "lat", "rank")) %>% 
+  mutate(rank = rank*100) %>% 
+  filter(!is.na(rank))
+
+min_global_MPA_rank <- food_ranking %>% 
+      mask(MPAs) %>% 
+      cellStats(function(x, ...) min(x, na.rm = T)) %>% 
+      as.numeric()
+
+global_breaks <- sort(unique(c(0, 50, 60, 70, 80, 85, 90, 95, 100*min_global_MPA_rank, 100)))
+
+global_labels <- global_breaks[-1]
+
+global_colors <- priorities_map_pal$colors
+
+global_colors <- viridis::viridis(n = 8)
+
+global_colors[global_labels > 100*min_global_MPA_rank] <- "lightblue"
+
+global_labels <- 100 - global_labels
+
+global_labels[global_labels ==  (100-100*min_global_MPA_rank)] <- " "
+
+global_legend_key_widths <- tibble(r = as.numeric(as.character(global_breaks[-1]/100)),
+                                  r_lag = lag(r)) %>% 
+  replace_na(list(r_lag = 0)) %>%
+  mutate(l = r - r_lag) %>% 
+  mutate(w = ifelse(r <= 0.7, l/0.7*0.2, l/0.3*0.4),
+         w1 = l*0.6) %>% pull(w1)
+
+food_map <- food_ranking_df %>% 
+  mutate(rank = if_else(rank < 0, 0, rank)) %>% 
+  mutate(rank_cut = cut(rank, 
+                        breaks = global_breaks,
+                        labels = global_labels,
+                        include.lowest = T)) %>% 
+  ggplot()+
+  geom_raster(aes(x = lon, y = lat, fill = rank_cut))+
+  geom_raster(data = MPAs_df %>% 
+  filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
+  geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
+  scale_fill_manual(values  = global_colors,
+                    guide = guide_legend(
+                      title = "Top priority (%)",
+                      direction = "horizontal",
+                      keyheight = unit(0.01, "npc"),
+                      #keywidth = unit(rev(global_legend_key_widths)/1.1, "npc"),
+                      keywidth = unit(c(0.05, 0.05,rep(.1, 7))/1.5,"npc"),
+                      title.position = 'top',
+                      title.hjust = 0.5,
+                      label.hjust = -.02,
+                      nrow = 1,
+                      byrow = T,
+                      reverse = T,
+                      label.position = "bottom"))+
+  theme(legend.text = element_text(size = 6),
+        legend.text.align = 0,
+        legend.position = "bottom",
+        axis.text.x = element_text(size = 6),
+        axis.text.y = element_text(size = 6),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = NA, color = NA), 
+        panel.background = element_rect(fill = NA, color = NA), 
+        legend.background = element_rect(fill = NA, color = NA),
+        panel.border = element_blank())
+```
+
+# Make Figure
+
+```{r}
+fig_1 <- bio_map + theme(legend.position = "none") + 
+         bio_curves_plot  + theme(legend.position = "none", 
+                                  axis.title.x = element_blank(), 
+                                  axis.title.y = element_text(size = 13),
+                                  axis.text = element_text(size = 10)) +
+         carbon_map + theme(legend.position = "none") + 
+         carbon_curves_plot + theme(legend.position = "none", 
+                                    axis.title.x = element_blank(),
+                                    axis.title.y = element_text(size = 13),
+                                    axis.text = element_text(size = 10)) + 
+         food_map + theme(legend.text = element_text(size = 12), 
+                          legend.title = element_text(size = 13)) +
+         food_curves_plot + theme(legend.text = element_text(size = 13), 
+                                  axis.title.y = element_text(size = 13),
+                                  axis.title.x = element_text(size = 13, vjust = 0.1),
+                                  axis.text = element_text(size = 10))+
+         plot_annotation(tag_levels = "a")+
+         plot_layout(ncol = 2, widths = c(1.5,1)) & 
+         theme(plot.margin=grid::unit(c(0,0,0,0), "mm")) 
+
+ggsave(fig_1, filename = file.path(emLab_project_dir, "figures", "main", "figure_1.pdf"), dpi = 300,  height = 9, width = 10)
+ggsave(fig_1, filename = file.path(emLab_project_dir, "figures", "main", "figure_1.png"), dpi = 300,  height = 9, width = 10)
+```
+
+
+
+
+
+

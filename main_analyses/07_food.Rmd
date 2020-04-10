@@ -125,6 +125,9 @@ colnames(protected_cells) <- rownames(Norm_features_matrix)
 baseline_state <- protected_cells%*%Norm_features_matrix
 
 stocks_info$ex_rate[stocks_info$ex_rate >= 1] <- 0.99999
+
+write_rds(Norm_features_matrix, 
+          file.path(variant_dir, "norm_matrix.rds"))
 ```
 
 ## Effort goes away
@@ -215,6 +218,8 @@ write_rds(ranking,
 ```{r}
 ranking <- read_rds(file.path(variant_dir, "ranking_results.rds"))
 
+Norm_features_matrix <- read_rds(file.path(variant_dir, "norm_matrix.rds"))
+
 ranked_rep_levels <- MPAs_df %>% 
   filter(!is.na(mpa)) %>% 
   select(cell_id) %>% 
@@ -235,7 +240,7 @@ network_delta_catch_per_stock <- ranked_rep_levels %>%
 network_delta_catch <- network_delta_catch_per_stock %>% 
   rowSums() %>% 
   enframe() 
-  
+
 pixel_delta_catch <- ranked_rep_levels %>%
   select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>%
   apply(MARGIN = 1, estimate_delta_catch)  %>% 
