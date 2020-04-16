@@ -60,7 +60,7 @@ overlap_raster_top_10 <- find_overlap(top_p_bio = 0.9, top_p_carbon = 0.9, top_p
 overlap_raster_top_10 %>% 
   as.data.frame(xy = TRUE) %>% 
   set_names(c("lon", "lat", "rank")) %>% 
-  filter(!is.na(rank), rank > 1) %>% 
+  filter(!is.na(rank), rank > 0) %>% 
   ggplot()+
   geom_raster(aes(x = lon, y = lat, fill = as.factor(rank)))+
   geom_sf(data = land_50_moll, col = NA, fill = "grey")+
@@ -166,80 +166,23 @@ n_cells_2_goals_90_percent <- overlap_raster_90_percent %>% cellStats(function(x
 100*n_cells_2_goals_90_percent/n_ocean_cells
 ```
 
-# Radar plot
-
-```{r}
-co_benefits_biodiversity <- read_csv("../Juanation/11_multiple_objectives/results/co_benefits_biodiversity.csv")
-co_benefits_food <- read_csv("../Juanation/11_multiple_objectives/results/co_benefits_food.csv")
-co_benefits_carbon <- read_csv("../Juanation/11_multiple_objectives/results/co_benefits_carbon.csv")
-```
-
-
-```{r}
-co_benefits_matrix <- co_benefits_biodiversity %>% 
-  slice(which.min(abs(fraction_protected - 0.1))) %>% 
-  mutate(priority = "biodiversity") %>% 
-  bind_rows(co_benefits_carbon %>% 
-              slice(which.min(abs(fraction_protected - 0.1))) %>% 
-              mutate(priority = "carbon")) %>% 
-  bind_rows(co_benefits_food %>% 
-              slice(which.min(abs(fraction_protected - 0.1))) %>% 
-              mutate(priority = "food")) %>% 
-  select(priority, biodiversity, carbon, food) %>% 
-  mutate_if(is.numeric, ~./(max(.)))
-```
-
-```{r}
-radar_top10 <- ggradar::ggradar(co_benefits_matrix, 
-                                base.size = 3,
-                                font.radar = "sans",
-                                axis.label.size = 3,
-                                grid.label.size	= 3,
-                                group.line.width = 1,
-                                legend.position	= "bottom", 
-                                legend.text.size = 3, 
-                                group.point.size = 1)+
-  theme_minimal()+
-  theme(legend.margin = margin(0,0,0,0),
-        legend.box.spacing = unit(-1, 'cm'),
-        legend.position = "bottom")+
-  theme(
-    legend.key.width = unit(0.5, 'cm'),
-    text = element_text(family = "Ubuntu Regular", color = "#22211d"),
-    axis.line = element_blank(),
-    axis.text.x = element_blank(),
-    axis.text.y = element_blank(),
-    axis.ticks = element_blank(),
-    axis.title.x = element_blank(),
-    axis.title.y = element_blank(),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    plot.background = element_rect(fill = NA, color = NA), 
-    panel.background = element_rect(fill = NA, color = NA), 
-    legend.background = element_rect(fill = NA, color = NA),
-    panel.border = element_blank()
-  )
-```
-
 # Co-benefit curves
+
+```{r}
+co_benefits_biodiversity <- read_csv(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives","co_benefits_biodiversity.csv"))
+co_benefits_food <- read_csv(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives","co_benefits_food.csv"))
+co_benefits_carbon <- read_csv(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives","co_benefits_carbon.csv"))
+
+max_food <- read_csv(file.path(emLab_project_dir, "data", "03_output", "07_food", "results_per_pixel.csv")) %>% 
+  summarize(max_deltaH = max(network_cummulative_delta_catch),
+            max_deltaH_bau =  max(network_cummulative_delta_catch[is_mpa == 1])) %>% 
+  mutate(catch_diff = max_deltaH - max_deltaH_bau) %>% 
+  pull(max_deltaH)
+```
 
 Here we ask, if we prioritize one goal only, how much do we get of the others as co-benefit?
 
 ```{r}
-# multi_objective_matrix <- read_rds("../Juanation/11_multiple_objectives/results/multi_objective_norm_features_diff_matrix.rds")
-# 
-# bio_ranking <- read_rds("../Juanation/05_spp_wts_smts_provs_MPAs/results/ranking_results_with_impacts.rds")
-# carbon_ranking <- read_rds("../Juanation/06_carbon/results/ranking_results_with_impacts.rds")
-# food_ranking <- read_rds("../Juanation/07_food/results/ranking_results.rds")
-```
-
-```{r}
-max_food <- 10.7*10^6
-
-co_benefits_biodiversity <- read_csv("../Juanation/11_multiple_objectives/results/co_benefits_biodiversity.csv")
-co_benefits_carbon <- read_csv("../Juanation/11_multiple_objectives/results/co_benefits_carbon.csv")
-co_benefits_food <- read_csv("../Juanation/11_multiple_objectives/results/co_benefits_food.csv")
-
 multi_objective_curves_biodiversity_priority <- co_benefits_biodiversity %>% 
   mutate(food = food/max_food,
          biodiversity = scales::rescale(biodiversity),
@@ -254,11 +197,13 @@ multi_objective_curves_biodiversity_priority <- co_benefits_biodiversity %>%
   theme(axis.text = element_text(size = 8),
         axis.title = element_text(size = 10))+
   labs(y = "Conservation Benefit", x = "", col = "Objective")+
-  scale_color_manual(values = c("#55ae95", "#3f4d71", "#fd7792")
-                       #wesanderson::wes_palette("Darjeeling1", n = 3)
-                     )
-  wesanderson::wes_palette("Darjeeling1", n = 3)
-  paletteer::scale_color_paletteer_d(package = "ggsci", palette = "default_locuszoom", direction = 1)
+  scale_color_manual(values = wesanderson::wes_palette("Darjeeling1", n = 3))+ 
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = min(co_benefits_food$food)/max_food,
+                ymax = 1),
+            fill = "lightblue", alpha = 1)
+  
 
 multi_objective_curves_carbon_priority <- co_benefits_carbon %>% 
   mutate(food = food/max_food,
@@ -283,7 +228,13 @@ multi_objective_curves_carbon_priority <- co_benefits_carbon %>%
          panel.border = element_blank())+
   labs(y = "", x = "Fraction Ocean Protected", col = "")+
   scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1), breaks = c(0,0.25,0.5,0.75,1), limits = c(0,1))+
-  paletteer::scale_color_paletteer_d(package = "ggsci", palette = "default_locuszoom", direction = 1)
+  scale_color_manual(values = wesanderson::wes_palette("Darjeeling1", n = 3))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = min(co_benefits_food$food)/max_food,
+                ymax = 1),
+            fill = "lightblue", alpha = 1)
+
 
 multi_objective_curves_food_priority <- co_benefits_food %>% 
   mutate(food = food/max_food,
@@ -295,15 +246,26 @@ multi_objective_curves_food_priority <- co_benefits_food %>%
   geom_line(aes(fraction_protected, value, col = var), show.legend = F)+
   geom_hline(yintercept = 0, linetype = 2)+
   theme_classic()+
-  theme(axis.text = element_text(size = 8))+
+  theme(axis.text = element_text(size = 8),
+        legend.position = "none",
+        legend.background=element_blank(),
+        legend.key = element_rect(colour = "transparent", fill = "transparent"))+
   scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1), breaks = c(0,0.25,0.5,0.75,1), limits = c(0,1))+
   labs(y = "", x = "", col = "Objective")+
-  paletteer::scale_color_paletteer_d(package = "ggsci", palette = "default_locuszoom", direction = 1)
+  scale_color_manual(values = wesanderson::wes_palette("Darjeeling1", n = 3))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = min(co_benefits_food$food)/max_food,
+                ymax = 1),
+            fill = "lightblue", alpha = 1)
 
-fig2 <- overlap_map_90_percent / (multi_objective_curves_biodiversity_priority | multi_objective_curves_carbon_priority | multi_objective_curves_food_priority) + plot_layout(ncol = 1, heights = c(2,1)) + plot_annotation(tag_levels = "a")
+a <- overlap_map_90_percent
+b <- (multi_objective_curves_biodiversity_priority | multi_objective_curves_carbon_priority | multi_objective_curves_food_priority) + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
 
-ggsave(fig2, filename = "figure_2.pdf", dpi = 300,  height = 6, width = 8)
-ggsave(fig2, filename = "figure_2.png", dpi = 300,  height = 6, width = 8)
+fig2 <- a /(b) + plot_layout(ncol = 1, heights = c(2,1)) + plot_annotation(tag_levels = "a")
+
+ggsave(fig2, filename = file.path(emLab_project_dir, "figures", "main", "figure_2.pdf"), dpi = 300,  height = 6, width = 8)
+ggsave(fig2, filename = file.path(emLab_project_dir, "figures", "main", "figure_2.png"), dpi = 300,  height = 6, width = 8)
 ```
 
 ```{r}

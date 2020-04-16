@@ -57,6 +57,8 @@ stocks_info <- stocks %>%
 
 stocks_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "stocks_df.csv")) %>% 
   as_tibble()
+
+stocks_info %>% filter(ex_rate >= 1)
 ```
 
 ```{r}
@@ -138,6 +140,8 @@ estimate_slopes_a1 <- function(e = stocks_info$ex_rate,
                                k = stocks_info$k, 
                                R){
   
+  R[R > 1] <- 1 
+  
   A <- (1 - e)^(1/(1 - R))
   
   part_a <- A*log(1 - e)*k*m*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - R)*((1 - A)*R + m))
@@ -149,6 +153,8 @@ estimate_slopes_a1 <- function(e = stocks_info$ex_rate,
   part_d <- (1 - A)*k*m*(1 - R)*(A*log(1 - e)*m/(r*(1 - R)*((1 - A)*R + m)) + (1 - A)*m/(r*((1 - A)*R + m)) + (1 - A)*m*(1 - R)*(-A*log(1 - e)*R/(1 - R)^2 - A + 1)/(r*((1 - A)*R + m)^2))/((1 - A)*R + m)
   
   slope <- - part_a - part_b - part_c + part_d
+  
+  slope[R == 1] <- -9*10^9
   
   return(slope)
   
@@ -196,8 +202,6 @@ while(nrow(unprotected_matrix) > 0){
   
   slopes <- estimate_slopes_a1(R = current_state)
   
-  slopes[is.na(slopes)] <- 0
-
   delta <- unprotected_matrix%*%as.matrix(t(slopes))
   
   best_cell_indeces <- doBy::which.maxn(delta, n = 100)
@@ -432,63 +436,238 @@ results_per_pixel %>%
   ggsave(file.path(variant_dir, "pixel_contribution_map.png"),dpi = 300,  height = 4, width = 8)
 ```
 
-## max changes in catch per stock
+## Delta H per stock
+
+Here we examine the delta H for each stock at 10% of optimal ocean protection
 
 ```{r}
-cells_per_stock <- ranked_rep_levels %>% 
+network_delta_catch_per_stock_A1 <- read_rds(file.path(variant_dir, "network_delta_catch_per_stock_a1.rds"))
+
+protection_levels_per_stock <- ranked_rep_levels %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected =  cumsum(fraction_protected)) %>% 
+  filter(fraction_protected < 0.1) %>% 
+  select(-x, -y, -fraction_protected, -delta, -pick_order, -is_mpa) %>% 
+  mutate_at(vars(-cell_id), .funs = cumsum) %>% 
+  pivot_longer(-c(cell_id), names_to = "stockid", values_to = "f_stock_protected")
+
+delta_catch_per_stock_at_10_percent_protection_A1 <- network_delta_catch_per_stock_A1 %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected =  cumsum(fraction_protected)) %>% 
+  filter(fraction_protected < 0.1) %>% 
+  select(-fraction_protected) %>% 
+  pivot_longer(-c(cell_id), names_to = "stockid", values_to = "delta_catch_A1") %>% 
+  group_by(stockid) %>% 
+  summarise(dH_A1 = last(delta_catch_A1),
+            cell_id = cell_id[which.max(delta_catch_A1)]) %>% 
+  left_join(protection_levels_per_stock, by = c("cell_id", "stockid")) %>% 
+  select(-cell_id) %>% 
+  mutate(stockid = str_replace_all(stockid, "\\.", "-")) %>% 
+  left_join(stocks_info %>% 
+              select(-filename), by = "stockid") %>% 
+  mutate(E_msy = 0.5*r,
+         msy = r*k/4,
+         m = as.factor(m),
+         e_over_msy = ex_rate/E_msy,
+         dH_over_k_A1 = dH_A1/k,
+         dH_over_msy_A1 = dH_A1/msy)
+
+stock_range_sizes <- ranked_rep_levels %>% 
   select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
   summarize_all(~sum(.x > 0)) %>% 
-  pivot_longer(everything(), names_to = "stockid", values_to = "n_cells")
+  pivot_longer(everything(), names_to = "stockid", values_to = "n_cells") %>% 
+  mutate(stockid = str_replace_all(stockid, "\\.", "-")) 
 
-network_delta_catch_per_stock_a1 <- read_rds(file.path(variant_dir, "network_delta_catch_per_stock_a1.rds"))
+delta_catch_per_stock_at_10_percent_protection_A1 <- delta_catch_per_stock_at_10_percent_protection_A1 %>% 
+  left_join(stock_range_sizes)
 
-max_catch_per_stock_a1 <- network_delta_catch_per_stock_a1 %>% 
-  select(-cell_id) %>% 
-  summarize_all(max) %>% 
-  pivot_longer(everything(), names_to = "stockid", values_to = "max_delta_catch_a1") 
+write_csv(delta_catch_per_stock_at_10_percent_protection_A1, 
+          file.path(variant_dir, "delta_catch_per_stock_at_10_percent_protection_A1.csv"))
+```
 
-network_delta_catch_per_stock_a0 <- read_rds("~/Google Drive File Stream/Shared drives/emlab/projects/current-projects/ocean-conservation-priorities/data/03_output/07_food/network_delta_catch_per_stock.rds")
 
-max_catch_per_stock_a0 <- network_delta_catch_per_stock_a0 %>% 
-  select(-cell_id) %>% 
-  summarize_all(max) %>% 
-  pivot_longer(everything(), names_to = "stockid", values_to = "max_delta_catch_a0") 
-
-comparing_assumptions <- max_catch_per_stock_a1 %>% 
-  left_join(max_catch_per_stock_a0) %>% 
-  left_join(cells_per_stock, by = "stockid") %>% 
-  mutate(stockid = str_replace_all(stockid, "\\.", "-")) %>% 
-  left_join(stocks_info %>% select(-filename), by = "stockid")
-
-comparing_assumptions %>% write_csv(file.path(variant_dir, "max_delta_catch_per_stock.csv"))
+```{r}
+delta_catch_per_stock_at_10_percent_protection_A1 %>% 
+  mutate(m = as.factor(m)) %>% 
+  select(stockid, m, r, ex_rate, e_over_msy,  n_cells) %>% 
+  pivot_longer(-c(stockid, m, r), names_to = c("x_var"), values_to = "x_val") %>% 
+  left_join(delta_catch_per_stock_at_10_percent_protection_A1 %>% 
+              mutate(dH_A1 = dH_A1/10^6) %>% 
+              select(stockid, dH_A1 , dH_over_k_A1, dH_over_msy_A1) %>% 
+              pivot_longer(-c(stockid), names_to = c("y_var"), values_to = "y_val")) %>% 
+  ggplot()+
+  geom_point(aes(x = x_val, y = y_val, col = r, shape = m))+
+  facet_grid(rows = vars(y_var), cols = vars(x_var), scales = 'free', switch="both", 
+             labeller = labeller(x_var = c(ex_rate = "Exploitation rate", e_over_msy = "E/E_msy", n_cells = "Stock range size"),
+                                 y_var = c(dH_A1 = "Delta H", dH_over_k_A1 = "Delta H/K", dH_over_msy_A1 = "Delta H/MSY")))+
+  labs(x = "", y = "")+
+  theme(
+    aspect.ratio = 1,
+    strip.background = element_blank(),
+    strip.placement = "outside",
+    plot.title.position = "plot"
+  )+
+  labs(title = "Delta catch per stock at 10% optimal ocean protection", subtitle = "Full displacement model")+
+  scale_color_viridis_c()+
+  ggsave(filename = file.path(variant_dir, "deltaH_diagnostic_plots.png"), height = 10, width = 12)
 ```
 
 ```{r}
-comparing_assumptions <- read_csv(file.path(variant_dir, "max_delta_catch_per_stock.csv"))
-
-comparing_assumptions %>% 
-  mutate(diff = max_delta_catch_a1 - max_delta_catch_a0,
-         diff_n = ifelse(diff < 0, -abs(diff)^(1/3), abs(diff)^(1/3)),
-         percent_change = 100*(max_delta_catch_a1 - max_delta_catch_a0)/max_delta_catch_a0,
-         m = as.factor(m)) %>%
+delta_catch_per_stock_at_10_percent_protection_A1 %>% 
   ggplot()+
-  geom_point(aes(x = n_cells, y = diff_n, col = k, shape = m))+
-  scale_x_log10()+
-  labs(y = "Difference in delta H (cubic root transform)", x  = "stock range size (log 10 # of cells)")
+  geom_point(aes(x = e_over_msy, y = f_stock_protected, col = dH_over_k_A1, size = dH_A1/10^6))+
+  scale_color_gradient2()+
+  theme_dark()+
+  labs(x = "E/E_msy", y = "fraction of stock protected", title = "Delta catch (dH) and protection levels per stock", subtitle = "At 10% optimal ocean protection - full displacement model", color = "dH/K", size = "dH")+
+  theme(plot.title.position = "plot")+
+  ggsave(filename = file.path(variant_dir, "deltaH_and_protection_levels_at_10_percent.png"))
+```
+
+# Comparing effort assumptions
+
+## at 10% protection
+
+```{r}
+delta_catch_per_stock_at_10_percent_protection_A0 <- read_csv(file.path(emLab_project_dir, "data", "03_output", "07_food", 
+                                                                         "delta_catch_per_stock_at_10_percent_protection.csv"))
+
+comparing_asssumptions_df <- delta_catch_per_stock_at_10_percent_protection_A1 %>% 
+  left_join(delta_catch_per_stock_at_10_percent_protection_A0 %>% 
+              select(stockid, f_stock_protected_A0 = f_stock_protected, dH_A0 = dH, dH_over_k_A0 = dH_over_k, dH_over_msy_A0 = dH_over_msy))
   
-  comparing_assumptions %>% 
-  mutate(diff = max_delta_catch_a1 - max_delta_catch_a0,
-         diff_n = ifelse(diff < 0, -abs(diff)^(1/3), abs(diff)^(1/3)),
-         percent_change = 100*(max_delta_catch_a1 - max_delta_catch_a0)/max_delta_catch_a0,
-         m = as.factor(m)) %>%
+comparing_asssumptions_df %>% 
   ggplot()+
-  geom_point(aes(x = ex_rate, y = diff_n, col = k, shape = m))+
-  labs(y = "Difference in delta H (cubic root transform)", x  = "Exploitation rate")
+  geom_point(aes(x = e_over_msy, y =  f_stock_protected - f_stock_protected_A0, 
+                 shape = m, col =  dH_over_k_A1 - dH_over_k_A0),
+             alpha = 0.5)+
+  scale_color_gradient2()+
+  labs(x = "E / E_msy", y = "Difference in fraction protected", col = "Difference in dH")+
+  theme_dark()
+```
+
+## benefit curves
+
+```{r}
+network_delta_catch_per_stock_A1 <- read_rds(file.path(variant_dir, "network_delta_catch_per_stock_a1.rds"))
+network_delta_catch_per_stock_A0 <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food","network_delta_catch_per_stock.rds"))
+
+benefit_curve_A0 <-  network_delta_catch_per_stock_A0 %>% 
+  select(-cell_id) %>% 
+  rowSums() %>% 
+  enframe(name = "pick", value = "delta_catch_A0") 
+
+benefit_curve_A1 <-  network_delta_catch_per_stock_A1 %>% 
+  select(-cell_id) %>% 
+  rowSums() %>% 
+  enframe(name = "pick", value = "delta_catch_A1")     
+
+left_join(benefit_curve_A0, benefit_curve_A1) %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected =  cumsum(fraction_protected)) %>% 
+  pivot_longer(cols = c("delta_catch_A1", "delta_catch_A0"), names_to = "effort_model", values_to = "delta_catch") %>% 
+  ggplot()+
+  geom_line(aes(x = fraction_protected, y = delta_catch/10^6, col = effort_model))
+  ggsave(filename = file.path(variant_dir, "benefit_curve_comparison_a0_vs_a1.png"), width = 6, height = 5)
+```
+
+## curves by ...
+
+```{r}
+network_delta_catch_per_stock_A1 <- read_rds(file.path(variant_dir, "network_delta_catch_per_stock_a1.rds"))
+
+delta_H_per_stock_per_step <- network_delta_catch_per_stock_A1 %>% 
+  pivot_longer(-c(cell_id), names_to = "stockid", values_to = "delta_H")
+
+protection_per_stock_per_step <- ranked_rep_levels %>% 
+  select(-x, -y, -delta, -pick_order, -is_mpa) %>% 
+  mutate_at(vars(-cell_id), .funs = cumsum) %>% 
+  pivot_longer(-c(cell_id), names_to = "stockid", values_to = "f_stock_protected")
+
+protection_and_delta_H_per_step <- delta_H_per_stock_per_step %>% 
+  left_join(protection_per_stock_per_step)
+
+protection_and_delta_H_per_step <- protection_and_delta_H_per_step %>% 
+  mutate(stockid = str_replace_all(stockid, "\\.", "-")) %>% 
+  left_join(stocks_info %>% 
+              select(-filename), by = "stockid") %>% 
+  mutate(E_msy = 0.5*r,
+         msy = r*k/4,
+         m = as.factor(m),
+         e_over_msy = ex_rate/E_msy,
+         delta_H_over_k = delta_H/k,
+         delta_H_over_msy = delta_H/msy)
+
+protection_and_delta_H_per_step %>% 
+  write_rds(file.path(variant_dir, "protection_and_delta_H_per_step.rds"))
+```
+
+
+```{r}
+protection_and_delta_H_per_step <- read_rds(file.path(variant_dir, "protection_and_delta_H_per_step.rds"))
+
+protection_and_delta_H_per_m <- protection_and_delta_H_per_step %>% 
+  group_by(cell_id, m) %>% 
+  summarize(delta_H = sum(delta_H),
+            avg_protection = mean(f_stock_protected)) %>% 
+  left_join(ranked_rep_levels %>% 
+              mutate(fraction_ocean_protected = 1/n(),
+                     fraction_ocean_protected =  cumsum(fraction_ocean_protected)) %>% 
+              select(cell_id, fraction_ocean_protected))
+
+protection_and_delta_H_per_m %>% 
+  ungroup() %>% 
+  select(-cell_id) %>% 
+  pivot_longer(cols = -c(m,fraction_ocean_protected), names_to = "variable") %>% 
+  ggplot()+
+  geom_line(aes(x = fraction_ocean_protected, y = value, col = m))+
+  facet_wrap(vars(variable), scales = 'free', ncol = 1, strip.position = "left")+
+  scale_color_viridis_d()+
+  labs(y = "")+
+  theme(strip.background = element_blank(),
+        strip.placement = "outside",
+        plot.title.position = "plot")+
+  ggsave(filename = file.path(variant_dir, "curves_by_m.png"))
 ```
 
 ```{r}
-sum(comparing_assumptions$max_delta_catch_a0)/10^6
+protection_and_delta_H_per_E <- protection_and_delta_H_per_step %>% 
+  mutate(e_over_msy = cut(e_over_msy, 
+                          breaks = c(0, .4, .8, 1.2, 1.6, 2.1),
+                          include.lowest = TRUE, 
+                          right = FALSE)) %>% 
+  group_by(cell_id, e_over_msy) %>% 
+  summarize(delta_H = sum(delta_H),
+            avg_protection = mean(f_stock_protected)) %>% 
+  left_join(ranked_rep_levels %>% 
+              mutate(fraction_ocean_protected = 1/n(),
+                     fraction_ocean_protected =  cumsum(fraction_ocean_protected)) %>% 
+              select(cell_id, fraction_ocean_protected))
 
-sum(comparing_assumptions$max_delta_catch_a1)/10^6
+protection_and_delta_H_per_E %>% 
+  ungroup() %>% 
+  select(-cell_id) %>% 
+  pivot_longer(cols = -c(e_over_msy, fraction_ocean_protected), names_to = "variable") %>% 
+  ggplot()+
+  geom_line(aes(x = fraction_ocean_protected, y = value, col = e_over_msy))+
+  facet_wrap(vars(variable), scales = 'free', ncol = 1, strip.position = "left")+
+  scale_color_viridis_d()+
+  labs(y = "")+
+  theme(strip.background = element_blank(),
+        strip.placement = "outside",
+        plot.title.position = "plot")+
+  ggsave(filename = file.path(variant_dir, "curves_by_e_over_e_msy.png"))
+```
+
+```{r}
+protection_and_delta_H_per_step %>% 
+  mutate(e_over_msy = cut(e_over_msy, 
+                          breaks = c(0, .4, .8, 1.2, 1.6, 2.1),
+                          include.lowest = TRUE, 
+                          right = FALSE),
+         delta_H = delta_H/10^6) %>% 
+  ggplot()+
+  geom_line(aes(x = f_stock_protected, y = delta_H, group = stockid, col = r))+
+  facet_grid(rows = vars(e_over_msy), cols = vars(m), scales = 'free')+
+  ggsave(filename = file.path(variant_dir, "curves_per_stock.png"), width = 10, height = 10)
 ```
 

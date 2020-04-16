@@ -16,31 +16,9 @@ output:
 library(raster)
 library(sf)
 library(tidyverse)
-library(ggplot2)
 library(patchwork)
-
-
-DIR_GCS <- "~/gcs/git-annex/Carta-Marina"
-
-DIR_GCS_data <- "~/gcs/spatial-datasets"
-
-ocean_low_res_moll <- raster("~/gcs/spatial-datasets/ocean/ocean-low-res-moll.tif")
-
-ocean_matrix <- ocean_low_res_moll %>% 
-  raster::as.data.frame(xy = T) %>% 
-  filter(ocean.low.res.moll == 1) %>% 
-  mutate(cell_id = as.character(group_indices(., x, y))) %>% 
-  select(-ocean.low.res.moll) %>% 
-  as_tibble()
-
-land_shp <- sf::read_sf("~/gcs/spatial-datasets/land/land_50.shp")
-
-land_shp_moll <- land_shp %>% 
-  st_transform(crs = projection(ocean_low_res_moll))
-
-z_pal <- list(breaks = c(0, 0.2, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
-              labels = c("0-20", "20-50", "50-70", "70-80", "80-85", "85-90", "90-95", "95-100"),
-              colors = c("#4575b4", "#74add1", "#abd9e9", "#e0f3f8" ,"#fee090" ,"#fdae61" ,"#f46d43", "#d73027"))
+extrafont::loadfonts()
+source(here::here("common.R"))
 
 circle_theme <- theme(axis.line=element_blank(),
                       axis.text.y=element_blank(),
@@ -58,7 +36,6 @@ circle_theme <- theme(axis.line=element_blank(),
 theme_map <- function(...) {
   theme_minimal() +
     theme(
-      text = element_text(family = "Ubuntu Regular", color = "#22211d"),
       axis.line = element_blank(),
       axis.text.x = element_blank(),
       axis.text.y = element_blank(),
@@ -74,8 +51,10 @@ theme_map <- function(...) {
       ...
     )
 }
+```
 
-MPAs <- raster("../Zonation/data/masks/fully_highly_protected_reviewed_MPAs.tif")
+```{r}
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
 
 MPAs_df <- MPAs %>% 
   raster::as.data.frame(xy = T) %>%
@@ -85,33 +64,60 @@ MPAs_df <- MPAs %>%
 
 fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
 
-eez_shp <- sf::st_read("../../../gcs/spatial-datasets/marine_regions_eez_with_land/EEZ_land_v2_201410.shp") %>% 
-  sf::st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
-  sf::st_transform("+proj=moll") %>% 
-  sf::st_simplify(dTolerance = 0)
-
-eez_shp <- eez_shp %>% 
-  filter(ISO_3digit != "ATA")
-
 n_ocean_cells <- cellStats(ocean_low_res_moll, function(x, ...) sum(!is.na(x)))
 
 (n_cells_MPAs <- MPAs %>% cellStats(function(x, ...) sum(!is.na(x))))
   
 (global_percent_protected <- 100*n_cells_MPAs/n_ocean_cells)
+
+eez_shp <- sf::st_read(file.path(emLab_shrd_data_dir, "marine-regions-EEZ-land-union-v3-202003", "EEZ_Land_v3_202030.shp")) %>% 
+  sf::st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  sf::st_transform(crs(ocean_low_res_moll)) %>% 
+  sf::st_simplify(dTolerance = 0) %>% 
+  janitor::clean_names()
+
+eez_info <- eez_shp %>% 
+  st_drop_geometry() 
+  
+eez_info <- eez_info %>% 
+  mutate_if(is.factor, as.character) %>% 
+  rename(name = union) %>% 
+  mutate(iso_ter1 = case_when(
+  name %in% c("Alaska", "Hawaii") ~ "USA",
+  name %in% c("Kuril Islands") ~ "RUS",
+  name %in% c("Azores", "Madeira") ~ "PRT",
+  name %in% c("Canary Islands", "Chafarinas Islands", "Ceuta", "Melilla", "Peñón de Vélez de la Gomera","Perejil Island", "Alhucemas Islands") ~ "ESP",
+  name %in% c("Senkaku Islands", "Overlapping claim Liancourt Rocks: Japan / South Korea") ~ "JPN",
+  name %in% c("Navassa Island") ~ "JAM",
+  name %in% c("Serranilla Bank", "Colombian Exclusive Economic Zone (Quitasueño)", "Bajo Nuevo Bank", "Serrana Bank") ~ "COL",
+  name %in% c("Andaman and Nicobar") ~ "IND",
+  name %in% c("Clipperton Island") ~ "CLI",
+  name %in% c("Galapagos") ~ "ECU",
+  name %in% c("Chagos Archipelago") ~ "CHG",
+  name %in% c("Oecusse") ~ "TLS",
+  name %in% c("Glorioso Islands", "Tromelin Island") ~ "ATF",
+  name %in% c("Trinidade") ~ "BRA",
+  name %in% c("Matthew and Hunter Islands") ~ "NCL",
+  name %in% c("Easter Island") ~ "CHL",
+  name %in% c("Prince Edward Islands") ~ "ZAF",
+  name %in% c("Macquarie Island") ~ "AUS", 
+  name %in% c("Doumeira Islands") ~ "ERI", 
+  TRUE ~ iso_ter1
+  )) 
+
 ```
 
 # Biodiversity
 
 ```{r}
-biodiversity_priorities_raster <- raster("../Juanation/05_spp_wts_smts_provs_MPAs/results/ranking_raster_with_impacts.tif")
+biodiversity_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "ranking_raster.tif"))
 
-delta_bio_V_raster <- raster("../Juanation/05_spp_wts_smts_provs_MPAs/results/delta_v_raster_with_impacts.tif")
+delta_bio_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "delta_v_raster.tif"))
 
 n_ocean_cells_top_5 <- cellStats(biodiversity_priorities_raster, function(x, ...) sum(x >= 0.95, na.rm = T))
 n_ocean_cells_top_10 <- cellStats(biodiversity_priorities_raster, function(x, ...) sum(x >= 0.9, na.rm = T))
 n_ocean_cells_top_20 <- cellStats(biodiversity_priorities_raster, function(x, ...) sum(x >= 0.8, na.rm = T))
 n_ocean_cells_top_30 <- cellStats(biodiversity_priorities_raster, function(x, ...) sum(x >= 0.7, na.rm = T))
-
 
 bio_stats_by_country <- biodiversity_priorities_raster %>% 
   mask(MPAs, updatevalue = 100, inverse = T) %>% 
@@ -125,15 +131,11 @@ bio_stats_by_country <- biodiversity_priorities_raster %>%
             n_cells_top_5 = sum(cell_rank >= .95, na.rm = T)) %>% 
   ungroup() %>% 
   filter(n_cells > 0) %>% 
-  left_join(eez_shp %>% 
-              st_set_geometry(NULL) %>% 
+  left_join(eez_info %>% 
               rowid_to_column() %>% 
-              mutate(Country = as.character(Country),
-                     ISO_3digit = as.character(ISO_3digit)) %>% 
-              select(ID = rowid, object_id = OBJECTID, iso3 =  ISO_3digit, Country)) %>% 
-  select(object_id, iso3, Country,  everything(), -ID) %>% 
-  mutate(goal = "biodiversity") %>% 
-  filter(n_cells > 0)
+              select(ID = rowid, iso3 =  iso_ter1, iso3_sov = iso_sov1, mrgid_ter1, mrgid_eez, name)) %>% 
+  select(mrgid_ter1, iso3, iso3_sov, mrgid_eez, everything(), -ID) %>% 
+  mutate(goal = "biodiversity") 
 
 bio_contribution_to_top_10 <- delta_bio_V_raster %>% 
   mask(MPAs, inverse = T) %>% 
@@ -142,13 +144,10 @@ bio_contribution_to_top_10 <- delta_bio_V_raster %>%
   select(ID, dV = 2) %>% 
   group_by(ID) %>% 
   summarize(sum_dV = sum(dV, na.rm = T)) %>% 
-  left_join(eez_shp %>% 
-              st_set_geometry(NULL) %>% 
+  left_join(eez_info %>% 
               rowid_to_column() %>% 
-              mutate(Country = as.character(Country),
-                     ISO_3digit = as.character(ISO_3digit)) %>% 
-              select(ID = rowid, object_id = OBJECTID, iso3 =  ISO_3digit, Country)) %>% 
-  select(object_id, iso3, Country,  everything(), -ID) 
+              select(ID = rowid, iso3 =  iso_ter1, iso3_sov = iso_sov1, mrgid_ter1, mrgid_eez)) %>% 
+  select(mrgid_ter1, iso3, iso3_sov, mrgid_eez, everything(), -ID)
 
 bio_stats_by_country <- bio_stats_by_country %>% 
   left_join(bio_contribution_to_top_10) %>% 
@@ -158,8 +157,8 @@ bio_stats_by_country <- bio_stats_by_country %>%
 # Carbon
 
 ```{r}
-carbon_priorities_raster <- raster("../Juanation/06_carbon/results/ranking_raster_with_impacts.tif")
-delta_carbon_V_raster <- raster("../Juanation/06_carbon/results/delta_v_raster_with_impacts.tif")
+carbon_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster.tif"))
+delta_carbon_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "delta_v_raster.tif"))
 
 carbon_stats_by_country <- carbon_priorities_raster %>% 
   mask(MPAs, updatevalue = 100, inverse = T) %>% 
@@ -173,15 +172,11 @@ carbon_stats_by_country <- carbon_priorities_raster %>%
             n_cells_top_5 = sum(cell_rank >= .95, na.rm = T)) %>% 
   ungroup() %>% 
   filter(n_cells > 0) %>% 
-  left_join(eez_shp %>% 
-              st_set_geometry(NULL) %>% 
+  left_join(eez_info %>% 
               rowid_to_column() %>% 
-              mutate(Country = as.character(Country),
-                     ISO_3digit = as.character(ISO_3digit)) %>% 
-              select(ID = rowid, object_id = OBJECTID, iso3 =  ISO_3digit, Country)) %>% 
-  select(object_id, iso3, Country,  everything(), -ID) %>% 
-  mutate(goal = "carbon") %>% 
-  filter(n_cells > 0)
+              select(ID = rowid, iso3 =  iso_ter1, iso3_sov = iso_sov1, mrgid_ter1, mrgid_eez, name)) %>% 
+  select(mrgid_ter1, iso3, iso3_sov, mrgid_eez, everything(), -ID) %>% 
+  mutate(goal = "carbon") 
 
 carbon_contribution_to_top_10 <- delta_carbon_V_raster %>% 
   mask(MPAs, inverse = T) %>% 
@@ -190,13 +185,10 @@ carbon_contribution_to_top_10 <- delta_carbon_V_raster %>%
   select(ID, dV = 2) %>% 
   group_by(ID) %>% 
   summarize(sum_dV = sum(dV, na.rm = T)) %>% 
-  left_join(eez_shp %>% 
-              st_set_geometry(NULL) %>% 
+  left_join(eez_info %>% 
               rowid_to_column() %>% 
-              mutate(Country = as.character(Country),
-                     ISO_3digit = as.character(ISO_3digit)) %>% 
-              select(ID = rowid, object_id = OBJECTID, iso3 =  ISO_3digit, Country)) %>% 
-  select(object_id, iso3, Country,  everything(), -ID) 
+              select(ID = rowid, iso3 =  iso_ter1, iso3_sov = iso_sov1, mrgid_ter1, mrgid_eez)) %>% 
+  select(mrgid_ter1, iso3, iso3_sov, mrgid_eez, everything(), -ID)
 
 carbon_stats_by_country <- carbon_stats_by_country %>% 
   left_join(carbon_contribution_to_top_10) %>% 
@@ -206,8 +198,8 @@ carbon_stats_by_country <- carbon_stats_by_country %>%
 # Food
 
 ```{r}
-food_priorities_raster <- raster("../Juanation/07_food/results/ranking_raster_bau_1.tif")
-delta_food_V_raster <- raster("../Juanation/07_food/results/delta_v_raster_bau_1.tif")
+food_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster.tif"))
+delta_food_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "delta_v_raster.tif"))
 
 food_stats_by_country <- food_priorities_raster %>% 
   mask(MPAs, updatevalue = 100, inverse = T) %>% 
@@ -221,15 +213,11 @@ food_stats_by_country <- food_priorities_raster %>%
             n_cells_top_5 = sum(cell_rank >= .95, na.rm = T)) %>% 
   ungroup() %>% 
   filter(n_cells > 0) %>% 
-  left_join(eez_shp %>% 
-              st_set_geometry(NULL) %>% 
+  left_join(eez_info %>% 
               rowid_to_column() %>% 
-              mutate(Country = as.character(Country),
-                     ISO_3digit = as.character(ISO_3digit)) %>% 
-              select(ID = rowid, object_id = OBJECTID, iso3 =  ISO_3digit, Country)) %>% 
-  select(object_id, iso3, Country,  everything(), -ID) %>% 
-  mutate(goal = "food") %>% 
-  filter(n_cells > 0)
+              select(ID = rowid, iso3 =  iso_ter1, iso3_sov = iso_sov1, mrgid_ter1, mrgid_eez, name)) %>% 
+  select(mrgid_ter1, iso3, iso3_sov, mrgid_eez, everything(), -ID) %>% 
+  mutate(goal = "food") 
 
 food_contribution_to_top_10 <- delta_food_V_raster %>% 
   mask(MPAs, inverse = T) %>% 
@@ -238,13 +226,10 @@ food_contribution_to_top_10 <- delta_food_V_raster %>%
   select(ID, dV = 2) %>% 
   group_by(ID) %>% 
   summarize(sum_dV = sum(dV, na.rm = T)) %>% 
-  left_join(eez_shp %>% 
-              st_set_geometry(NULL) %>% 
+  left_join(eez_info %>% 
               rowid_to_column() %>% 
-              mutate(Country = as.character(Country),
-                     ISO_3digit = as.character(ISO_3digit)) %>% 
-              select(ID = rowid, object_id = OBJECTID, iso3 =  ISO_3digit, Country)) %>% 
-  select(object_id, iso3, Country,  everything(), -ID) 
+              select(ID = rowid, iso3 =  iso_ter1, iso3_sov = iso_sov1, mrgid_ter1, mrgid_eez)) %>% 
+  select(mrgid_ter1, iso3, iso3_sov, mrgid_eez, everything(), -ID)
 
 food_stats_by_country <- food_stats_by_country %>% 
   left_join(food_contribution_to_top_10) %>% 
@@ -254,25 +239,32 @@ food_stats_by_country <- food_stats_by_country %>%
 # Combined goals and clean country names
 
 ```{r}
-## Combine goals ----
-
 stats_by_country <- bind_rows(bio_stats_by_country, 
                               carbon_stats_by_country,
                               food_stats_by_country) %>% 
   mutate(continent = countrycode::countrycode(iso3, "iso3c", "continent")) %>% 
+  group_by(iso3, goal, continent) %>% 
+  summarize_at(vars(n_cells, n_protected_cells, n_cells_top_5, n_cells_top_10, n_cells_top_20, sum_delta_v_10_percent), sum) %>% 
   mutate(fraction_protected = n_protected_cells/n_cells,
          fraction_top_5 = n_cells_top_5/n_cells,
          fraction_top_10 = n_cells_top_10/n_cells,
          fraction_top_20 = n_cells_top_20/n_cells,
          contribution_top_5 = n_cells_top_5/n_ocean_cells_top_5,
          contribution_top_10 = n_cells_top_5/n_ocean_cells_top_10,
-         contribution_top_20 = n_cells_top_5/n_ocean_cells_top_20)
+         contribution_top_20 = n_cells_top_5/n_ocean_cells_top_20) %>% 
+  filter(iso3 != "VAT")
+```
+
+```{r}
+## Combine goals ----
 
 stats_by_country <- stats_by_country %>% 
   mutate(continent = case_when(
     iso3 == "ATF" ~ "Southern\nIslands",
     iso3 == "SGS" ~ "Southern\nIslands",
     iso3 == "HMD" ~ "Southern\nIslands",
+    iso3 == "ATA" ~ "Southern\nIslands",
+    iso3 == "CHG" ~ "Asia",
     iso3 == "TAA" ~ "Europe",
     iso3 == "ASC" ~ "Europe",
     iso3 == "BVT" ~ "Southern\nIslands",
@@ -282,58 +274,57 @@ stats_by_country <- stats_by_country %>%
     iso3 == "MNP++" ~ "Oceania",
     iso3 == "CW" ~ "Americas",
     iso3 == "ANT" ~ "Americas",
-    iso3 == "CPT" ~ "Americas",
+    iso3 == "CLI" ~ "Americas",
     TRUE ~ continent
   )) 
 
-stats_by_country <- stats_by_country %>% filter(iso3 != "-", iso3 != "VTC")
+stats_by_country <- stats_by_country %>% 
+  mutate(country = countrycode::countrycode(sourcevar =  iso3, origin = "iso3c", destination = "country.name")) 
+
+stats_by_country$country[stats_by_country$iso3 == "CLI"] <- "Clipperton Isl"
+
+stats_by_country$country[stats_by_country$iso3 == "CHG"] <- "Chagos"
 
 stats_by_country <- stats_by_country %>%
-  mutate(Country = Country, 
-         Country = gsub("Islands", "Isl", Country),
-         Country = gsub("Island", "Isl", Country),
-         Country = gsub("Democratic", "Dem", Country),
-         Country = gsub("Republic", "Rep", Country),
-         Country = gsub("South", "S", Country),
-         Country = gsub("American", "Am", Country),
-         Country = gsub("the United States", "US", Country),
-         Country = gsub("Country", "Terr", Country),
-         Country = gsub("Saint", "St", Country),
-         Country = gsub(" and ", " & ", Country),
-         Country = gsub("Republique", "Rep", Country),
-         Country = gsub("Dem Rep of the", "Dem Rep of", Country),
-         Country = gsub("Georgia and the", "Georgia and", Country),
-         Country = gsub("St Vincent and the", "St Vincent and", Country),
-         Country = gsub("Howland Isl & Baker Isl", "Howland & Baker Isl", Country),
-         Country = gsub("Northern", "N", Country), 
-         Country = gsub("Reunion", "Reunion   ", Country))
+  mutate(country = gsub("Islands", "Isl", country),
+         country = gsub("Island", "Isl", country),
+         country = gsub("Democratic", "Dem", country),
+         country = gsub("Republic", "Rep", country),
+         country = gsub("South", "S", country),
+         country = gsub("American", "Am", country),
+         country = gsub("the United States", "US", country),
+         country = gsub("country", "Terr", country),
+         country = gsub("Saint", "St", country),
+         country = gsub(" and ", " & ", country),
+         country = gsub("Republique", "Rep", country),
+         country = gsub("Dem Rep of the", "Dem Rep of", country),
+         country = gsub("Georgia and the", "Georgia and", country),
+         country = gsub("St Vincent and the", "St Vincent and", country),
+         country = gsub("Howland Isl & Baker Isl", "Howland & Baker Isl", country),
+         country = gsub("Northern", "N", country), 
+         country = gsub("Reunion", "Reunion   ", country))
 
-stats_by_country$Country[stats_by_country$iso3 == "IOT"] <- "Chagos"
+stats_by_country$country[stats_by_country$iso3 == "ATF"] <- "ATF"
 
-stats_by_country$Country[stats_by_country$iso3 == "ATF"] <- "ATF"
+stats_by_country$country[stats_by_country$iso3 == "UMI"] <- "U.S Minor Outlying Isl"
 
-stats_by_country$Country[stats_by_country$iso3 == "UMI"] <- "U.S Minor Outlying Isl"
+stats_by_country$country[stats_by_country$iso3 == "MNP++"] <- "MNP++"
 
-stats_by_country$Country[stats_by_country$iso3 == "MNP++"] <- "MNP++"
+stats_by_country$country[stats_by_country$iso3 == "SGS"] <- "SGS"
 
-stats_by_country$Country[stats_by_country$iso3 == "SGS"] <- "SGS"
+stats_by_country$country[stats_by_country$iso3 == "VIR"] <- "U.S Virgin Isl"
 
-stats_by_country$Country[stats_by_country$iso3 == "VIR"] <- "U.S Virgin Isl"
+stats_by_country$country[stats_by_country$iso3 == "SHN"] <- "SHN"
 
-stats_by_country$Country[stats_by_country$iso3 == "SHN"] <- "SHN"
+stats_by_country$country[stats_by_country$iso3 == "GBR"] <- "GBR"
 
-stats_by_country$Country[stats_by_country$iso3 == "GBR"] <- "GBR"
+stats_by_country$country[stats_by_country$iso3 == "UMI"] <- "UMI"
 
-stats_by_country$Country[stats_by_country$iso3 == "UMI"] <- "UMI"
+stats_by_country$country[stats_by_country$iso3 == "PNG"] <- "PNG"
 
-stats_by_country$Country[stats_by_country$iso3 == "PNG"] <- "PNG"
+stats_by_country$country[stats_by_country$iso3 == "DOM"] <- "DOM"
 
-stats_by_country$Country[stats_by_country$iso3 == "DOM"] <- "DOM"
-
-stats_by_country$Country[stats_by_country$iso3 == "HMD"] <- "HMD"
-
-stats_by_country <- stats_by_country %>% 
-  janitor::clean_names()
+stats_by_country$country[stats_by_country$iso3 == "HMD"] <- "HMD"
 ```
 
 # Most important countries 
@@ -346,7 +337,8 @@ stats_by_country <- stats_by_country %>%
 
 bio_top_countries <- stats_by_country %>% 
   filter(goal == "biodiversity") %>% 
-  top_n(100, wt = sum_delta_v_10_percent) %>% 
+  ungroup() %>% 
+  top_n(100, sum_delta_v_10_percent) %>% 
   pull(country)
 
 # carbon_top_countries <- stats_by_country %>% 
@@ -356,6 +348,7 @@ bio_top_countries <- stats_by_country %>%
 
 carbon_top_countries <-stats_by_country %>% 
   filter(goal == "carbon") %>% 
+  ungroup() %>% 
   top_n(100, wt = sum_delta_v_10_percent) %>% 
   pull(country)
 
@@ -366,7 +359,9 @@ carbon_top_countries <-stats_by_country %>%
 
 food_top_countries <- stats_by_country %>% 
   filter(goal == "food") %>% 
-  top_n(100, wt = sum_delta_v_10_percent) %>% 
+  ungroup() %>% 
+  arrange(desc(sum_delta_v_10_percent)) %>% 
+  head(100) %>%
   pull(country)
 ```
 
@@ -376,12 +371,11 @@ food_top_countries <- stats_by_country %>%
 
 ```{r}
 plotting_data <- stats_by_country %>% 
-  filter(country %in% bio_top_countries) %>% 
-  filter(goal == "biodiversity") %>% 
+  filter(country %in% bio_top_countries, goal == "biodiversity" ) %>% 
   ungroup() %>% 
   mutate(continent = factor(continent),
          value = fraction_top_10 - fraction_protected) %>% 
-  select(object_id, country, continent, goal, value) %>% 
+  select(country, continent, goal, value) %>% 
   arrange(continent, value)
 
 plotting_data <- plotting_data %>% 
@@ -449,7 +443,7 @@ propeller_bio_plot <- plotting_data %>%
   circle_theme 
 
 ggsave(propeller_bio_plot, 
-       filename = file.path(DIR_GCS, "Supplement/fig_propeller_bio.png"), 
+       filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_bio.png"), 
        dpi = 300,  height = 13, width = 13)
 ```
 
@@ -457,12 +451,11 @@ ggsave(propeller_bio_plot,
 
 ```{r}
 plotting_data <- stats_by_country %>% 
-  filter(country %in% carbon_top_countries) %>% 
-  filter(goal == "carbon") %>% 
+  filter(country %in% carbon_top_countries, goal == "carbon" ) %>% 
   ungroup() %>% 
   mutate(continent = factor(continent),
          value = fraction_top_10 - fraction_protected) %>% 
-  select(object_id, country, continent, goal, value) %>% 
+  select(country, continent, goal, value) %>% 
   arrange(continent, value)
 
 plotting_data <- plotting_data %>% 
@@ -530,7 +523,7 @@ propeller_carbon_plot <- plotting_data %>%
   circle_theme 
 
 ggsave(propeller_carbon_plot, 
-       filename = file.path(DIR_GCS, "Supplement/fig_propeller_carbon.png"), 
+       filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_carbon.png"), 
        dpi = 300,  height = 10, width = 10)
 ```
 
@@ -538,12 +531,11 @@ ggsave(propeller_carbon_plot,
 
 ```{r}
 plotting_data <- stats_by_country %>% 
-  filter(country %in% food_top_countries) %>% 
-  filter(goal == "food") %>% 
+  filter(country %in% food_top_countries, goal == "food" ) %>% 
   ungroup() %>% 
   mutate(continent = factor(continent),
          value = fraction_top_10 - fraction_protected) %>% 
-  select(object_id, country, continent, goal, value) %>% 
+  select(country, continent, goal, value) %>% 
   arrange(continent, value)
 
 plotting_data <- plotting_data %>% 
@@ -611,30 +603,27 @@ propeller_food_plot <- plotting_data %>%
   circle_theme 
 
 ggsave(propeller_food_plot, 
-       filename = file.path(DIR_GCS, "Supplement/fig_propeller_food.png"), 
+       filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_food.png"), 
        dpi = 300,  height = 10, width = 10)
 ```
 
-
-## Efficiency 
+# Efficiency loss
 
 ```{r}
-bio_benefit_curves <- read_rds("../Juanation/05_spp_wts_smts_provs_MPAs/results/bio_benefit_curves.rds") %>% 
+bio_benefit_curves <- read_rds(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "benefit_curves.rds")) %>% 
   mutate(cell_id = as.character(cell_id))
 
-spp_info <- data.table::fread("../Juanation/data/spp_weights.csv") %>% 
+spp_wts <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "species_list", "spp_weights.csv")) %>% 
   as_tibble() %>% 
   rename(w = spp_weight)
 
-smts_info <- tibble(filepath = list.files("../Zonation/data/seamounts/all", full.names = T)) %>% 
-  mutate(w = sum(spp_info$w)/n())
+smts_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed","seamounts"), full.names = T)) %>% 
+  mutate(w = sum(spp_wts$w)/n())
 
-provs_info <- tibble(filepath = list.files(c("../Zonation/data/biogeography/Spalding",
-                                             "../Zonation/data/biogeography/GOODS"), 
-                                           full.names = T)) %>% 
-  mutate(w = sum(spp_info$w)/n())
+provs_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "biogeography"), full.names = T, pattern = "\\.tif")) %>% 
+  mutate(w = sum(spp_wts$w)/n())
 
-feature_wts <- c(spp_info$w, smts_info$w, provs_info$w)
+feature_wts <- c(spp_wts$w, smts_wts$w, provs_wts$w)
 ```
 
 ```{r}
@@ -650,13 +639,15 @@ global_bio_curve <- bio_benefit_curves %>%
 ```
 
 ```{r}
-national_benefit_curve <- read_csv("../Juanation/08_biodiversity_national/results/benefit_curve.csv") %>% 
+national_benefit_curve <- read_csv(file.path(emLab_project_dir, "data", "03_output", "08_biodiversity_national", "benefit_curve.csv")) %>% 
   filter(fraction_protected > fraction_in_MPA)
 
-random_benefit_curves <- list.files("../Juanation/09_biodiversity_random/results/", full.names = T) %>% 
+random_benefit_curves <- list.files(file.path(emLab_project_dir, "data", "03_output", "09_biodiversity_random", "random_runs"),
+                                    full.names = T) %>% 
   map(read_csv) %>% 
   reduce(bind_rows) %>% 
-  filter(fraction_protected > fraction_in_MPA)
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  mutate(V = scales::rescale(V))
 ```
 
 ```{r}
@@ -672,8 +663,7 @@ efficiency_plot <- ggplot()+
                 ymin = 0,
                 ymax = 1),
             fill = "#5FAD41")+
-  geom_line(data = random_benefit_curves %>%
-              mutate(V = scales::rescale(V)),
+  geom_line(data = random_benefit_curves ,
             aes(x = fraction_protected, y = V, col = "Random", group = run), alpha = 0.7)+
   labs(x = "Fraction Ocean Protected",
        y = "Biodiversity benefit",
@@ -696,8 +686,7 @@ fig_4 <- propeller_bio_plot + efficiency_plot +
          plot_annotation(tag_levels = "a")+
          plot_layout(ncol = 1, heights = c(2.6, 1)) 
 
-ggsave(plot = fig_4, filename = "figure_4.png",  dpi = 300,  height = 12, width = 11)
-ggsave(plot = fig_4, filename = "figure_4.pdf", dpi = 300,  height = 12, width = 11)
-
+ggsave(fig_4, filename = file.path(emLab_project_dir, "figures", "main", "figure_4.pdf"), dpi = 300,  height = 15, width = 12)
+ggsave(fig_4, filename = file.path(emLab_project_dir, "figures", "main", "figure_4.png"), dpi = 300,  height = 11, width = 14)
 ```
 
