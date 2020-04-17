@@ -243,67 +243,22 @@ Norm_features_matrix[, "carbon"] <- carbon_diff_matrix
 
 Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
 
-write_rds(Norm_features_matrix, 
-          file.path(variant_dir, "multi_objective_norm_features_diff_matrix.rds"))
-```
-
-
-```{r}
-multi_matrix <- read_rds(file.path(variant_dir, "multi_objective_norm_features_diff_matrix.rds"))
-```
-
-# Initial conditions
-
-```{r}
-protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix))
-
-unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
-
-protected_matrix <- Norm_features_matrix[protected_cells, ]
-```
-
-```{r}
-baseline_state <- protected_cells%*%Norm_features_matrix
-
-baseline_state[,"carbon"] <- baseline_state[, "carbon"] + carbon_remains_BAU
-
-baseline_state[, bio_feature_names] <- baseline_state[, bio_feature_names] + bio_remains_BAU
-```
-
-```{r}
-max_slopes_bio <- z_bio*baseline_state[, bio_feature_names]^(z_bio - 1)
-
-#max_slopes_bio[which(!is.finite(max_slopes_bio))] <- 0
-
-max_slope_carbon <- 1
-
-names(max_slope_carbon) <- "carbon"
-
-estimate_food_slopes <- function(e = stocks_info$ex_rate, 
-                                 m = stocks_info$m,
-                                 r = stocks_info$r, 
-                                 k = stocks_info$k,
-                                 R){
-  
-  slope <- -e*k*m*(m + e)*((e*r + 2*e*m)*R + m*r - 2*e*m)/(r*(e*R + m)^3)
-  
-  return(slope)
-  
-}
-
-max_slopes_food <- estimate_food_slopes(R = matrixStats::colMaxs(unprotected_matrix[, stock_names], na.rm = T))
-
-names(max_slopes_food) <- stock_names
-
-max_slopes <- c(max_slopes_bio, max_slope_carbon, max_slopes_food)
+# write_rds(Norm_features_matrix, 
+#           file.path(variant_dir, "multi_objective_norm_features_diff_matrix.rds"))
 ```
 
 # Feature weights
 
 ```{r}
-max_food_delta <- read_csv(file.path(emLab_project_dir, "data", "03_output", "07_food", "results_per_pixel.csv")) %>% 
-  summarize(max_deltaH = max(network_cummulative_delta_catch),
-            max_deltaH_bau =  max(network_cummulative_delta_catch[is_mpa == 1])) %>% 
+max_food_delta_a1 <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "results_per_pixel.rds")) %>% 
+  summarize(max_deltaH = max(delta_catch_a1),
+            max_deltaH_bau =  max(delta_catch_a1[is_mpa])) %>% 
+  transmute(max_deltaH - max_deltaH_bau) %>% 
+  pull()
+
+max_food_delta_a2 <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "results_per_pixel.rds")) %>% 
+  summarize(max_deltaH = max(delta_catch_a2),
+            max_deltaH_bau =  max(delta_catch_a2[is_mpa])) %>% 
   transmute(max_deltaH - max_deltaH_bau) %>% 
   pull()
 
@@ -311,36 +266,146 @@ max_bio_delta <- sum(bio_remains_MPA^z_bio*bio_weights) - sum(bio_remains_BAU^z_
 
 max_carbon_delta <- sum(carbon_remains_MPA*carbon_weights) - sum(carbon_remains_BAU*carbon_weights)
 
-calculate_weights <- function(w_bio, w_carbon, w_food){
+calculate_weights <- function(w_bio, w_carbon, w_food, food_model){
   
   if(w_bio + w_carbon + w_food != 1) stop("weights don't add up to 1")
   
-  final_bio_w <- w_bio*bio_weights*max_food_delta/max_bio_delta
+  if(food_model == "a1"){
+    
+    final_bio_w <- w_bio*bio_weights*max_food_delta_a1/max_bio_delta
+    
+    final_carbon_w <- w_carbon*carbon_weights*max_food_delta_a1/max_carbon_delta
+    
+    final_food_w <- w_food*food_weights
+    
+  }
+  else if (food_model == "a2"){
+    
+    final_bio_w <- w_bio*bio_weights*max_food_delta_a2/max_bio_delta
+    
+    final_carbon_w <- w_carbon*carbon_weights*max_food_delta_a2/max_carbon_delta
+    
+    final_food_w <- w_food*food_weights
+    
+  }
   
-  final_carbon_w <- w_carbon*carbon_weights*max_food_delta/max_carbon_delta
-  
-  final_food_w <- w_food*food_weights
-
   feature_weigths <- c(final_bio_w, final_carbon_w, final_food_w)
   
   return(feature_weigths)
   
-  }
+}
 ```
 
-# Slopes function
+# Food benefit functions
+
+```{r, food_slopes_a1}
+estimate_food_slopes_a1 <- function(e = stocks_info$ex_rate, 
+                               m = stocks_info$m,
+                               r = stocks_info$r, 
+                               k = stocks_info$k,
+                               R){
+  
+  R[R > 1] <- 1 
+  
+  slope <- -e*k*m*(m+e)*((e*r + 2*e*m)*R + m*r - 2*e*m)/(r*(e*R + m)^3)
+  
+  slope[R == 1] <- -9*10^9
+  
+  return(slope)
+  
+}
+
+estimate_delta_catch_a1 <- function(x, 
+                                    e = stocks_info$ex_rate,
+                                    m = stocks_info$m, 
+                                    r = stocks_info$r, 
+                                    k = stocks_info$k){
+  
+  R_bau <- 0
+  
+  x[x > 1] <- 1 
+  
+  exp_rate <- e
+  
+  catch_mpa <- exp_rate*(m*k)*(1 - x)/(exp_rate*x + m)*(1 - exp_rate*(1 - x)*m/((exp_rate*x + m)*r))
+
+  catch_bau <- e*(m*k*(1 - R_bau)/(e*R_bau + m)*(1 - e*(1 - R_bau)*m/((e*R_bau + m)*r)))
+  
+  delta_catch <- catch_mpa - catch_bau
+  
+  return(delta_catch)
+  
+}
+
+estimate_food_slopes_a2 <- function(e = stocks_info$ex_rate, 
+                                    m = stocks_info$m,
+                                    r = stocks_info$r, 
+                                    k = stocks_info$k, 
+                                    R){
+  
+  R[R > 1] <- 1 
+  
+  A <- (1 - e)^(1/(1 - R))
+  
+  part_a <- A*log(1 - e)*k*m*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - R)*((1 - A)*R + m))
+  
+  part_b <- (1 - A)*k*m*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - A)*R + m)
+  
+  part_c <- (1 - A)*k*m*(1 - R)*(- A*log(1 - e)*R/(1 - R)^2 - A + 1)*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - A)*R + m)^2
+  
+  part_d <- (1 - A)*k*m*(1 - R)*(A*log(1 - e)*m/(r*(1 - R)*((1 - A)*R + m)) + (1 - A)*m/(r*((1 - A)*R + m)) + (1 - A)*m*(1 - R)*(-A*log(1 - e)*R/(1 - R)^2 - A + 1)/(r*((1 - A)*R + m)^2))/((1 - A)*R + m)
+  
+  slope <- - part_a - part_b - part_c + part_d
+  
+  slope[R == 1] <- -9*10^9
+  
+  return(slope)
+  
+}
+
+estimate_delta_catch_a2 <- function(x, 
+                                    e = stocks_info$ex_rate, 
+                                    m = stocks_info$m,
+                                    r = stocks_info$r, 
+                                    k = stocks_info$k) {
+  
+  R_bau <- 0
+  
+  x[x > 1] <- 1 
+  
+  exp_rate <- 1 - (1 - e)^(1/(1 - x))
+  
+  catch_mpa <- exp_rate*(m*k)*(1 - x)/(exp_rate*x + m)*(1 - exp_rate*(1 - x)*m/((exp_rate*x + m)*r))
+  
+  catch_bau <- e*(m*k*(1 - R_bau)/(e*R_bau + m)*(1 - e*(1 - R_bau)*m/((e*R_bau + m)*r)))
+  
+  delta_catch <- catch_mpa - catch_bau
+  
+  return(delta_catch)
+  
+}
+```
+
+# Get slopes foo
 
 ```{r}
-estimate_current_slopes <- function(x, g, wts){
+estimate_current_slopes <- function(x, g, wts, food_model){
   
   slopes <- vector(mode = "numeric", length = n_features)
-
+  
   slopes[g == 1] <- pmin(max_slopes_bio, z_bio*x[g == 1]^(z_bio - 1))*wts[g == 1]
   
   slopes[g == 2] <- pmin(max_slope_carbon, z_carbon*x[g == 2]^(z_carbon - 1))*wts[g == 2]
+  
+  if(food_model == "a1") {
     
-  slopes[g == 3] <- estimate_food_slopes(R = x[g == 3])*wts[g == 3]
+    slopes[g == 3] <- estimate_food_slopes_a1(R = x[g == 3])*wts[g == 3]}
+  
+  else if (food_model == "a2") {
     
+    slopes[g == 3] <- estimate_food_slopes_a2(R = x[g == 3])*wts[g == 3]
+  }
+  
   return(slopes)
   
 }
@@ -349,11 +414,37 @@ estimate_current_slopes <- function(x, g, wts){
 group_ids <- c(rep(1, n_bio_features), rep(2, n_carbon), rep(3, n_stocks))
 ```
 
-# Run ranking:
+# Ranking 
+
+## Food Assumption A1
 
 ```{r}
-multiobjective_feature_weigths <- calculate_weights(1/3, 1/3, 1/3)
+multiobjective_feature_weigths <- calculate_weights(w_bio = 1/3, w_carbon = 1/3, w_food = 1/3, food_model = "a1")
 
+# sum(bio_remains_MPA^z_bio*multiobjective_feature_weigths[bio_feature_names]) - sum(bio_remains_BAU^z_bio*multiobjective_feature_weigths[bio_feature_names])
+# multiobjective_feature_weigths["carbon"]*max_carbon_delta
+# max_food_delta_a1/3
+
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix))
+
+unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
+
+protected_matrix <- Norm_features_matrix[protected_cells, ]
+
+baseline_state <- protected_cells%*%Norm_features_matrix
+
+baseline_state[,"carbon"] <- baseline_state[, "carbon"] + carbon_remains_BAU
+
+baseline_state[, bio_feature_names] <- baseline_state[, bio_feature_names] + bio_remains_BAU
+
+max_slopes_bio <- z_bio*baseline_state[, bio_feature_names]^(z_bio - 1)
+
+max_slope_carbon <- 1
+
+names(max_slope_carbon) <- "carbon"
+```
+
+```{r}
 ranking <- list()
 
 current_pick <- 0
@@ -366,7 +457,7 @@ while(nrow(unprotected_matrix) > 0){
     
     current_pick <- sum(current_pick, 1)
     
-    slopes <- estimate_current_slopes(x = current_state, g = group_ids, wts = multiobjective_feature_weigths)
+    slopes <- estimate_current_slopes(x = current_state, g = group_ids, wts = multiobjective_feature_weigths, food_model = "a1")
   
     delta <- unprotected_matrix%*%as.matrix(slopes)
     
@@ -392,16 +483,86 @@ end_time <- Sys.time()
 end_time - start_time
 
 write_rds(ranking, 
-          file.path(variant_dir, "ranking_results.csv"))
+          file.path(variant_dir, "ranking_results_a1.csv"))
+```
+
+## Food Assumption A2
+
+```{r}
+multiobjective_feature_weigths <- calculate_weights(w_bio = 1/3, w_carbon = 1/3, w_food = 1/3, food_model = "a2")
+
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix))
+
+unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
+
+protected_matrix <- Norm_features_matrix[protected_cells, ]
+
+baseline_state <- protected_cells%*%Norm_features_matrix
+
+baseline_state[,"carbon"] <- baseline_state[, "carbon"] + carbon_remains_BAU
+
+baseline_state[, bio_feature_names] <- baseline_state[, bio_feature_names] + bio_remains_BAU
+
+max_slopes_bio <- z_bio*baseline_state[, bio_feature_names]^(z_bio - 1)
+
+max_slope_carbon <- 1
+
+names(max_slope_carbon) <- "carbon"
+```
+
+```{r}
+ranking <- list()
+
+current_pick <- 0
+
+current_state <- baseline_state 
+
+start_time <- Sys.time()
+
+while(nrow(unprotected_matrix) > 0){
+    
+    current_pick <- sum(current_pick, 1)
+    
+    slopes <- estimate_current_slopes(x = current_state, g = group_ids, wts = multiobjective_feature_weigths, food_model = "a2")
+  
+    delta <- unprotected_matrix%*%as.matrix(slopes)
+    
+    best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+    
+    best_cells <- delta[best_cell_indeces,] %>% 
+      enframe() %>% 
+      set_names(c('cell_id', "delta")) %>% 
+      mutate(pick_order = current_pick)
+    
+    ranking <- bind_rows(ranking, best_cells)
+    
+    current_state <- unprotected_matrix[best_cell_indeces, ] %>% 
+      colSums() +
+      current_state
+    
+    unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ]
+    
+  }
+
+end_time <- Sys.time()
+
+end_time - start_time
+
+write_rds(ranking, 
+          file.path(variant_dir, "ranking_results_a2.csv"))
 ```
 
 # Results
 
+## Food assumption A1
+
 ```{r}
-results <- MPAs_df %>% 
+ranking_a1 <- read_rds(file.path(variant_dir, "ranking_results_a1.csv"))
+
+results_a1 <- MPAs_df %>% 
   filter(!is.na(mpa)) %>% 
   select(cell_id) %>% 
-  bind_rows(ranking) %>% 
+  bind_rows(ranking_a1) %>% 
   mutate(is_mpa = is.na(delta))  %>% 
   full_join(ocean_matrix) %>% 
   left_join(Norm_features_matrix %>% 
@@ -412,10 +573,10 @@ results <- MPAs_df %>%
   mutate(cell_id = as.numeric(cell_id))
 ```
 
-## benefit curves
+### benefit curves
 
 ```{r}
-carbon_benefit_curve <- results %>% 
+carbon_benefit_curve_a1 <- results_a1 %>% 
   select(V = carbon) %>% 
   mutate(V = cumsum(V)*multiobjective_feature_weigths["carbon"],
          V_norm = V/max(V),
@@ -423,38 +584,24 @@ carbon_benefit_curve <- results %>%
          fraction_protected = cumsum(fraction_protected)) %>% 
   filter(fraction_protected > fraction_in_MPA)
 
-bio_benefit_curve <- results %>% 
-  select(bio_feature_names) %>% 
+bio_benefit_curve_a1 <- results_a1 %>% 
+  select(all_of(bio_feature_names)) %>% 
   mutate_all(.funs = cumsum) %>% 
   sweep(MARGIN = 2, bio_remains_BAU, `+`) %>%
-  mutate_all(.funs = ~(.)^0.25) %>% 
+  mutate_all(.funs = ~(.)^z_bio) %>% 
   as.matrix() %*% as.matrix(multiobjective_feature_weigths[bio_feature_names]) %>% 
   as_tibble() %>% 
   set_names("V") %>% 
   mutate(fraction_protected = 1/n(),
          fraction_protected = cumsum(fraction_protected)) %>% 
   filter(fraction_protected > fraction_in_MPA) %>% 
-  mutate(V = V - sum(bio_remains_BAU^0.25*multiobjective_feature_weigths[bio_feature_names]),
+  mutate(V = V - sum(bio_remains_BAU^z_bio*multiobjective_feature_weigths[bio_feature_names]),
          V_norm = V/max(V))
 
-estimate_delta_catch <- function(x, 
-                                 e = stocks_info$ex_rate,
-                                 m = stocks_info$m, 
-                                 r = stocks_info$r, 
-                                 k = stocks_info$k){
-  
-  x[x > 1] <- 1 
-  
-  delta_catch <- e*(m*k*(1 - x)/(e*x + m))*(1 - (e*(1 - x)*m)/((e*x + m)*r)) - e*((r - e)/r)*k
-  
-  return(delta_catch)
-  
-}
-
-food_benefit_curve <- results %>% 
-  select(stock_names) %>% 
+food_benefit_curve_a1 <- results_a1 %>% 
+  select(all_of(stock_names)) %>% 
   mutate_all(.funs = cumsum) %>% 
-  apply(MARGIN = 1, estimate_delta_catch) %>% 
+  apply(MARGIN = 1, estimate_delta_catch_a1) %>% 
   t() %>% 
   as.matrix() %*% as.matrix(multiobjective_feature_weigths[stock_names]) %>% 
   as_tibble() %>% 
@@ -466,16 +613,16 @@ food_benefit_curve <- results %>%
          fraction_protected =  cumsum(fraction_protected)) %>% 
   filter(fraction_protected > fraction_in_MPA)
 
-max(food_benefit_curve$V)
-max(bio_benefit_curve$V)
-max(carbon_benefit_curve$V)
+max(food_benefit_curve_a1$V)
+max(bio_benefit_curve_a1$V)
+max(carbon_benefit_curve_a1$V)
 
-bio_benefit_curve %>% 
+bio_benefit_curve_a1 %>% 
   select(fraction_protected, biodiversity = V_norm) %>% 
-left_join(carbon_benefit_curve %>% 
-            select(fraction_protected, carbon = V_norm)) %>% 
-  left_join(food_benefit_curve %>% 
-            select(fraction_protected, food = V_norm)) %>% 
+  left_join(carbon_benefit_curve_a1 %>% 
+              select(fraction_protected, carbon = V_norm)) %>% 
+  left_join(food_benefit_curve_a1 %>% 
+              select(fraction_protected, food = V_norm)) %>% 
   gather(var, value, -fraction_protected) %>% 
   ggplot()+
   geom_line(aes(fraction_protected, value, col = var))+ 
@@ -483,16 +630,17 @@ left_join(carbon_benefit_curve %>%
        y = "Benefit",
        col = "Objective")+
   theme_classic()+
-  ggsave(file.path(variant_dir, "benefit_curves_equal_weights.png"),
+  ggsave(file.path(variant_dir, "benefit_curves_equal_weights_a1.png"),
          width = 7, height = 4)
 ```
-## priority map
+
+### priority map
 
 ```{r}
-ranking_raster <- MPAs_df %>% 
+ranking_raster_a1 <- MPAs_df %>% 
   filter(!is.na(mpa)) %>% 
   select(cell_id) %>% 
-  bind_rows(ranking) %>% 
+  bind_rows(ranking_a1) %>% 
   mutate(is_mpa = is.na(delta)) %>% 
   left_join(ocean_matrix) %>% 
   tibble::rowid_to_column("ID") %>% 
@@ -502,11 +650,11 @@ ranking_raster <- MPAs_df %>%
   projectRaster(ocean_low_res_moll) %>% 
   mask(ocean_low_res_moll) 
 
-writeRaster(ranking_raster, 
-            file.path(variant_dir, "ranking_raster_equal_weights.tif"), 
+writeRaster(ranking_raster_a1, 
+            file.path(variant_dir, "ranking_raster_equal_weights_a1.tif"), 
             overwrite = T)
 
-ranking_map <- tmap::tm_shape(ranking_raster)+
+ranking_map_a1 <- tmap::tm_shape(ranking_raster_a1)+
   tmap::tm_raster(title = "",
                   palette  = priorities_map_pal$colors,
                   breaks = priorities_map_pal$breaks,
@@ -515,7 +663,7 @@ ranking_map <- tmap::tm_shape(ranking_raster)+
                   legend.reverse = T)+
   tmap::tm_shape(land_50_moll)+
   tmap::tm_fill(col = "black", border.col = "transparent")+
-  tmap::tm_credits("Multi-objective, equal weights") +
+  tmap::tm_credits("Multi-objective, equal weights, no effort displacement") +
   tmap::tm_shape(MPAs)+
   tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
   tmap::tm_layout(title = "Global Conservation Priorities",
@@ -524,14 +672,137 @@ ranking_map <- tmap::tm_shape(ranking_raster)+
                   frame = F,
                   legend.position = c(.99, "center")) 
 
-tmap::tmap_save(ranking_map, 
-                filename = file.path(variant_dir, "priority_map_equal_weights.png"),
+tmap::tmap_save(ranking_map_a1, 
+                filename = file.path(variant_dir, "priority_map_equal_weights_a1.png"),
+                dpi = 300,  height = 4, width = 8 )
+```
+
+## Food assumption A2
+
+```{r}
+ranking_a2 <- read_rds(file.path(variant_dir, "ranking_results_a2.csv"))
+
+results_a2 <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking_a2) %>% 
+  mutate(is_mpa = is.na(delta))  %>% 
+  full_join(ocean_matrix) %>% 
+  left_join(Norm_features_matrix %>% 
+              as_tibble(rownames = NA) %>% 
+              rownames_to_column("cell_id")) %>% 
+  replace(is.na(.), 0) %>% 
+  select(-x, -y, -delta, -pick_order, -is_mpa) %>% 
+  mutate(cell_id = as.numeric(cell_id))
+```
+
+### benefit curves
+
+```{r}
+carbon_benefit_curve_a2 <- results_a2 %>% 
+  select(V = carbon) %>% 
+  mutate(V = cumsum(V)*multiobjective_feature_weigths["carbon"],
+         V_norm = V/max(V),
+         fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected)) %>% 
+  filter(fraction_protected > fraction_in_MPA)
+
+bio_benefit_curve_a2 <- results_a2 %>% 
+  select(all_of(bio_feature_names)) %>% 
+  mutate_all(.funs = cumsum) %>% 
+  sweep(MARGIN = 2, bio_remains_BAU, `+`) %>%
+  mutate_all(.funs = ~(.)^z_bio) %>% 
+  as.matrix() %*% as.matrix(multiobjective_feature_weigths[bio_feature_names]) %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected = cumsum(fraction_protected)) %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  mutate(V = V - sum(bio_remains_BAU^z_bio*multiobjective_feature_weigths[bio_feature_names]),
+         V_norm = V/max(V))
+
+food_benefit_curve_a2 <- results_a2 %>% 
+  select(all_of(stock_names)) %>% 
+  mutate_all(.funs = cumsum) %>% 
+  apply(MARGIN = 1, estimate_delta_catch_a2) %>% 
+  t() %>% 
+  as.matrix() %*% as.matrix(multiobjective_feature_weigths[stock_names]) %>% 
+  as_tibble() %>% 
+  rowSums() %>% 
+  enframe(name = NULL) %>% 
+  set_names("V") %>% 
+  mutate(V_norm = V/max(V),
+         fraction_protected = 1/n(),
+         fraction_protected =  cumsum(fraction_protected)) %>% 
+  filter(fraction_protected > fraction_in_MPA)
+
+max(food_benefit_curve_a2$V)/10^6
+max(bio_benefit_curve_a2$V)/10^6
+max(carbon_benefit_curve_a2$V)/10^6
+
+bio_benefit_curve_a2 %>% 
+  select(fraction_protected, biodiversity = V_norm) %>% 
+  left_join(carbon_benefit_curve_a2 %>% 
+              select(fraction_protected, carbon = V_norm)) %>% 
+  left_join(food_benefit_curve_a2 %>% 
+              select(fraction_protected, food = V_norm)) %>% 
+  gather(var, value, -fraction_protected) %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, value, col = var))+ 
+  labs(x = "Fraction of the ocean protected", 
+       y = "Benefit",
+       col = "Objective")+
+  theme_classic()+
+  ggsave(file.path(variant_dir, "benefit_curves_equal_weights_a2.png"),
+         width = 7, height = 4)
+```
+
+### priority map
+
+```{r}
+ranking_raster_a2 <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(ranking_a2) %>% 
+  mutate(is_mpa = is.na(delta)) %>% 
+  left_join(ocean_matrix) %>% 
+  tibble::rowid_to_column("ID") %>% 
+  mutate(rank = 1- scales::rescale(ID)) %>% 
+  select(x, y, rank) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll) %>% 
+  mask(ocean_low_res_moll) 
+
+writeRaster(ranking_raster_a2, 
+            file.path(variant_dir, "ranking_raster_equal_weights_a2.tif"), 
+            overwrite = T)
+
+ranking_map_a2 <- tmap::tm_shape(ranking_raster_a2)+
+  tmap::tm_raster(title = "",
+                  palette  = priorities_map_pal$colors,
+                  breaks = priorities_map_pal$breaks,
+                  labels = priorities_map_pal$labels,
+                  legend.is.portrait = T, 
+                  legend.reverse = T)+
+  tmap::tm_shape(land_50_moll)+
+  tmap::tm_fill(col = "black", border.col = "transparent")+
+  tmap::tm_credits("Multi-objective, equal weights, Full effort displacement") +
+  tmap::tm_shape(MPAs)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_layout(title = "Global Conservation Priorities",
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.04), 
+                  frame = F,
+                  legend.position = c(.99, "center")) 
+
+tmap::tmap_save(ranking_map_a2, 
+                filename = file.path(variant_dir, "priority_map_equal_weights_a2.png"),
                 dpi = 300,  height = 4, width = 8 )
 ```
 
 # Tradeoffs
 
-Here we ask, if we prioritize one goal only, how much do we get of the others as co-benefit?
+Here we ask, if we prioritize one goal only, how much do we get of the others as co-benefit? For this we use the main fisheries model A2
 
 ```{r}
 multi_objective_matrix <- read_rds(file.path(variant_dir, "multi_objective_norm_features_diff_matrix.rds"))
@@ -540,11 +811,11 @@ bio_ranking <- read_rds(file.path(emLab_project_dir, "data", "03_output", "05_sp
 
 carbon_ranking <- read_rds(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_results.rds"))
 
-food_ranking <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_results.rds"))
+food_ranking <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_results_a2.rds"))
 
-max_food <- read_csv(file.path(emLab_project_dir, "data", "03_output", "07_food", "results_per_pixel.csv")) %>% 
-  summarize(max_deltaH = max(network_cummulative_delta_catch),
-            max_deltaH_bau =  max(network_cummulative_delta_catch[is_mpa == 1])) %>% 
+max_food <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "results_per_pixel.rds")) %>% 
+  summarize(max_deltaH = max(delta_catch_a2),
+            max_deltaH_bau =  max(delta_catch_a2[is_mpa])) %>% 
   pull(max_deltaH)
 ```
 
@@ -568,7 +839,7 @@ bio_benefit_curve_bio_priority <- bio_priority_results %>%
   select(bio_feature_names) %>% 
   mutate_all(.funs = cumsum) %>% 
   sweep(MARGIN = 2, bio_remains_BAU, `+`) %>%
-  mutate_all(.funs = ~(.)^0.25) %>% 
+  mutate_all(.funs = ~(.)^z_bio) %>% 
   as.matrix() %*% as.matrix(bio_weights) %>% 
   as_tibble() %>% 
   set_names("V") %>% 
@@ -589,7 +860,7 @@ carbon_benefit_curve_bio_priority <- bio_priority_results %>%
 food_benefit_curve_bio_priority <- bio_priority_results %>% 
   select(stock_names) %>% 
   mutate_all(.funs = cumsum) %>% 
-  apply(MARGIN = 1, estimate_delta_catch) %>% 
+  apply(MARGIN = 1, estimate_delta_catch_a2) %>% 
   t() %>% 
   as_tibble() %>% 
   rowSums() %>% 
@@ -608,7 +879,7 @@ co_benefits_biodiversity <- food_benefit_curve_bio_priority %>%
   select(fraction_protected, everything())
 
 write_csv(co_benefits_biodiversity, 
-          file.path(variant_dir, "co_benefits_biodiversity.csv"))
+          file.path(variant_dir, "co_benefits_biodiversity_a2.csv"))
 
 multi_objective_curves_biodiversity_priority <- co_benefits_biodiversity %>% 
   mutate(food = food/max_food,
@@ -673,7 +944,7 @@ carbon_benefit_curve_carbon_priority <- carbon_priority_results %>%
 food_benefit_curve_carbon_priority <- carbon_priority_results %>% 
   select(stock_names) %>% 
   mutate_all(.funs = cumsum) %>% 
-  apply(MARGIN = 1, estimate_delta_catch) %>% 
+  apply(MARGIN = 1, estimate_delta_catch_a2) %>% 
   t() %>% 
   as_tibble() %>% 
   rowSums() %>% 
@@ -692,7 +963,7 @@ co_benefits_carbon <- food_benefit_curve_carbon_priority %>%
   select(fraction_protected, everything())
 
 write_csv(co_benefits_carbon, 
-          file.path(variant_dir, "co_benefits_carbon.csv"))
+          file.path(variant_dir, "co_benefits_carbon_a2.csv"))
 
 multi_objective_curves_carbon_priority <- co_benefits_carbon %>% 
   mutate(food = food/max_food,
@@ -746,7 +1017,7 @@ carbon_benefit_curve_food_priority <- food_priority_results %>%
 food_benefit_curve_food_priority <- food_priority_results %>% 
   select(stock_names) %>% 
   mutate_all(.funs = cumsum) %>% 
-  apply(MARGIN = 1, estimate_delta_catch) %>% 
+  apply(MARGIN = 1, estimate_delta_catch_a2) %>% 
   t() %>% 
   as_tibble() %>% 
   rowSums() %>% 
@@ -766,7 +1037,7 @@ co_benefits_food <- food_benefit_curve_food_priority %>%
               mutate(carbon = scales::rescale(carbon))) 
 
 write_csv(co_benefits_food, 
-          file.path(variant_dir, "co_benefits_food.csv"))
+          file.path(variant_dir, "co_benefits_food_a2.csv"))
 
 multi_objective_curves_food_priority <- co_benefits_food %>% 
   mutate(food = food/max_food,

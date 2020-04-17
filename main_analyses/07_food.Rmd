@@ -467,6 +467,9 @@ network_delta_catch_per_stock_a2 %>%
 results_per_pixel <- results_per_pixel_a1 %>% 
   left_join(results_per_pixel_a2)
 
+
+write_rds(results_per_pixel, file.path(variant_dir, "results_per_pixel.rds"))
+
 results_per_pixel %>% 
   arrange(pick_order_a1) %>% 
   mutate(fraction_protected = 1/n(),
