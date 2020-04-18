@@ -586,9 +586,18 @@ agg_bio_benefit_curve <- bio_benefit_curves %>%
          fraction_protected = cumsum(fraction_protected),
          V_rescaled = scales::rescale(V))
 
+bio_benefit_bau <- agg_bio_benefit_curve %>% 
+  slice(which.min(abs(fraction_protected - fraction_in_MPA))) %>% 
+  pull(V_rescaled)
+
+ninety_percent_delta_bio <- bio_benefit_bau + 0.9*(1 - bio_benefit_bau)
+
 (f_to_90 <- agg_bio_benefit_curve %>% 
-  slice(which.min(abs(V_rescaled - 0.9))) %>% 
-  pull(fraction_protected))
+  slice(which.min(abs(V_rescaled - ninety_percent_delta_bio))) %>% 
+  pull(fraction_protected)) # 21.4%
+
+# additional protection 19%
+f_to_90 - fraction_in_MPA
 ```
 
 How much in EEZ vs HS? 

@@ -429,6 +429,7 @@ SVR_raster <- swept_volume_raster/raster::area(swept_area_raster)
 
 plot(SVR_raster)
 
+# % carbon disturbed 
 100*(raster::cellStats((SVR_raster*c_raster_05), stat = sum, na.rm = T)/10^6)/total_c_05
 ```
 
@@ -512,27 +513,48 @@ plot(SVR_raster_gf)
 ```{r}
 Ia_carbon <- sediment_risk_factor_gf*SVR_raster_gf
 
-Ia_carbon <- log(Ia_carbon)
-
 Ia_carbon_rescaled <- (Ia_carbon - cellStats(Ia_carbon, 'min')) / (cellStats(Ia_carbon,'max') - cellStats(Ia_carbon, 'min'))
 
-plot(Ia_carbon_rescaled)
+Ia_carbon_rescaled[is.na(Ia_carbon_rescaled[])] <- 0 
 
-Ia_carbon_rescaled %>% 
+Ia_carbon_rescaled <- Ia_carbon_rescaled %>% 
   projectRaster(ocean_low_res_moll, method = "bilinear") %>% 
-  mask(ocean_low_res_moll) %>%
-  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr.tif"), overwrite = T)
+  mask(ocean_low_res_moll) 
+
+plot(Ia_carbon_rescaled)
+hist(Ia_carbon_rescaled)
+
+raster::writeRaster(Ia_carbon_rescaled, 
+                    file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr.tif"), overwrite = T)
+```
+
+```{r}
+Ia_carbon_log <- log(Ia_carbon)
+
+Ia_carbon_log_rescaled <- (Ia_carbon_log - cellStats(Ia_carbon_log, 'min')) / (cellStats(Ia_carbon_log,'max') - cellStats(Ia_carbon_log, 'min'))
+
+Ia_carbon_log_rescaled[is.na(Ia_carbon_log_rescaled[])] <- 0 
+
+Ia_carbon_log_rescaled <- Ia_carbon_log_rescaled %>% 
+  projectRaster(ocean_low_res_moll, method = "bilinear") %>% 
+  mask(ocean_low_res_moll) 
+  
+plot(Ia_carbon_log_rescaled)
+hist(Ia_carbon_log_rescaled)
+
+raster::writeRaster(Ia_carbon_log_rescaled, 
+                    file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr_log.tif"), overwrite = T)
 ```
 
 # Visualize
 
 ```{r}
-abatable_impact_carbon_svr <- raster::raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr.tif"))
+abatable_impact_carbon_svr <- raster::raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr_log.tif"))
 
 Ia_carbon_map <- abatable_impact_carbon_svr %>% 
   as.data.frame(xy = T) %>% 
   ggplot()+
-  geom_raster(aes(x, y, fill = abatable_impact_carbon_svr), show.legend = T)+
+  geom_raster(aes(x, y, fill = abatable_impact_carbon_svr_log), show.legend = T)+
   geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
   my_theme_map()+
   labs(fill = "relative risk") %>% 
@@ -542,7 +564,7 @@ Ia_carbon_map <- abatable_impact_carbon_svr %>%
 Ia_carbon_hist <- abatable_impact_carbon_svr %>% 
   as.data.frame(xy = T) %>% 
   ggplot()+
-  geom_histogram(aes(abatable_impact_carbon_svr))+ 
+  geom_histogram(aes(abatable_impact_carbon_svr_log))+ 
   theme_classic()+
   labs(x = "Relative remineralization risk", y = "")
 
