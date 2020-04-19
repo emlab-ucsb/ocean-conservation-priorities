@@ -40,11 +40,14 @@ fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
 ```{r}
 territories_mask <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories.tif")) # 1 equals high seas
 
+territories_df <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories_lookup.csv"))
+
 eez_mask <- ocean_low_res_moll %>% 
-  mask(territories_mask) 
+  mask(territories_mask) %>% 
+  mask(territories_mask == 1926, maskvalue = 1) # remove Antartica
 
 hs_mask <- ocean_low_res_moll %>% 
-  mask(territories_mask, inverse = T) 
+  mask(eez_mask, inverse = T) 
 
 eez_mask_df_moll <- eez_mask %>% 
   as.data.frame(xy = TRUE) %>% 
@@ -64,7 +67,7 @@ spp_wts <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed"
   as_tibble() %>% 
   rename(w = spp_weight)
 
-smts_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed","seamounts"), full.names = T)) %>% 
+smts_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "seamounts"), full.names = T)) %>% 
   mutate(w = sum(spp_wts$w)/n())
 
 provs_wts <- tibble(filepath = list.files(file.path(emLab_project_dir, "data", "02_processed", "biogeography"), full.names = T, pattern = "\\.tif")) %>% 
@@ -329,7 +332,7 @@ carbon_map <- carbon_ranking_df %>%
 # Food
 
 ```{r}
-food_benefit_curves <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "network_delta_catch_per_stock.rds")) %>% 
+food_benefit_curves <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "network_delta_catch_per_stock_a2.rds")) %>% 
   mutate(cell_id = as.character(cell_id))
 
 food_curve <- food_benefit_curves %>% 
@@ -385,7 +388,7 @@ max_food <- max(food_curve$V)/10^6
 ```
 
 ```{r}
-food_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster.tif"))
+food_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster_a2.tif"))
 
 food_ranking_df <- food_ranking %>% 
   as.data.frame(xy = TRUE, centroids = T) %>% 

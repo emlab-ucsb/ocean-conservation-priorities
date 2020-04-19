@@ -198,8 +198,8 @@ carbon_stats_by_country <- carbon_stats_by_country %>%
 # Food
 
 ```{r}
-food_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster.tif"))
-delta_food_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "delta_v_raster.tif"))
+food_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster_a2.tif"))
+delta_food_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "delta_v_raster_a2.tif"))
 
 food_stats_by_country <- food_priorities_raster %>% 
   mask(MPAs, updatevalue = 100, inverse = T) %>% 
@@ -325,6 +325,18 @@ stats_by_country$country[stats_by_country$iso3 == "PNG"] <- "PNG"
 stats_by_country$country[stats_by_country$iso3 == "DOM"] <- "DOM"
 
 stats_by_country$country[stats_by_country$iso3 == "HMD"] <- "HMD"
+
+stats_by_country$country[stats_by_country$iso3 == "FSM"] <- "FSM"
+
+stats_by_country$country[stats_by_country$iso3 == "SJM"] <- "SJM"
+
+stats_by_country$country[stats_by_country$iso3 == "MMR"] <- "Myanmar"
+
+stats_by_country$country[stats_by_country$iso3 == "GNQ"] <- "Eq. Guinea"
+
+stats_by_country$country[stats_by_country$iso3 == "ARE"] <- "UAE"
+
+stats_by_country$country[stats_by_country$iso3 == "CCK"] <- "Keeling Isl"
 ```
 
 # Most important countries 
@@ -440,6 +452,7 @@ propeller_bio_plot <- plotting_data %>%
   geom_text(data = base_data, 
             aes(x = title, y = 35, label = continent),  colour = "black", alpha = 0.8, size = 4, fontface = "bold", inherit.aes = FALSE) +
   theme_map()+
+  paletteer::scale_fill_paletteer_d(palette = "rcartocolor::Pastel")+
   circle_theme 
 
 ggsave(propeller_bio_plot, 
@@ -520,11 +533,12 @@ propeller_carbon_plot <- plotting_data %>%
   geom_text(data = base_data, 
             aes(x = title, y = 35, label = continent),  colour = "black", alpha = 0.8, size = 4, fontface = "bold", inherit.aes = FALSE) +
   theme_map()+
+  paletteer::scale_fill_paletteer_d(palette = "rcartocolor::Pastel")+
   circle_theme 
 
 ggsave(propeller_carbon_plot, 
        filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_carbon.png"), 
-       dpi = 300,  height = 10, width = 10)
+       dpi = 300,  height = 13, width = 13)
 ```
 
 ## Food
@@ -600,11 +614,12 @@ propeller_food_plot <- plotting_data %>%
   geom_text(data = base_data, 
             aes(x = title, y = 35, label = continent),  colour = "black", alpha = 0.8, size = 4, fontface = "bold", inherit.aes = FALSE) +
   theme_map()+
+  paletteer::scale_fill_paletteer_d(palette = "rcartocolor::Pastel")+
   circle_theme 
 
 ggsave(propeller_food_plot, 
        filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_food.png"), 
-       dpi = 300,  height = 10, width = 10)
+       dpi = 300,  height = 13, width = 13)
 ```
 
 # Efficiency loss
@@ -662,7 +677,7 @@ efficiency_plot <- ggplot()+
                 xmax = fraction_in_MPA, 
                 ymin = 0,
                 ymax = 1),
-            fill = "#5FAD41")+
+            fill = "lightblue")+
   geom_line(data = random_benefit_curves ,
             aes(x = fraction_protected, y = V, col = "Random", group = run), alpha = 0.7)+
   labs(x = "Fraction Ocean Protected",
@@ -677,7 +692,7 @@ efficiency_plot <- ggplot()+
         plot.margin = margin(0, 5, 0, 5, "cm"))+
   expand_limits(y = c(0, 1.01),
                 x = c(0, 1.05))+
-  scale_color_manual(values = c("#2D728F", "#D62839", "grey"),
+  scale_color_manual(values = c("#006E90", "#F18F01", "grey"),
                      labels = c("Global", "National", "Random"))
 ```
 
@@ -686,7 +701,8 @@ fig_4 <- propeller_bio_plot + efficiency_plot +
          plot_annotation(tag_levels = "a")+
          plot_layout(ncol = 1, heights = c(2.6, 1)) 
 
-ggsave(fig_4, filename = file.path(emLab_project_dir, "figures", "main", "figure_4.pdf"), dpi = 300,  height = 15, width = 12)
-ggsave(fig_4, filename = file.path(emLab_project_dir, "figures", "main", "figure_4.png"), dpi = 300,  height = 11, width = 14)
+ggsave(fig_4, filename = file.path(emLab_project_dir, "figures", "main", "figure_4.png"), dpi = 300,  height = 11, width = 13)
+
+ggsave(fig_4, filename = file.path(emLab_project_dir, "figures", "main", "figure_4.pdf"), dpi = 300,  height = 12, width = 11)
 ```
 

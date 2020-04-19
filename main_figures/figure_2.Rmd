@@ -38,7 +38,7 @@ fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
 ```{r}
 bio_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "ranking_raster.tif"))
 carbon_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster.tif"))
-food_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster.tif"))
+food_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster_a2.tif"))
 
 find_overlap <- function(top_p_bio, top_p_carbon, top_p_food){
   
@@ -111,9 +111,13 @@ n_cells_2_goals_top_10 <- overlap_raster_top_10 %>% cellStats(function(x, ...) s
 ## Needed to reach 90% benefits
 
 ```{r}
-bio_90_percent <- 0.2026721
-carbon_90_percent <- 0.09000515
-food_90_percent <- 0.05658422
+summary_of_food_results <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "summary_of_food_results.rds"))
+```
+
+```{r}
+bio_90_percent <- 0.2149893
+carbon_90_percent <- 0.08714317
+food_90_percent <- summary_of_food_results$protection_to_90_percent[summary_of_food_results$model == "a2"]
 
 overlap_raster_90_percent <- find_overlap(top_p_bio = 1 - bio_90_percent, top_p_carbon = 1 - carbon_90_percent, top_p_food = 1 - food_90_percent) 
 
@@ -169,15 +173,11 @@ n_cells_2_goals_90_percent <- overlap_raster_90_percent %>% cellStats(function(x
 # Co-benefit curves
 
 ```{r}
-co_benefits_biodiversity <- read_csv(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives","co_benefits_biodiversity.csv"))
-co_benefits_food <- read_csv(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives","co_benefits_food.csv"))
-co_benefits_carbon <- read_csv(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives","co_benefits_carbon.csv"))
+co_benefits_biodiversity <- read_csv(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives","co_benefits_biodiversity_a2.csv"))
+co_benefits_food <- read_csv(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives","co_benefits_food_a2.csv"))
+co_benefits_carbon <- read_csv(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives","co_benefits_carbon_a2.csv"))
 
-max_food <- read_csv(file.path(emLab_project_dir, "data", "03_output", "07_food", "results_per_pixel.csv")) %>% 
-  summarize(max_deltaH = max(network_cummulative_delta_catch),
-            max_deltaH_bau =  max(network_cummulative_delta_catch[is_mpa == 1])) %>% 
-  mutate(catch_diff = max_deltaH - max_deltaH_bau) %>% 
-  pull(max_deltaH)
+max_food <- summary_of_food_results$max_catch[summary_of_food_results$model == "a2"]*10^6
 ```
 
 Here we ask, if we prioritize one goal only, how much do we get of the others as co-benefit?

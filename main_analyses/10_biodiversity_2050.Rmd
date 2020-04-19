@@ -306,33 +306,51 @@ tmap::tmap_save(ranking_map,
 ```{r}
 raster_today <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs","ranking_raster.tif"))
 
-comparison_raster <- overlay(ranking_raster, raster_today, fun = function(x, y){if_else(x >= 0.95 & y >= 0.95, 1, 
-                                                                                        if_else(x <= 0.5 & y <= 0.5, -1, 
-                                                                                                if_else(abs(x-y) <= 0.01, 0, 
-                                                                                                        if_else(x > y, 0.5, -0.5))))})
-diff_map <- comparison_raster %>%
-  tmap::tm_shape()+
-  tmap::tm_raster(title = "",
-                  palette = "seq",
-                  style = "cat",
-                  labels = rev(c("irreplaceable (top 5%)", "increasing", "comparable", "decreasing", "least (bottom 50%)")),
-                  legend.is.portrait = T, 
-                  legend.reverse = T)+
-  tmap::tm_shape(land_50_moll)+
-  tmap::tm_fill(col = "gray", border.col = "transparent")+
-  tmap::tm_shape(MPAs)+
-  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
-  tmap::tm_layout(title = "Global Ocean Conservation Priorities",
-                  aes.palette = list(seq = "-RdBu"),
-                  title.position = c("center", .95),
-                  inner.margins = c(0.12, 0, 0.08, 0.04), 
-                  frame = F,
-                  legend.position = c(.88, .1))
+comparison_raster_approach_1 <- overlay(ranking_raster, raster_today, fun = function(x, y){if_else(x >= 0.9 & y >= 0.9, 1, 
+                                                                                                         if_else(x <= 0.5 & y <= 0.5, -1, 
+                                                                                                                 if_else(abs(x-y) <= 0.05, 0, 
+                                                                                                                         if_else(x > y, 0.5, -0.5))))})
 
-tmap::tmap_save(diff_map, 
-               filename = file.path(variant_dir, "map_2050_vs_today_approach_1.png"),
-                dpi = 300,  height = 4, width = 8 )
+bio_today_vs_2050_map_approach_1 <- comparison_raster_approach_1 %>% 
+  as.data.frame(xy = TRUE, centroids = T) %>% 
+  set_names(c("lon", "lat", "rank")) %>% 
+  filter(!is.na(rank)) %>% 
+  ggplot()+
+  geom_raster(aes(x = lon, y = lat, fill = as.factor(rank)))+
+  geom_raster(data = MPAs_df %>% 
+                filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
+  geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
+  scale_fill_manual(values  = c("#0D2149", "#208AAE", "#D4B483", "#F25F5C", "#8C1C13"),
+                    labels = rev(c("irreplaceable\n(top 10%)", "increasing", "comparable", "decreasing", "least priority\n(bottom 50%)")),
+                    guide = guide_legend(
+                      title = "",
+                      title.position = 'top',
+                      title.hjust = 0.5,
+                      label.hjust = -.02,
+                      reverse = T,
+                      keywidth = 0.3))+
+  theme(legend.text = element_text(size = 6),
+        legend.text.align = 0,
+        legend.position = "right",
+        axis.text.x = element_text(size = 6),
+        axis.text.y = element_text(size = 6),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = NA, color = NA), 
+        panel.background = element_rect(fill = NA, color = NA), 
+        legend.background = element_rect(fill = NA, color = NA),
+        panel.border = element_blank())
 
+ggsave(bio_today_vs_2050_map_approach_1, 
+       filename = file.path(variant_dir, "map_2050_vs_today_approach_1.png"),
+       dpi = 300,  height = 4, width = 8)
+
+ggsave(bio_today_vs_2050_map_approach_1, filename = file.path(emLab_project_dir, "figures", "supplement", "bio_today_vs_2050_approach_1.png"), 
+       dpi = 300,  height = 4, width = 8)
 ```
 
 # Approach 2: Isolate the effect of Climate change
@@ -584,6 +602,8 @@ writeRaster(ranking_raster_approach_2,
 ```
 
 ```{r}
+ranking_raster_approach_2 <- raster(file.path(variant_dir, "ranking_raster_approach_2.tif"))
+
 ranking_map_approach_2 <- tmap::tm_shape(ranking_raster_approach_2)+
   tmap::tm_raster(title = "",
                   palette  = priorities_map_pal$colors,
@@ -607,34 +627,51 @@ tmap::tmap_save(ranking_map_approach_2,
                 dpi = 300,  height = 4, width = 8 )
 ```
 
+#### diff map
+
 ```{r}
-comparison_raster_approach_2 <- overlay(ranking_raster_approach_2, 
-                                        raster_today,
-                                        fun = function(x, y){if_else(x >= 0.95 & y >= 0.95, 1, 
-                                                                     if_else(x <= 0.5 & y <= 0.5, -1, 
-                                                                             if_else(abs(x-y) <= 0.01, 0, 
-                                                                                     if_else(x > y, 0.5, -0.5))))})
+comparison_raster_approach_2 <- overlay(ranking_raster_approach_2, raster_today, fun = function(x, y){if_else(x >= 0.9 & y >= 0.9, 1, 
+                                                                                                         if_else(x <= 0.5 & y <= 0.5, -1, 
+                                                                                                                 if_else(abs(x-y) <= 0.05, 0, 
+                                                                                                                         if_else(x > y, 0.5, -0.5))))})
 
-diff_map_approach_2 <- comparison_raster_approach_2 %>%
-  tmap::tm_shape()+
-  tmap::tm_raster(title = "",
-                  palette = "seq",
-                  style = "cat",
-                  labels = rev(c("irreplaceable (top 5%)", "increasing", "comparable", "decreasing", "least (bottom 50%)")),
-                  legend.is.portrait = T, 
-                  legend.reverse = T)+
-  tmap::tm_shape(land_50_moll)+
-  tmap::tm_fill(col = "gray", border.col = "transparent")+
-  tmap::tm_shape(MPAs)+
-  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
-  tmap::tm_layout(title = "Global Ocean Conservation Priorities",
-                  aes.palette = list(seq = "-RdBu"),
-                  title.position = c("center", .95),
-                  inner.margins = c(0.12, 0, 0.08, 0.04), 
-                  frame = F,
-                  legend.position = c(.88, .1))
+bio_today_vs_2050_map_approach_2 <- comparison_raster_approach_2 %>% 
+  as.data.frame(xy = TRUE, centroids = T) %>% 
+  set_names(c("lon", "lat", "rank")) %>% 
+  filter(!is.na(rank)) %>% 
+  ggplot()+
+  geom_raster(aes(x = lon, y = lat, fill = as.factor(rank)))+
+  geom_raster(data = MPAs_df %>% 
+                filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
+  geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
+  scale_fill_manual(values  = c("#0D2149", "#208AAE", "#D4B483", "#F25F5C", "#8C1C13"),
+                    labels = rev(c("irreplaceable\n(top 10%)", "increasing", "comparable", "decreasing", "least priority\n(bottom 50%)")),
+                    guide = guide_legend(
+                      title = "",
+                      title.position = 'top',
+                      title.hjust = 0.5,
+                      label.hjust = -.02,
+                      reverse = T,
+                      keywidth = 0.3))+
+  theme(legend.text = element_text(size = 6),
+        legend.text.align = 0,
+        legend.position = "right",
+        axis.text.x = element_text(size = 6),
+        axis.text.y = element_text(size = 6),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = NA, color = NA), 
+        panel.background = element_rect(fill = NA, color = NA), 
+        legend.background = element_rect(fill = NA, color = NA),
+        panel.border = element_blank())
 
-tmap::tmap_save(diff_map_approach_2, 
-               filename = file.path(variant_dir, "map_2050_vs_today_approach_2.png"),
-                dpi = 300,  height = 4, width = 8 )
+ggsave(bio_today_vs_2050_map_approach_2, 
+       filename = file.path(variant_dir, "map_2050_vs_today_approach_2.png"),
+       dpi = 300,  height = 4, width = 8)
 ```
+
+

@@ -645,9 +645,16 @@ bio_benefit_curve_a1 %>%
        y = "Benefit",
        col = "Objective")+
   theme_classic()+
-  ggsave(file.path(variant_dir, "benefit_curves_equal_weights_a1.png"),
-         width = 7, height = 4)
+  scale_color_manual(values = wesanderson::wes_palette("Darjeeling1", n = 3))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = 0,
+                ymax = 1),
+            fill = "lightblue", alpha = 1)+
+ggsave(file.path(variant_dir, "benefit_curves_equal_weights_a1.png"),
+       width = 7, height = 4)
 ```
+
 
 ### priority map
 
@@ -671,16 +678,16 @@ writeRaster(ranking_raster_a1,
 
 ranking_map_a1 <- tmap::tm_shape(ranking_raster_a1)+
   tmap::tm_raster(title = "",
-                  palette  = priorities_map_pal$colors,
+                  palette  = viridis::viridis(n = 8),
                   breaks = priorities_map_pal$breaks,
                   labels = priorities_map_pal$labels,
                   legend.is.portrait = T, 
                   legend.reverse = T)+
   tmap::tm_shape(land_50_moll)+
-  tmap::tm_fill(col = "black", border.col = "transparent")+
+  tmap::tm_fill(col = "grey", border.col = "transparent")+
   tmap::tm_credits("Multi-objective, equal weights, no effort displacement") +
   tmap::tm_shape(MPAs)+
-  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "lightblue", legend.show	= F)+
   tmap::tm_layout(title = "Global Conservation Priorities",
                   title.position = c("center", .95),
                   inner.margins = c(0.12, 0, 0.08, 0.04), 
@@ -769,6 +776,12 @@ bio_benefit_curve_a2 %>%
   gather(var, value, -fraction_protected) %>% 
   ggplot()+
   geom_line(aes(fraction_protected, value, col = var))+ 
+  scale_color_manual(values = wesanderson::wes_palette("Darjeeling1", n = 3))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = 0,
+                ymax = 1),
+            fill = "lightblue", alpha = 1)+
   labs(x = "Fraction of the ocean protected", 
        y = "Benefit",
        col = "Objective")+
@@ -799,16 +812,16 @@ writeRaster(ranking_raster_a2,
 
 ranking_map_a2 <- tmap::tm_shape(ranking_raster_a2)+
   tmap::tm_raster(title = "",
-                  palette  = priorities_map_pal$colors,
+                  palette  = viridis::viridis(n = 8),
                   breaks = priorities_map_pal$breaks,
                   labels = priorities_map_pal$labels,
                   legend.is.portrait = T, 
                   legend.reverse = T)+
   tmap::tm_shape(land_50_moll)+
-  tmap::tm_fill(col = "black", border.col = "transparent")+
+  tmap::tm_fill(col = "grey", border.col = "transparent")+
   tmap::tm_credits("Multi-objective, equal weights, Full effort displacement") +
   tmap::tm_shape(MPAs)+
-  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "lightblue", legend.show	= F)+
   tmap::tm_layout(title = "Global Conservation Priorities",
                   title.position = c("center", .95),
                   inner.margins = c(0.12, 0, 0.08, 0.04), 
@@ -817,6 +830,10 @@ ranking_map_a2 <- tmap::tm_shape(ranking_raster_a2)+
 
 tmap::tmap_save(ranking_map_a2, 
                 filename = file.path(variant_dir, "priority_map_equal_weights_a2.png"),
+                dpi = 300,  height = 4, width = 8 )
+
+tmap::tmap_save(ranking_map_a2, 
+                filename = file.path(emLab_project_dir, "figures", "supplement", "multiobjective_priority_map_equal_weights_a2.png"),
                 dpi = 300,  height = 4, width = 8 )
 ```
 
