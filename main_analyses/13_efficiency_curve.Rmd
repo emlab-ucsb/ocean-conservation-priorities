@@ -44,43 +44,15 @@ x_bios <- c(-10000,
             seq(2, 10, by = 1), seq(20, 100, by = 10), seq(200, 1000, by = 100), seq(2000, 10000, by = 1000), seq(20000, 100000, by = 10000))
 ```
 
-```{r}
-calculate_weights <- function(w_bio, w_carbon, w_food, food_model){
-  
-  #if(w_bio + w_carbon + w_food != 1) stop("weights don't add up to 1")
-  
-  if(food_model == "a1"){
-    
-    final_bio_w <- w_bio*bio_weights*max_food_delta_a1/max_bio_delta
-    
-    final_carbon_w <- w_carbon*carbon_weights*max_food_delta_a1/max_carbon_delta
-    
-    final_food_w <- w_food*food_weights
-    
-  }
-  else if (food_model == "a2"){
-    
-    final_bio_w <- w_bio*bio_weights*max_food_delta_a2/max_bio_delta
-    
-    final_carbon_w <- w_carbon*carbon_weights*max_food_delta_a2/max_carbon_delta
-    
-    final_food_w <- w_food*food_weights
-    
-  }
-  
-  feature_weigths <- c(final_bio_w, final_carbon_w, final_food_w)
-  
-  return(feature_weigths)
-}
-
-```
-
 # No effort displacement
 
 ## Load features data 
 
 ```{r}
+start <- Sys.time()
 load(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives", "ranking_inputs.RData"))
+end <- Sys.time()
+end-start
 ```
 
 ## Initial conditions
@@ -108,7 +80,7 @@ names(max_slope_carbon) <- "carbon"
 ```{r}
 gc()
 
-registerDoParallel(cores = 150)
+registerDoParallel(cores = 15)
 
 foreach(i = x_bios)%dopar%{
   
