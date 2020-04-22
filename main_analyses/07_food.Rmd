@@ -59,10 +59,6 @@ stocks_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processe
   as_tibble()
 ```
 
-```{r}
-identical(stocks_info$stockid , str_replace_all(names(stocks_df)[-c(1,2,3)], "\\.", "-"))
-```
-
 ## Normalize and trim
 
 ```{r}
@@ -113,6 +109,12 @@ MPA_vect <- rownames(Norm_features_matrix) %>%
   mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
 ```
 
+# Load delta catch functions
+
+```{r}
+source(here::here("functions", "food_provision_foos.R"))
+```
+
 # Ranking 
 
 ```{r}
@@ -132,48 +134,7 @@ write_rds(Norm_features_matrix,
 
 ## Assumption 1: Effort goes away
 
-$$\frac{dH}{dR} = \frac{e\times k \times m \times(m + e) \times ((e \times r + 2 \times e \times m) + m \times r - 2 \times e \times m)}{r \times(e \times R + m)^3} $$
 ```{r}
-estimate_slopes_a1 <- function(e = stocks_info$ex_rate, 
-                               m = stocks_info$m,
-                               r = stocks_info$r, 
-                               k = stocks_info$k,
-                               R){
-  
-  R[R > 1] <- 1 
-  
-  slope <- -e*k*m*(m+e)*((e*r + 2*e*m)*R + m*r - 2*e*m)/(r*(e*R + m)^3)
-  
-  slope[R == 1] <- -9*10^9
-  
-  return(slope)
-  
-}
-
-estimate_delta_catch_a1 <- function(x, 
-                                    e = stocks_info$ex_rate,
-                                    m = stocks_info$m, 
-                                    r = stocks_info$r, 
-                                    k = stocks_info$k){
-  
-  R_bau <- 0
-  
-  x[x > 1] <- 1 
-  
-  exp_rate <- e
-  
-  catch_mpa <- exp_rate*(m*k)*(1 - x)/(exp_rate*x + m)*(1 - exp_rate*(1 - x)*m/((exp_rate*x + m)*r))
-
-  catch_bau <- e*(m*k*(1 - R_bau)/(e*R_bau + m)*(1 - e*(1 - R_bau)*m/((e*R_bau + m)*r)))
-  
-  delta_catch <- catch_mpa - catch_bau
-  
-  return(delta_catch)
-  
-}
-```
-
-```{r, eval = F}
 unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
 
 protected_matrix <- Norm_features_matrix[protected_cells, ]
@@ -190,11 +151,12 @@ while(nrow(unprotected_matrix) > 0){
   
   current_pick <- sum(current_pick, 1)
   
-  slopes <- estimate_slopes_a1(R = current_state)
+  slopes <- estimate_catch_slopes(k_protected = current_state, 
+                                  e = stocks_info$ex_rate, m = stocks_info$m, r = stocks_info$r, k = stocks_info$k, effort_assumption = 1)
   
   delta <- unprotected_matrix%*%as.matrix(t(slopes))
   
-  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  best_cell_indeces <- doBy::which.maxn(delta, n = 10)
   
   best_cells <- delta[best_cell_indeces,] %>% 
     enframe() %>% 
@@ -222,56 +184,6 @@ write_rds(ranking,
 ## Assumption 2: Effort is fully displaced
 
 ```{r}
-estimate_slopes_a2 <- function(e = stocks_info$ex_rate, 
-                               m = stocks_info$m,
-                               r = stocks_info$r, 
-                               k = stocks_info$k, 
-                               R){
-  
-  R[R > 1] <- 1 
-  
-  A <- (1 - e)^(1/(1 - R))
-  
-  part_a <- A*log(1 - e)*k*m*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - R)*((1 - A)*R + m))
-  
-  part_b <- (1 - A)*k*m*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - A)*R + m)
-  
-  part_c <- (1 - A)*k*m*(1 - R)*(- A*log(1 - e)*R/(1 - R)^2 - A + 1)*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - A)*R + m)^2
-  
-  part_d <- (1 - A)*k*m*(1 - R)*(A*log(1 - e)*m/(r*(1 - R)*((1 - A)*R + m)) + (1 - A)*m/(r*((1 - A)*R + m)) + (1 - A)*m*(1 - R)*(-A*log(1 - e)*R/(1 - R)^2 - A + 1)/(r*((1 - A)*R + m)^2))/((1 - A)*R + m)
-  
-  slope <- - part_a - part_b - part_c + part_d
-  
-  slope[R == 1] <- -9*10^9
-  
-  return(slope)
-  
-}
-
-estimate_delta_catch_a2 <- function(x, 
-                                    e = stocks_info$ex_rate, 
-                                    m = stocks_info$m,
-                                    r = stocks_info$r, 
-                                    k = stocks_info$k) {
-  
-  R_bau <- 0
-  
-  x[x > 1] <- 1 
-  
-  exp_rate <- 1 - (1 - e)^(1/(1 - x))
-  
-  catch_mpa <- exp_rate*(m*k)*(1 - x)/(exp_rate*x + m)*(1 - exp_rate*(1 - x)*m/((exp_rate*x + m)*r))
-  
-  catch_bau <- e*(m*k*(1 - R_bau)/(e*R_bau + m)*(1 - e*(1 - R_bau)*m/((e*R_bau + m)*r)))
-  
-  delta_catch <- catch_mpa - catch_bau
-  
-  return(delta_catch)
-  
-}
-```
-
-```{r, eval = F}
 unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
 
 protected_matrix <- Norm_features_matrix[protected_cells, ]
@@ -288,11 +200,12 @@ while(nrow(unprotected_matrix) > 0){
   
   current_pick <- sum(current_pick, 1)
   
-  slopes <- estimate_slopes_a2(R = current_state)
+  slopes <- estimate_catch_slopes(k_protected = current_state, 
+                                  e = stocks_info$ex_rate, m = stocks_info$m, r = stocks_info$r, k = stocks_info$k, effort_assumption = 2)
   
   delta <- unprotected_matrix%*%as.matrix(t(slopes))
   
-  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  best_cell_indeces <- doBy::which.maxn(delta, n = 10)
   
   best_cells <- delta[best_cell_indeces,] %>% 
     enframe() %>% 
@@ -343,12 +256,14 @@ ranked_rep_levels_a1 <- MPAs_df %>%
 network_delta_catch_per_stock_a1 <- ranked_rep_levels_a1 %>% 
   select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
   mutate_all(.funs = cumsum) %>% 
-  apply(MARGIN = 1, estimate_delta_catch_a1)  %>% 
+  apply(MARGIN = 1, estimate_delta_catch, e = stocks_info$ex_rate, m = stocks_info$m, r = stocks_info$r, 
+        k = stocks_info$k, effort_assumption = 1)  %>% 
   t() 
 
 pixel_delta_catch_per_stock_a1 <-  ranked_rep_levels_a1 %>%
   select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>%
-  apply(MARGIN = 1, estimate_delta_catch_a1)  %>% 
+  apply(MARGIN = 1, estimate_delta_catch, e = stocks_info$ex_rate, m = stocks_info$m, r = stocks_info$r, 
+        k = stocks_info$k, effort_assumption = 1)  %>% 
   t()
  
 results_per_pixel_a1 <- ranked_rep_levels_a1 %>% 
@@ -414,12 +329,14 @@ ranked_rep_levels_a2 <- MPAs_df %>%
 network_delta_catch_per_stock_a2 <- ranked_rep_levels_a2 %>% 
   select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
   mutate_all(.funs = cumsum) %>% 
-  apply(MARGIN = 1, estimate_delta_catch_a2)  %>% 
+  apply(MARGIN = 1, estimate_delta_catch, e = stocks_info$ex_rate, m = stocks_info$m, r = stocks_info$r, 
+        k = stocks_info$k, effort_assumption = 2)  %>% 
   t() 
 
 pixel_delta_catch_per_stock_a2 <-  ranked_rep_levels_a2 %>%
   select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>%
-  apply(MARGIN = 1, estimate_delta_catch_a2)  %>% 
+  apply(MARGIN = 1, estimate_delta_catch, e = stocks_info$ex_rate, m = stocks_info$m, r = stocks_info$r, 
+        k = stocks_info$k, effort_assumption = 2)  %>%   
   t()
  
 results_per_pixel_a2 <- ranked_rep_levels_a2 %>% 
@@ -493,14 +410,17 @@ delta_catch_curve_comparison_plot <- results_per_pixel %>%
                 xmax = fraction_in_MPA, 
                 ymin = min(min(results_per_pixel$delta_catch_a1), min(results_per_pixel$delta_catch_a2))/10^6,
                 ymax = max(max(results_per_pixel$delta_catch_a1), max(results_per_pixel$delta_catch_a2))/10^6),
-            fill = "#69B578", alpha = 0.01)+
-  scale_x_continuous(limits = c(0,1), expand = c(0, 0))
+            fill = "lightblue", alpha = 1)+
+  scale_x_continuous(limits = c(0,1), expand = c(0, 0))+
+  paletteer::scale_color_paletteer_d("wesanderson::Darjeeling1")
   
-ggsave(delta_catch_curve_comparison_plot, file.path(variant_dir, "delta_catch_curve_comparison_a1_vs_a2.png"),
+ggsave(plot = delta_catch_curve_comparison_plot, 
+       filename = file.path(variant_dir, "delta_catch_curve_comparison_a1_vs_a2.png"),
        width = 7, 
        height = 4)
 
-ggsave(delta_catch_curve_comparison_plot, file.path(emLab_project_dir, "figures", "supplement", "delta_catch_curve_comparison_a1_vs_a2.png"), 
+ggsave(plot = delta_catch_curve_comparison_plot, 
+       filename = file.path(emLab_project_dir, "figures", "supplement", "delta_catch_curve_comparison_a1_vs_a2.png"), 
        width = 7, 
        height = 4)
 ```
@@ -543,12 +463,12 @@ optimal_protection_levels_a2 <- results_per_pixel %>%
   summarize(optimal_protection = fraction_protected[delta_catch_a2 == max_catch],
             protection_to_90_percent = fraction_protected[which.min(abs(delta_catch_a2 - catch_90_percent))])
 
-summary_of_results %>% 
+(summary_of_results %>% 
   mutate_if(is.numeric, ~.x/10^6) %>% 
   left_join(bind_rows(optimal_protection_levels_a1,
             optimal_protection_levels_a2)) %>% 
   mutate_if(is.numeric, round, 3) %>% 
-  write_rds(file.path(variant_dir, "summary_of_food_results.rds"))
+  write_rds(file.path(variant_dir, "summary_of_food_results.rds")))
 ```
 
 ## Ranking maps
@@ -656,7 +576,7 @@ ranking_diff %>%
                 filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
   geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
   scale_fill_continuous_diverging(rev = T,
-                                  guide = guide_colorbar(title = "ranking difference",
+                                  guide = guide_colorbar(title = "ranking difference (a1 - a2)",
                                                          title.position = 'bottom',
                                                          direction = "horizontal",
                                                          title.hjust = 0.5,
@@ -677,7 +597,8 @@ ranking_diff %>%
         panel.background = element_rect(fill = NA, color = NA), 
         legend.background = element_rect(fill = NA, color = NA),
         panel.border = element_blank())+
-  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "food_priorities_diff_a1_vs_a2.png"), dpi = 300,  height = 9, width = 8)
+  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "food_priorities_diff_a1_vs_a2.png"), 
+         dpi = 300,  height = 9, width = 8)
 
 ```
 
@@ -850,6 +771,7 @@ delta_catch_per_stock_per_step_a2 <- delta_catch_per_stock_per_step_a2 %>%
 delta_catch_per_stock_per_step_a2 %>% 
   write_rds(file.path(variant_dir, "delta_catch_per_stock_per_step_a2.rds"))
 ```
+
 
 ```{r}
 protection_and_delta_H_per_m_a1 <- delta_catch_per_stock_per_step_a1 %>% 
@@ -1098,6 +1020,4 @@ delta_catch_per_stock_at_5_percent_a2 %>%
   theme(plot.title.position = "plot")+
   ggsave(filename = file.path(variant_dir, "protection_per_stock_at_5_percent_a2.png"))
 ```
-
-
 

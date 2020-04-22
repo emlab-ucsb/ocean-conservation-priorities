@@ -49,46 +49,109 @@ x_bios <- c(-10000,
 ## Load features data 
 
 ```{r}
-start <- Sys.time()
+source(here::here("functions", "food_provision_foos.R"))
+
 load(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives", "ranking_inputs.RData"))
-end <- Sys.time()
-end-start
 ```
 
-## Initial conditions
+## TEST
 
 ```{r}
-unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
+registerDoParallel()
 
-protected_matrix <- Norm_features_matrix[protected_cells, ]
+run_ranking <- function(effort_assumption){
+  
+  foreach(i = x_bios[1:6])%dopar%{
+    
+    unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
+    
+    protected_matrix <- Norm_features_matrix[protected_cells, ]
+    
+    baseline_state <- protected_cells%*%Norm_features_matrix
+    
+    baseline_state[,"carbon"] <- baseline_state[, "carbon"] + carbon_remains_BAU
+    
+    baseline_state[, bio_feature_names] <- baseline_state[, bio_feature_names] + bio_remains_BAU
+    
+    max_slopes_bio <- 0.25*baseline_state[, bio_feature_names]^(0.25 - 1)
+    
+    max_slope_carbon <- 1
+    
+    names(max_slope_carbon) <- "carbon"
+    
+    if(i > 0){
+      
+      w_bio = 1/(1/i + 1)  
+      
+      w_food <- 1 - w_bio
+      
+      
+    } else if (i < 0){
+      
+      w_food = 1
+      
+      w_bio = i
+      
+    }
+    
+    multiobjective_feature_weigths <- calculate_multiobjective_weights(alpha_b = w_bio, alpha_c = 0, alpha_f = w_food,
+                                                                       b_wts = bio_weights, c_wts = carbon_weights, f_wts = food_weights, 
+                                                                       max_b = max_bio_delta, max_c = max_carbon_delta, max_f_a1  = max_food_delta_a1,
+                                                                       max_f_a2  = max_food_delta_a2, effort_assumption = effort_assumption)
+    
+    ranking <- list()
+    
+    current_pick <- 0
+    
+    current_state <- baseline_state 
+    
+    #while(nrow(unprotected_matrix) > 0){
+      
+      current_pick <- sum(current_pick, 1)
+      
+      slopes <- estimate_multiobjective_slopes(x = current_state, feature_group = group_ids, feature_wts  = multiobjective_feature_weigths,
+                                               max_slopes_b = max_slopes_bio, max_slopes_c = max_slope_carbon, e = stocks_info$ex_rate,
+                                               m = stocks_info$m, k = stocks_info$k, r = stocks_info$r, effort_assumption = 1)
+      
+      #delta <- unprotected_matrix%*%as.matrix(slopes)
+      
+      #best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+      
+      # best_cells <- delta[best_cell_indeces,] %>% 
+      #   enframe() %>% 
+      #   set_names(c('cell_id', "delta")) %>% 
+      #   mutate(pick_order = current_pick)
+      # 
+      # ranking <- bind_rows(ranking, best_cells)
+      # 
+      # current_state <- unprotected_matrix[best_cell_indeces, ] %>% 
+      #   colSums() +
+      #   current_state
+      # 
+      # unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ]
+    }
+    
+    # write_rds(ranking, 
+    #           file.path(variant_dir, "ranking_results_a1.csv"))
+    
+  }
 
-baseline_state <- protected_cells%*%Norm_features_matrix
-
-baseline_state[,"carbon"] <- baseline_state[, "carbon"] + carbon_remains_BAU
-
-baseline_state[, bio_feature_names] <- baseline_state[, bio_feature_names] + bio_remains_BAU
-
-max_slopes_bio <- z_bio*baseline_state[, bio_feature_names]^(z_bio - 1)
-
-max_slope_carbon <- 1
-
-names(max_slope_carbon) <- "carbon"
+system.time(test_run <- run_ranking(effort_assumption = 1))
 ```
 
 ## Ranking
 
 ```{r}
-gc()
+registerDoParallel(cores = 5)
 
-registerDoParallel(cores = 15)
-
-foreach(i = x_bios)%dopar%{
+foreach(i = x_bios[1:5])%dopar%{
   
   if(i > 0){
     
     w_bio = 1/(1/i + 1)  
     
     w_food <- 1 - w_bio
+    
     
   } else if (i < 0){
     
@@ -114,7 +177,7 @@ foreach(i = x_bios)%dopar%{
     
     delta <- unprotected_matrix%*%as.matrix(slopes)
     
-    best_cell_indeces <- doBy::which.maxn(delta, n = 1000)
+    best_cell_indeces <- doBy::which.maxn(delta, n = 10000)
     
     best_cells <- delta[best_cell_indeces,] %>% 
       enframe() %>% 
@@ -130,7 +193,14 @@ foreach(i = x_bios)%dopar%{
     unprotected_matrix <- unprotected_matrix[-best_cell_indeces, , drop = F]
     
   }
+
   
+  write_rds(ranking, 
+            file.path(variant_dir, "runs_a1", paste0("ranking_", as.character(i), "_xbio.rds")))
+}
+```
+
+```{r}
   results <- MPAs_df %>% 
     filter(!is.na(mpa)) %>% 
     select(cell_id) %>% 
@@ -194,16 +264,7 @@ foreach(i = x_bios)%dopar%{
                     bio_benefit = bio_benefit_curve$V_norm[bio_benefit_curve$fraction_protected == optimal_fraction_protected],
                     carbon_benefit = carbon_benefit_curve$V_norm[carbon_benefit_curve$fraction_protected == optimal_fraction_protected],
                     delta_catch = food_benefit_curve$V_norm[food_benefit_curve$fraction_protected == optimal_fraction_protected])
-  
-  
-  write_rds(ranking, 
-            file.path(variant_dir, "runs_a1", paste0("ranking_", as.character(i), "_xbio.rds")))
-  
-  write_rds(summary, 
-            file.path(variant_dir, "runs_a1", paste0("summary_", as.character(i), "_xbio.rds")))
-}
 ```
-
 
 # Full effort displacement
 

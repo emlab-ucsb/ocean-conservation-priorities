@@ -252,6 +252,29 @@ Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
 # Feature weights
 
 ```{r}
+calculate_multiobjective_weights <- function(alpha_b, alpha_c, alpha_f, b_wts, c_wts, f_wts, max_b, max_c, max_f_a1, max_f_a2, effort_assumption){
+  
+  if(all(c(alpha_b, alpha_c, alpha_f) >= 0) & alpha_b + alpha_c + alpha_f != 1) stop("weights don't add up to 1")
+  
+  if(effort_assumption == 1){
+    max_f <- max_f_a1
+  } 
+  else if (effort_assumption == 2){
+    max_f <- max_f_a2
+  }
+  
+  bio_w <- alpha_b*b_wts*max_f/max_b
+  
+  carbon_w <- alpha_c*c_wts*max_f/max_c
+  
+  food_w <- alpha_f*f_wts
+  
+  feature_weigths <- c(bio_w, carbon_w, food_w)
+  
+  return(feature_weigths)
+  
+}
+
 max_food_delta_a1 <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "results_per_pixel.rds")) %>% 
   summarize(max_deltaH = max(delta_catch_a1),
             max_deltaH_bau =  max(delta_catch_a1[is_mpa])) %>% 
@@ -268,147 +291,40 @@ max_bio_delta <- sum(bio_remains_MPA^z_bio*bio_weights) - sum(bio_remains_BAU^z_
 
 max_carbon_delta <- sum(carbon_remains_MPA*carbon_weights) - sum(carbon_remains_BAU*carbon_weights)
 
-calculate_weights <- function(w_bio, w_carbon, w_food, food_model){
-  
-  if(w_bio + w_carbon + w_food != 1) stop("weights don't add up to 1")
-  
-  if(food_model == "a1"){
-    
-    final_bio_w <- w_bio*bio_weights*max_food_delta_a1/max_bio_delta
-    
-    final_carbon_w <- w_carbon*carbon_weights*max_food_delta_a1/max_carbon_delta
-    
-    final_food_w <- w_food*food_weights
-    
-  }
-  else if (food_model == "a2"){
-    
-    final_bio_w <- w_bio*bio_weights*max_food_delta_a2/max_bio_delta
-    
-    final_carbon_w <- w_carbon*carbon_weights*max_food_delta_a2/max_carbon_delta
-    
-    final_food_w <- w_food*food_weights
-    
-  }
-  
-  feature_weigths <- c(final_bio_w, final_carbon_w, final_food_w)
-  
-  return(feature_weigths)
-  
-}
+# test_wts <- calculate_multiobjective_weights(alpha_b = 1/3, alpha_c = 1/3, alpha_f = 1/3, 
+#                   b_wts = bio_weights, c_wts = carbon_weights, f_wts = food_weights,
+#                   max_b = max_bio_delta, max_c = max_carbon_delta, max_f  = max_food_delta_a1)
+# 
+# 
+# (sum(bio_remains_MPA^z_bio*test_wts[bio_feature_names]) - sum(bio_remains_BAU^z_bio*test_wts[bio_feature_names]))
+# 
+# (sum(carbon_remains_MPA*test_wts["carbon"]) - sum(carbon_remains_BAU*test_wts["carbon"]))
+# 
+# max_food_delta_a1/3
 ```
 
-# Food benefit functions
-
-```{r, food_slopes_a1}
-estimate_food_slopes_a1 <- function(e = stocks_info$ex_rate, 
-                               m = stocks_info$m,
-                               r = stocks_info$r, 
-                               k = stocks_info$k,
-                               R){
-  
-  R[R > 1] <- 1 
-  
-  slope <- -e*k*m*(m+e)*((e*r + 2*e*m)*R + m*r - 2*e*m)/(r*(e*R + m)^3)
-  
-  slope[R == 1] <- -9*10^9
-  
-  return(slope)
-  
-}
-
-estimate_delta_catch_a1 <- function(x, 
-                                    e = stocks_info$ex_rate,
-                                    m = stocks_info$m, 
-                                    r = stocks_info$r, 
-                                    k = stocks_info$k){
-  
-  R_bau <- 0
-  
-  x[x > 1] <- 1 
-  
-  exp_rate <- e
-  
-  catch_mpa <- exp_rate*(m*k)*(1 - x)/(exp_rate*x + m)*(1 - exp_rate*(1 - x)*m/((exp_rate*x + m)*r))
-
-  catch_bau <- e*(m*k*(1 - R_bau)/(e*R_bau + m)*(1 - e*(1 - R_bau)*m/((e*R_bau + m)*r)))
-  
-  delta_catch <- catch_mpa - catch_bau
-  
-  return(delta_catch)
-  
-}
-
-estimate_food_slopes_a2 <- function(e = stocks_info$ex_rate, 
-                                    m = stocks_info$m,
-                                    r = stocks_info$r, 
-                                    k = stocks_info$k, 
-                                    R){
-  
-  R[R > 1] <- 1 
-  
-  A <- (1 - e)^(1/(1 - R))
-  
-  part_a <- A*log(1 - e)*k*m*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - R)*((1 - A)*R + m))
-  
-  part_b <- (1 - A)*k*m*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - A)*R + m)
-  
-  part_c <- (1 - A)*k*m*(1 - R)*(- A*log(1 - e)*R/(1 - R)^2 - A + 1)*(1 - (1 - A)*m*(1 - R)/(r*((1 - A)*R + m)))/((1 - A)*R + m)^2
-  
-  part_d <- (1 - A)*k*m*(1 - R)*(A*log(1 - e)*m/(r*(1 - R)*((1 - A)*R + m)) + (1 - A)*m/(r*((1 - A)*R + m)) + (1 - A)*m*(1 - R)*(-A*log(1 - e)*R/(1 - R)^2 - A + 1)/(r*((1 - A)*R + m)^2))/((1 - A)*R + m)
-  
-  slope <- - part_a - part_b - part_c + part_d
-  
-  slope[R == 1] <- -9*10^9
-  
-  return(slope)
-  
-}
-
-estimate_delta_catch_a2 <- function(x, 
-                                    e = stocks_info$ex_rate, 
-                                    m = stocks_info$m,
-                                    r = stocks_info$r, 
-                                    k = stocks_info$k) {
-  
-  R_bau <- 0
-  
-  x[x > 1] <- 1 
-  
-  exp_rate <- 1 - (1 - e)^(1/(1 - x))
-  
-  catch_mpa <- exp_rate*(m*k)*(1 - x)/(exp_rate*x + m)*(1 - exp_rate*(1 - x)*m/((exp_rate*x + m)*r))
-  
-  catch_bau <- e*(m*k*(1 - R_bau)/(e*R_bau + m)*(1 - e*(1 - R_bau)*m/((e*R_bau + m)*r)))
-  
-  delta_catch <- catch_mpa - catch_bau
-  
-  return(delta_catch)
-  
-}
-```
-
-# Get slopes foo
+# Multiobjective slopes foo
 
 ```{r}
-estimate_current_slopes <- function(x, g, wts, food_model){
+estimate_multiobjective_slopes <- function(x, feature_group, feature_wts, max_slopes_b, max_slopes_c, 
+                                           z_bio = 0.25, z_carbon = 1, effort_assumption,  e, m, k, r){
   
-  slopes <- vector(mode = "numeric", length = n_features)
+  slopes <- vector(mode = "numeric", length = length(feature_group))
   
-  slopes[g == 1] <- pmin(max_slopes_bio, z_bio*x[g == 1]^(z_bio - 1))*wts[g == 1]
+  slopes[feature_group == 1] <- pmin(max_slopes_b, z_bio*x[feature_group == 1]^(z_bio - 1))
   
-  slopes[g == 2] <- pmin(max_slope_carbon, z_carbon*x[g == 2]^(z_carbon - 1))*wts[g == 2]
+  slopes[feature_group == 2] <- pmin(max_slopes_c, z_carbon*x[feature_group == 2]^(z_carbon - 1))
   
-  if(food_model == "a1") {
-    
-    slopes[g == 3] <- estimate_food_slopes_a1(R = x[g == 3])*wts[g == 3]}
+  slopes[feature_group == 3] <- estimate_catch_slopes(k_protected = x[feature_group == 3], 
+                                                      effort_assumption = effort_assumption, 
+                                                      e = e,
+                                                      m = m, 
+                                                      k = k, 
+                                                      r = r)
   
-  else if (food_model == "a2") {
-    
-    slopes[g == 3] <- estimate_food_slopes_a2(R = x[g == 3])*wts[g == 3]
-  }
+  weighted_slopes <- slopes*feature_wts
   
-  return(slopes)
+  return(weighted_slopes)
   
 }
 
@@ -417,9 +333,9 @@ group_ids <- c(rep(1, n_bio_features), rep(2, n_carbon), rep(3, n_stocks))
 ```
 
 ```{r}
-save(bio_feature_names, z_bio, z_carbon, bio_weights, carbon_weights, food_weights, max_bio_delta, max_carbon_delta,
-     Norm_features_matrix, protected_cells, stocks_info, stock_names, n_features, estimate_food_slopes_a1, estimate_delta_catch_a1,
-     estimate_food_slopes_a2, estimate_delta_catch_a2, estimate_current_slopes, calculate_weights, max_food_delta_a1, max_food_delta_a2, MPAs_df,
+save(bio_feature_names, bio_weights, carbon_weights, food_weights, max_bio_delta, max_carbon_delta,
+     Norm_features_matrix, protected_cells, stocks_info, stock_names, estimate_multiobjective_slopes, 
+     calculate_multiobjective_weights, max_food_delta_a1, max_food_delta_a2, MPAs_df,
      carbon_remains_BAU, bio_remains_BAU, group_ids, fraction_in_MPA, MPAs,
      file = file.path(variant_dir, "ranking_inputs.RData"))
 ```
@@ -428,17 +344,12 @@ save(bio_feature_names, z_bio, z_carbon, bio_weights, carbon_weights, food_weigh
 
 ```{r}
 load(file.path(variant_dir, "ranking_inputs.RData"))
+source(here::here("functions", "food_provision_foos.R"))
 ```
 
 ## Food Assumption A1
 
 ```{r}
-multiobjective_feature_weigths_a1 <- calculate_weights(w_bio = 1/3, w_carbon = 1/3, w_food = 1/3, food_model = "a1")
-
-# sum(bio_remains_MPA^z_bio*multiobjective_feature_weigths[bio_feature_names]) - sum(bio_remains_BAU^z_bio*multiobjective_feature_weigths[bio_feature_names])
-# multiobjective_feature_weigths["carbon"]*max_carbon_delta
-# max_food_delta_a1/3
-
 unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
 
 protected_matrix <- Norm_features_matrix[protected_cells, ]
@@ -449,50 +360,48 @@ baseline_state[,"carbon"] <- baseline_state[, "carbon"] + carbon_remains_BAU
 
 baseline_state[, bio_feature_names] <- baseline_state[, bio_feature_names] + bio_remains_BAU
 
-max_slopes_bio <- z_bio*baseline_state[, bio_feature_names]^(z_bio - 1)
+max_slopes_bio <- 0.25*baseline_state[, bio_feature_names]^(0.25 - 1)
 
 max_slope_carbon <- 1
 
 names(max_slope_carbon) <- "carbon"
-```
 
-```{r}
+multiobjective_feature_weigths <- calculate_multiobjective_weights(alpha_b = 1/3, alpha_c = 1/3, alpha_f = 1/3,
+                                                                   b_wts = bio_weights, c_wts = carbon_weights, f_wts = food_weights, 
+                                                                   max_b = max_bio_delta, max_c = max_carbon_delta, max_f_a1  = max_food_delta_a1,
+                                                                   max_f_a2  = max_food_delta_a2, effort_assumption = 1)
+
 ranking <- list()
 
 current_pick <- 0
 
 current_state <- baseline_state 
 
-start_time <- Sys.time()
-
 while(nrow(unprotected_matrix) > 0){
-    
-    current_pick <- sum(current_pick, 1)
-    
-    slopes <- estimate_current_slopes(x = current_state, g = group_ids, wts = multiobjective_feature_weigths_a1, food_model = "a1")
   
-    delta <- unprotected_matrix%*%as.matrix(slopes)
-    
-    best_cell_indeces <- doBy::which.maxn(delta, n = 100)
-    
-    best_cells <- delta[best_cell_indeces,] %>% 
-      enframe() %>% 
-      set_names(c('cell_id', "delta")) %>% 
-      mutate(pick_order = current_pick)
-    
-    ranking <- bind_rows(ranking, best_cells)
-    
-    current_state <- unprotected_matrix[best_cell_indeces, ] %>% 
-      colSums() +
-      current_state
-    
-    unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ]
-    
-  }
-
-end_time <- Sys.time()
-
-end_time - start_time
+  current_pick <- sum(current_pick, 1)
+  
+  slopes <- estimate_multiobjective_slopes(x = current_state, feature_group = group_ids, feature_wts  = multiobjective_feature_weigths,
+                                           max_slopes_b = max_slopes_bio, max_slopes_c = max_slope_carbon, e = stocks_info$ex_rate,
+                                           m = stocks_info$m, k = stocks_info$k, r = stocks_info$r, effort_assumption = 1)
+  
+  delta <- unprotected_matrix%*%as.matrix(slopes)
+  
+  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  
+  best_cells <- delta[best_cell_indeces,] %>% 
+    enframe() %>% 
+    set_names(c('cell_id', "delta")) %>% 
+    mutate(pick_order = current_pick)
+  
+  ranking <- bind_rows(ranking, best_cells)
+  
+  current_state <- unprotected_matrix[best_cell_indeces, ] %>% 
+    colSums() +
+    current_state
+  
+  unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ]
+}
 
 write_rds(ranking, 
           file.path(variant_dir, "ranking_results_a1.csv"))
@@ -501,8 +410,6 @@ write_rds(ranking,
 ## Food Assumption A2
 
 ```{r}
-multiobjective_feature_weigths_a2 <- calculate_weights(w_bio = 1/3, w_carbon = 1/3, w_food = 1/3, food_model = "a2")
-
 unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
 
 protected_matrix <- Norm_features_matrix[protected_cells, ]
@@ -513,50 +420,48 @@ baseline_state[,"carbon"] <- baseline_state[, "carbon"] + carbon_remains_BAU
 
 baseline_state[, bio_feature_names] <- baseline_state[, bio_feature_names] + bio_remains_BAU
 
-max_slopes_bio <- z_bio*baseline_state[, bio_feature_names]^(z_bio - 1)
+max_slopes_bio <- 0.25*baseline_state[, bio_feature_names]^(0.25 - 1)
 
 max_slope_carbon <- 1
 
 names(max_slope_carbon) <- "carbon"
-```
 
-```{r}
+multiobjective_feature_weigths <- calculate_multiobjective_weights(alpha_b = 1/3, alpha_c = 1/3, alpha_f = 1/3,
+                                                                   b_wts = bio_weights, c_wts = carbon_weights, f_wts = food_weights, 
+                                                                   max_b = max_bio_delta, max_c = max_carbon_delta, max_f_a1  = max_food_delta_a1,
+                                                                   max_f_a2  = max_food_delta_a2, effort_assumption = 2)
+
 ranking <- list()
 
 current_pick <- 0
 
 current_state <- baseline_state 
 
-start_time <- Sys.time()
-
 while(nrow(unprotected_matrix) > 0){
-    
-    current_pick <- sum(current_pick, 1)
-    
-    slopes <- estimate_current_slopes(x = current_state, g = group_ids, wts = multiobjective_feature_weigths_a2, food_model = "a2")
   
-    delta <- unprotected_matrix%*%as.matrix(slopes)
-    
-    best_cell_indeces <- doBy::which.maxn(delta, n = 100)
-    
-    best_cells <- delta[best_cell_indeces,] %>% 
-      enframe() %>% 
-      set_names(c('cell_id', "delta")) %>% 
-      mutate(pick_order = current_pick)
-    
-    ranking <- bind_rows(ranking, best_cells)
-    
-    current_state <- unprotected_matrix[best_cell_indeces, ] %>% 
-      colSums() +
-      current_state
-    
-    unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ]
-    
-  }
-
-end_time <- Sys.time()
-
-end_time - start_time
+  current_pick <- sum(current_pick, 1)
+  
+  slopes <- estimate_multiobjective_slopes(x = current_state, feature_group = group_ids, feature_wts  = multiobjective_feature_weigths,
+                                           max_slopes_b = max_slopes_bio, max_slopes_c = max_slope_carbon, e = stocks_info$ex_rate,
+                                           m = stocks_info$m, k = stocks_info$k, r = stocks_info$r, effort_assumption = 2)
+  
+  delta <- unprotected_matrix%*%as.matrix(slopes)
+  
+  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  
+  best_cells <- delta[best_cell_indeces,] %>% 
+    enframe() %>% 
+    set_names(c('cell_id', "delta")) %>% 
+    mutate(pick_order = current_pick)
+  
+  ranking <- bind_rows(ranking, best_cells)
+  
+  current_state <- unprotected_matrix[best_cell_indeces, ] %>% 
+    colSums() +
+    current_state
+  
+  unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ]
+}
 
 write_rds(ranking, 
           file.path(variant_dir, "ranking_results_a2.csv"))
