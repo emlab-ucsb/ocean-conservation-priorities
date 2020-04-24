@@ -3,3 +3,4 @@
 .RData
 .Ruserdata
 *.DS_Store
+main_analyses/13_efficiency_curve/ranking_inputs.RData
