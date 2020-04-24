@@ -16,94 +16,31 @@ output:
 library(raster)
 library(sf)
 library(tidyverse)
-library(ggplot2)
+library(patchwork)
 library(cowplot)
 
-DIR_GCS <- "~/gcs/git-annex/Carta-Marina"
-
-DIR_GCS_data <- "~/gcs/spatial-datasets"
-
-ocean_low_res_moll <- raster("~/gcs/spatial-datasets/ocean/ocean-low-res-moll.tif")
-
-ocean_matrix <- ocean_low_res_moll %>% 
-  raster::as.data.frame(xy = T) %>% 
-  filter(ocean.low.res.moll == 1) %>% 
-  mutate(cell_id = as.character(group_indices(., x, y))) %>% 
-  select(-ocean.low.res.moll) %>% 
-  as_tibble()
-
-land_shp <- sf::read_sf("~/gcs/spatial-datasets/land/land_50.shp")
-
-land_shp_moll <- land_shp %>% 
-  st_transform(crs = projection(ocean_low_res_moll))
-
-z_pal <- list(breaks = c(0, 0.2, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1),
-              labels = c("0-20", "20-50", "50-70", "70-80", "80-85", "85-90", "90-95", "95-100"),
-              colors = c("#4575b4", "#74add1", "#abd9e9", "#e0f3f8" ,"#fee090" ,"#fdae61" ,"#f46d43", "#d73027"))
-
+source(here::here("common.R"))
 ```
 
-```{r}
-cost_curve_data <- read.csv("../Juanation/13_efficiency_curve/results/summary.csv")
+# Effort Assumption 2
 
-cost_curve_data %>% 
-  arrange(desc(optim_protection))
-
-protection_at_zero <- cost_curve_data %>% filter(alpha_bio == 0) %>% pull(optim_protection)
-
-figure3 <- cost_curve_data %>% 
-  ggplot()+
-  geom_point(aes(x = 100*optim_protection, y = delta_catch/10^6, size = 100*bio_benefit, col = 100*carbon_benefit), alpha = 0.9)+
-  scale_x_continuous(limits = c(0,100))+
-  labs(x = "Ocean protected (%)", 
-       y = "Change in catch (Million MT)",
-       col = "% total carbon \nbenefits",
-       size = "% total biodiveristy \nbenefits")+
-  scale_radius( breaks = rev(c(10, 30, 50, 70, 90)))+
-  geom_hline(yintercept = 0, linetype = 2)+
-  annotate("text", label = "Biodiversity weight", x = 50, y = max(cost_curve_data$delta_catch)/10^6 + 5, size = 4, colour = "Black")+
-  annotate("text", label = "0", x = 100*protection_at_zero, y = max(cost_curve_data$delta_catch)/10^6 + 3.5, size = 4, colour = "Black")+
-  annotate("text", label = "lower", x = 0.5, y = max(cost_curve_data$delta_catch)/10^6 + 3.5, size = 4, colour = "Black")+
-  annotate("text", label = "higher", x = 99, y = max(cost_curve_data$delta_catch)/10^6 + 3.5, size = 4, colour = "Black")+
-  theme_classic()+
-  geom_segment(aes(y = max(cost_curve_data$delta_catch)/10^6 + 2, 
-                   yend = max(cost_curve_data$delta_catch)/10^6 + 2, 
-                   x = 0, xend = 100),
-               linejoin = 'mitre',
-               arrow = arrow(ends = "both",length = unit(0.2, "cm")))+
-  paletteer::scale_color_paletteer_c(package = "ggthemes", 
-                                     palette = "Orange",
-                                     breaks = c(10,30,50,70,90),
-                                     guide = guide_colorbar(keywidth = unit(0.5, "mm")))
-
-ggsave(figure3, filename = "figure_3.pdf", dpi = 300,  height = 4, width = 7)
-ggsave(figure3, filename = "figure_3.png", dpi = 300,  height = 4, width = 7)
-```
-
+## Efficiency curve
 
 ```{r}
-bio_benefits_at_zero <- cost_curve_data %>% 
-  filter(alpha_bio == 0) 
+efficiency_curve_data <- read_rds(file.path(emLab_project_dir, "data","03_output", "13_efficiency_curve", "efficiency_curves.rds")) %>% 
+  filter(effort_assumption == 2)
 
-bio_90_p_point <- cost_curve_data %>% 
-  slice(which.min(abs(bio_benefit - 0.9)))
+pts_of_interest <- bind_rows(efficiency_curve_data %>% 
+                               slice(which.min(abs(bio_x_factor - 0))),
+                             efficiency_curve_data %>% 
+                               slice(which.min(abs(bio_benefit - 3/4))),
+                             efficiency_curve_data %>% 
+                               slice(which.min(abs(delta_catch - 0)))) %>% 
+  mutate(label = c("b", "c", "d"))
 
-bio_66_p_point <- cost_curve_data %>% 
-  slice(which.min(abs(bio_benefit - 0.66)))
-
-labels <- bind_rows(bio_benefits_at_zero %>% 
-                      select(bio_benefit, delta_catch, carbon_benefit) %>% 
-            mutate(label = "b"),
-                      bio_66_p_point %>% 
-            select(bio_benefit, delta_catch, carbon_benefit) %>% 
-            mutate(label = "c"),
-          bio_90_p_point %>% 
-            select(bio_benefit, delta_catch, carbon_benefit) %>% 
-            mutate(label = "d"))
-
-figure3_v2 <- ggplot()+
-  geom_point(data = cost_curve_data, 
-             aes(x = 100*bio_benefit, y = delta_catch/10^6, size = 100*optim_protection, col = 100*carbon_benefit), alpha = 0.9)+
+efficiency_curve <- ggplot()+
+  geom_point(data = efficiency_curve_data, 
+             aes(x = 100*bio_benefit, y = delta_catch/10^6, size = 100*fraction_protected, col = 100*carbon_benefit), alpha = 0.9)+
   scale_x_continuous(limits = c(0,100))+
   labs(x = "Total biodiversity benefit (%)", 
        y = "Change in catch (MMT)",
@@ -111,37 +48,40 @@ figure3_v2 <- ggplot()+
        size = "% ocean \nprotected")+
   scale_radius( breaks = rev(c(10, 30, 50, 70, 90)))+
   geom_hline(yintercept = 0, linetype = 2)+
-  geom_segment(aes(x = 100*bio_benefits_at_zero$bio_benefit, 
-               xend = 100*bio_benefits_at_zero$bio_benefit,
-               y = 0, 
-               yend = max(cost_curve_data$delta_catch)/10^6 + 1.8),
+  geom_segment(data = pts_of_interest %>% filter(bio_x_factor == 0),
+               aes(x = 100*bio_benefit,
+                   xend = 100*bio_benefit,
+                   y = 0, 
+                   yend = max(efficiency_curve_data$delta_catch)/10^6 + 1.8),
                linetype = 2)+
-  geom_point(data = labels, aes(x = 100*bio_benefit, y = delta_catch/10^6), shape = 8)+
-  ggrepel::geom_text_repel(data = labels, aes(x = 100*bio_benefit, y = delta_catch/10^6, label = label))+
-  annotate("text", label = "Biodiversity weight", x = 50, y = max(cost_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
-  annotate("text", label = "0", x = 100*bio_benefits_at_zero$bio_benefit, y = max(cost_curve_data$delta_catch)/10^6 + 2.2, size = 4, colour = "Black")+
-  annotate("text", label = "lower", x = 0.5, y = max(cost_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
-  annotate("text", label = "higher", x = 99, y = max(cost_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
+  geom_point(data = pts_of_interest, 
+             aes(x = 100*bio_benefit, y = delta_catch/10^6), shape = 2)+
+  ggrepel::geom_text_repel(data = pts_of_interest, 
+                           aes(x = 100*bio_benefit, y = delta_catch/10^6, label = label))+
+  annotate("text", label = "Biodiversity weight", x = 50, y = max(efficiency_curve_data$delta_catch)/10^6 + 5, size = 4, colour = "Black")+
+  annotate("text", label = "0", 
+           x = 100*pts_of_interest$bio_benefit[pts_of_interest$bio_x_factor == 0], 
+           y = max(efficiency_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
+  annotate("text", label = "lower", x = 0.5, y = max(efficiency_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
+  annotate("text", label = "higher", x = 99, y = max(efficiency_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
   theme_classic()+
   theme(axis.text = element_text(size = 10),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 10))+
-  geom_segment(aes(y = max(cost_curve_data$delta_catch)/10^6 + 1.5, 
-                   yend = max(cost_curve_data$delta_catch)/10^6 + 1.5, 
+  geom_segment(aes(y = max(efficiency_curve_data$delta_catch)/10^6 + 1.5, 
+                   yend = max(efficiency_curve_data$delta_catch)/10^6 + 1.5, 
                    x = 0, xend = 100),
                linejoin = 'mitre',
                arrow = arrow(ends = "both",length = unit(0.2, "cm")))+
   scale_color_viridis_c()
-
-ggsave(figure3_v2, filename = "figure_3_v2.pdf", dpi = 300,  height = 4, width = 7)
-
-ggsave(figure3_v2, filename = "figure_3_v2.png", dpi = 300,  height = 4, width = 7)
 ```
 
+## radar plots
+
 ```{r}
-radar_plot_a <- labels %>% 
+radar_plot_b <- pts_of_interest %>% 
   mutate(delta_catch = delta_catch/max(delta_catch)) %>% 
-  select(label, everything()) %>% 
+  select(label, bio_benefit, delta_catch, carbon_benefit) %>% 
   set_names(c("label", "biodiversity", "food", "carbon")) %>% 
   filter(label == "b") %>% 
   ggradar::ggradar(group.point.size = 2, 
@@ -152,9 +92,9 @@ radar_plot_a <- labels %>%
                    group.colours = "#046C99") +
   theme_minimal()
 
-radar_plot_b <- labels %>% 
+radar_plot_c <- pts_of_interest %>% 
   mutate(delta_catch = delta_catch/max(delta_catch)) %>% 
-  select(label, everything()) %>% 
+  select(label, bio_benefit, delta_catch, carbon_benefit) %>% 
   set_names(c("label", "biodiversity", "food", "carbon")) %>% 
   filter(label == "c") %>% 
   ggradar::ggradar(group.point.size = 2, 
@@ -165,9 +105,9 @@ radar_plot_b <- labels %>%
                    group.colours = "#046C99") +
   theme_minimal()
 
-radar_plot_c <- labels %>% 
+radar_plot_d <- pts_of_interest %>% 
   mutate(delta_catch = delta_catch/max(delta_catch)) %>% 
-  select(label, everything()) %>% 
+  select(label, bio_benefit, delta_catch, carbon_benefit) %>% 
   set_names(c("label", "biodiversity", "food", "carbon")) %>% 
   filter(label == "d") %>% 
   ggradar::ggradar(group.point.size = 2, 
@@ -196,16 +136,151 @@ theme_radar <- theme(legend.position = 'none',
 ```
 
 ```{r}
-bottom_row <- plot_grid(radar_plot_a + theme_radar,
-                        radar_plot_b + theme_radar,
-                        radar_plot_c + theme_radar, 
+bottom_row <- plot_grid(radar_plot_b + theme_radar,
+                        radar_plot_c + theme_radar,
+                        radar_plot_d + theme_radar, 
                         labels = c('b','c', 'd'), 
                         label_size = 12,
                         label_fontface = "plain",
                         ncol = 3)
 
-plot_grid(figure3_v2, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2.4,1),label_fontface = "plain" )+
-  ggsave("test_2.png",  dpi = 300,  height = 6, width = 8)
+plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2.4,1),label_fontface = "plain" )+
+  ggsave(file.path(emLab_project_dir, "figures", "main", "figure_3.pdf"),  dpi = 300,  height = 6, width = 8)
+
+plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2.4,1),label_fontface = "plain" )+
+  ggsave(file.path(emLab_project_dir, "figures", "main", "figure_3.png"),  dpi = 300,  height = 6, width = 8)
 ```
+
+
+# Effort Assumption 1
+
+## Efficiency curve
+
+```{r}
+efficiency_curve_data <- read_rds(file.path(emLab_project_dir, "data","03_output", "13_efficiency_curve", "efficiency_curves.rds")) %>% 
+  filter(effort_assumption == 1)
+
+pts_of_interest <- bind_rows(efficiency_curve_data %>% 
+                               slice(which.min(abs(bio_x_factor - 0))),
+                             efficiency_curve_data %>% 
+                               slice(which.min(abs(bio_benefit - 2/3))),
+                             efficiency_curve_data %>% 
+                               slice(which.min(abs(delta_catch - 0)))) %>% 
+  mutate(label = c("b", "c", "d"))
+
+efficiency_curve <- ggplot()+
+  geom_point(data = efficiency_curve_data, 
+             aes(x = 100*bio_benefit, y = delta_catch/10^6, size = 100*fraction_protected, col = 100*carbon_benefit), alpha = 0.9)+
+  scale_x_continuous(limits = c(0,100))+
+  labs(x = "Total biodiversity benefit (%)", 
+       y = "Change in catch (MMT)",
+       col = "% total carbon \nbenefits",
+       size = "% ocean \nprotected")+
+  scale_radius( breaks = rev(c(10, 30, 50, 70, 90)))+
+  geom_hline(yintercept = 0, linetype = 2)+
+  geom_segment(data = pts_of_interest %>% filter(bio_x_factor == 0),
+               aes(x = 100*bio_benefit,
+                   xend = 100*bio_benefit,
+                   y = 0, 
+                   yend = max(efficiency_curve_data$delta_catch)/10^6 + 1.8),
+               linetype = 2)+
+  geom_point(data = pts_of_interest, 
+             aes(x = 100*bio_benefit, y = delta_catch/10^6), shape = 2)+
+  ggrepel::geom_text_repel(data = pts_of_interest, 
+                           aes(x = 100*bio_benefit, y = delta_catch/10^6, label = label))+
+  annotate("text", label = "Biodiversity weight", x = 50, y = max(efficiency_curve_data$delta_catch)/10^6 + 5, size = 4, colour = "Black")+
+  annotate("text", label = "0", 
+           x = 100*pts_of_interest$bio_benefit[pts_of_interest$bio_x_factor == 0], 
+           y = max(efficiency_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
+  annotate("text", label = "lower", x = 0.5, y = max(efficiency_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
+  annotate("text", label = "higher", x = 99, y = max(efficiency_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
+  theme_classic()+
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 10))+
+  geom_segment(aes(y = max(efficiency_curve_data$delta_catch)/10^6 + 1.5, 
+                   yend = max(efficiency_curve_data$delta_catch)/10^6 + 1.5, 
+                   x = 0, xend = 100),
+               linejoin = 'mitre',
+               arrow = arrow(ends = "both",length = unit(0.2, "cm")))+
+  scale_color_viridis_c()
+```
+
+## radar plots
+
+```{r}
+radar_plot_b <- pts_of_interest %>% 
+  mutate(delta_catch = delta_catch/max(delta_catch)) %>% 
+  select(label, bio_benefit, delta_catch, carbon_benefit) %>% 
+  set_names(c("label", "biodiversity", "food", "carbon")) %>% 
+  filter(label == "b") %>% 
+  ggradar::ggradar(group.point.size = 2, 
+                   gridline.mid.colour	= "grey",
+                   grid.label.size	= 3, 
+                   group.line.width	= 1,
+                   axis.label.size = 3,
+                   group.colours = "#046C99") +
+  theme_minimal()
+
+radar_plot_c <- pts_of_interest %>% 
+  mutate(delta_catch = delta_catch/max(delta_catch)) %>% 
+  select(label, bio_benefit, delta_catch, carbon_benefit) %>% 
+  set_names(c("label", "biodiversity", "food", "carbon")) %>% 
+  filter(label == "c") %>% 
+  ggradar::ggradar(group.point.size = 2, 
+                   gridline.mid.colour	= "grey",
+                   grid.label.size	= 3,
+                   group.line.width	= 1,
+                   axis.label.size = 3,
+                   group.colours = "#046C99") +
+  theme_minimal()
+
+radar_plot_d <- pts_of_interest %>% 
+  mutate(delta_catch = delta_catch/max(delta_catch)) %>% 
+  select(label, bio_benefit, delta_catch, carbon_benefit) %>% 
+  set_names(c("label", "biodiversity", "food", "carbon")) %>% 
+  filter(label == "d") %>% 
+  ggradar::ggradar(group.point.size = 2, 
+                   gridline.mid.colour	= "grey",
+                   grid.label.size	= 3,
+                   group.line.width	= 1,
+                   axis.label.size = 3,
+                   group.colours = "#046C99") +
+  theme_minimal()
+
+theme_radar <- theme(legend.position = 'none',
+                     legend.margin = margin(0,0,0,0),
+                     text = element_text(family = "Ubuntu Regular", color = "#22211d"),
+                     axis.line = element_blank(),
+                     axis.text.x = element_blank(),
+                     axis.text.y = element_blank(),
+                     axis.ticks = element_blank(),
+                     axis.title.x = element_blank(),
+                     axis.title.y = element_blank(),
+                     panel.grid.major = element_blank(),
+                     panel.grid.minor = element_blank(),
+                     plot.background = element_rect(fill = NA, color = NA), 
+                     panel.background = element_rect(fill = NA, color = NA), 
+                     panel.border = element_blank(),
+                     plot.margin = margin(0, 0, 0, 0, "cm"))
+```
+
+```{r}
+bottom_row <- plot_grid(radar_plot_b + theme_radar,
+                        radar_plot_c + theme_radar,
+                        radar_plot_d + theme_radar, 
+                        labels = c('b','c', 'd'), 
+                        label_size = 12,
+                        label_fontface = "plain",
+                        ncol = 3)
+
+plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2.4,1),label_fontface = "plain" )+
+  ggsave(file.path(emLab_project_dir, "figures", "supplement", "efficiency_curve_a1.png"),  dpi = 300,  height = 6, width = 8)
+
+plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2.4,1),label_fontface = "plain" )+
+  ggsave(file.path(emLab_project_dir, "figures", "supplement", "efficiency_curve_a1.pdf"),  dpi = 300,  height = 6, width = 8)
+```
+
+
 
 
