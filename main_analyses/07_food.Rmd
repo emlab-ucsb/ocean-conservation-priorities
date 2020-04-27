@@ -523,7 +523,7 @@ ranking_map_a1 <- tmap::tm_shape(ranking_raster_a1)+
   tmap::tm_fill(col = "grey", border.col = "transparent")+
   tmap::tm_credits("No effort displacement") +
   tmap::tm_shape(MPAs)+
-  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "lightblue", legend.show	= F)+
   tmap::tm_layout(title = "Food Provision Conservation Priorities",
                   title.position = c("center", .95),
                   inner.margins = c(0.12, 0, 0.08, 0.04), 
@@ -543,7 +543,7 @@ ranking_map_a2 <- tmap::tm_shape(ranking_raster_a2)+
   tmap::tm_fill(col = "grey", border.col = "transparent")+
   tmap::tm_credits("Full effort displacement") +
   tmap::tm_shape(MPAs)+
-  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "lightblue", legend.show	= F)+
   tmap::tm_layout(title = "Food Provision Conservation Priorities",
                   title.position = c("center", .95),
                   inner.margins = c(0.12, 0, 0.08, 0.04), 
@@ -566,7 +566,7 @@ tmap::tmap_save(ranking_map_a2,
 ```{r}
 ranking_diff <- ranking_raster_a1 - ranking_raster_a2
 
-ranking_diff %>% 
+ranking_diff_map <- ranking_diff %>% 
   as.data.frame(xy = TRUE, centroids = T) %>% 
   set_names(c("lon", "lat", "diff_rank")) %>% 
   filter(!is.na(diff_rank)) %>% 
@@ -596,13 +596,17 @@ ranking_diff %>%
         plot.background = element_rect(fill = NA, color = NA), 
         panel.background = element_rect(fill = NA, color = NA), 
         legend.background = element_rect(fill = NA, color = NA),
-        panel.border = element_blank())+
-  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "food_priorities_diff_a1_vs_a2.png"), 
-         dpi = 300,  height = 9, width = 8)
-
+        panel.border = element_blank())
+  
+ggsave(ranking_diff_map, 
+       filename = file.path(emLab_project_dir, "figures", "supplement", "food_priorities_diff_a1_vs_a2.png"), 
+       dpi = 300,  height = 9, width = 8)
 ```
 
 
+```{r}
+cowplot::plot_grid(ranking_diff_map, delta_catch_curve_comparison_plot)
+```
 
 ```{r}
 dv_raster_a1 <- results_per_pixel %>% 
@@ -911,12 +915,14 @@ delta_catch_per_stock_per_step_a2 %>%
   ggsave(filename = file.path(variant_dir, "curves_per_stock_a2.png"), width = 10, height = 10)
 ```
 
-### at 5% ocean protection
+### at 10% ocean protection
 
 ```{r}
+delta_catch_per_stock_per_step_a1 <- read_rds(file.path(variant_dir, "delta_catch_per_stock_per_step_a1.rds"))
+
 delta_catch_per_stock_at_5_percent_a1 <- delta_catch_per_stock_per_step_a1 %>% 
   group_by(stockid) %>% 
-  slice(which.min(abs(fraction_protected - 0.05))) 
+  slice(which.min(abs(fraction_protected - 0.1))) 
   
 stock_range_sizes <- ranked_rep_levels_a1 %>% 
   select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 

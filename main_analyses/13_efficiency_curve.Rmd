@@ -62,7 +62,7 @@ x_bios <- c(seq(-100, -10, by = 10),
 # Ranking 
 
 ```{r}
-registerDoParallel(38)
+#registerDoParallel(38)
 
 run_efficiency_curve <- function(effort_assumption, bio_preferences){
   
@@ -145,8 +145,8 @@ run_efficiency_curve <- function(effort_assumption, bio_preferences){
   }
 }
 
-efficiency_rankings_a1 <- tryCatch(run_efficiency_curve(effort_assumption = 1, bio_preferences = x_bios), error = function(e) print(e))
-efficiency_rankings_a2 <- tryCatch(run_efficiency_curve(effort_assumption = 2, bio_preferences = x_bios), error = function(e) print(e))
+efficiency_rankings_a1 <- tryCatch(run_efficiency_curve(effort_assumption = 1, bio_preferences = 1), error = function(e) print(e))
+efficiency_rankings_a2 <- tryCatch(run_efficiency_curve(effort_assumption = 2, bio_preferences = 1), error = function(e) print(e))
 ```
 
 # Summarize runs

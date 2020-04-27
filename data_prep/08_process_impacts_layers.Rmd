@@ -377,6 +377,10 @@ log_Ia_hist <- Ia_log %>%
   ggplot()+
   geom_histogram(aes(layer))+ 
   theme_classic()+
+    scale_x_continuous(labels = c(0, .2, .4, .6, .8, 1),
+                     breaks  = c(0, .2, .4, .6, .8, 1),
+                     limits = c(0,1), expand = c(0,0))+
+  scale_y_continuous( expand = c(0,0))+
   labs(x = "Relative abatable impacts, log", y = "")
 
 cowplot::plot_grid(log_Ia_map, log_Ia_hist, labels = NULL, ncol = 1, rel_heights = c(2,1))+
@@ -417,6 +421,10 @@ log_Iu_hist <- Iu_log %>%
   ggplot()+
   geom_histogram(aes(layer))+ 
   theme_classic()+
+    scale_x_continuous(labels = c(0, .2, .4, .6, .8, 1),
+                     breaks  = c(0, .2, .4, .6, .8, 1),
+                     limits = c(0,1), expand = c(0,0))+
+  scale_y_continuous( expand = c(0,0))+
   labs(x = "Relative un-abatable impacts, log", y = "")
 
 cowplot::plot_grid(log_Iu_map, log_Iu_hist, labels = NULL, ncol = 1, rel_heights = c(2,1))+
@@ -448,9 +456,24 @@ diff_log_hist <- diff_made_log %>%
   ggplot()+
   geom_histogram(aes(layer))+ 
   theme_classic()+
+  scale_x_continuous(labels = c(0, .2, .4, .6, .8, 1),
+                     breaks  = c(0, .2, .4, .6, .8, 1),
+                     limits = c(0,1), expand = c(0,0))+
+  scale_y_continuous( expand = c(0,0))+
   labs(x = "Difference made by MPAs", y = "")
 
 cowplot::plot_grid(diff_log_map, diff_log_hist, labels = NULL, ncol = 1, rel_heights = c(2,1))+
   cowplot::ggsave2(dpi = 300, 
                    filename = file.path(emLab_project_dir, "figures", "supplement", "diff_made_log.png"),  height = 4, width = 6)
 ```
+
+```{r}
+cowplot::plot_grid(log_Ia_map, log_Ia_hist + labs(x = NULL) + theme( plot.margin= grid::unit(c(0, 0, 0, -0.3), "in")), 
+                   log_Iu_map, log_Iu_hist+ labs(x = NULL) + theme( plot.margin= grid::unit(c(0, 0, 0, -0.3), "in")),
+                   diff_log_map, diff_log_hist + labs(x = NULL) + theme( plot.margin= grid::unit(c(0, 0, 0, -0.3), "in")), 
+                   ncol = 2, rel_widths = c(2,1),label_fontface = "plain",
+                   scale = c(1, .7, 1, .7, 1, .7), align = "v", labels = c("a", "", "b", "", "c", ""))+
+  cowplot::ggsave2(dpi = 300, 
+                   filename = file.path(emLab_project_dir, "figures", "supplement", "impacts_on_biodiversity.png"))
+```
+

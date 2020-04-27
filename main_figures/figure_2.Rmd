@@ -180,6 +180,12 @@ co_benefits_carbon <- read_csv(file.path(emLab_project_dir, "data", "03_output",
 max_food <- summary_of_food_results$max_catch[summary_of_food_results$model == "a2"]*10^6
 ```
 
+```{r}
+co_benefits_biodiversity %>% 
+  slice(which.min(abs(fraction_protected - bio_90_percent)))
+```
+
+
 Here we ask, if we prioritize one goal only, how much do we get of the others as co-benefit?
 
 ```{r}
