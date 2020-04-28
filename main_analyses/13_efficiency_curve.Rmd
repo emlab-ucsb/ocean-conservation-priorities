@@ -341,7 +341,7 @@ map_optimal_raster <- function(optimal_raster, caption, land_raster = land_50_mo
   optimal_map <- optimal_raster %>% 
     tmap::tm_shape()+
     tmap::tm_raster(title = "",
-                    palette = rev("-Spectral"), 
+                    palette = viridis::viridis(n = 8), 
                     breaks = quantile(optimal_raster),
                     labels = c("lowest","","","", "highest"),
                     n = 20,
@@ -351,8 +351,8 @@ map_optimal_raster <- function(optimal_raster, caption, land_raster = land_50_mo
     tmap::tm_shape(land_50_moll)+
     tmap::tm_fill(col = "grey", border.col = "transparent")+
     tmap::tm_shape(MPAs)+
-    tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
-    tmap::tm_layout(title = "Multiobjective Conservation Priorities",
+    tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "lightblue", legend.show	= F)+
+    tmap::tm_layout(title = "",
                     title.position = c("left", .95),
                     inner.margins = c(0.12, 0, 0.08, 0.04), 
                     frame = F,
@@ -420,6 +420,23 @@ efficiency_curve %>%
          ranking_raster = map(ranking_df, create_ranking_raster,MPAs_df = MPAs_df, ocean_df = ocean_matrix, ocean_raster = ocean_low_res_moll),
          masked_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
          optim_map = walk2(masked_raster, caption, .f = map_optimal_raster))
+```
+
+## biodiversity = food
+
+```{r}
+bio_equals_food <- efficiency_curve %>% 
+  group_by(effort_assumption) %>% 
+  slice(which.min(abs(bio_x_factor - 1))) %>% 
+  mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
+         caption =  paste0("biodiversity_equals_food_a", run_pattern, "x_bio_", round(fraction_protected, 2), "protected"),
+         ranking_df = map(run_pattern, read_ranking_file),
+         ranking_raster = map(ranking_df, create_ranking_raster,MPAs_df = MPAs_df, ocean_df = ocean_matrix, ocean_raster = ocean_low_res_moll),
+         masked_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
+         optim_map = walk2(masked_raster, caption, .f = map_optimal_raster))
+
+# bio_equals_food$masked_raster[bio_equals_food$effort_assumption == 2][[1]] %>%
+#   writeRaster(file.path(emLab_project_dir, "other-project-materials", "natgeo-magazine", "equal_weights_bio_and_food.tif"))
 ```
 
 ## Two thirds biodiversity

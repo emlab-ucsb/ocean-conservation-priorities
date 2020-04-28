@@ -33,18 +33,18 @@ efficiency_curve_data <- read_rds(file.path(emLab_project_dir, "data","03_output
 pts_of_interest <- bind_rows(efficiency_curve_data %>% 
                                slice(which.min(abs(bio_x_factor - 0))),
                              efficiency_curve_data %>% 
-                               slice(which.min(abs(bio_benefit - 3/4))),
+                               slice(which.min(abs(bio_x_factor - 1))),
                              efficiency_curve_data %>% 
                                slice(which.min(abs(delta_catch - 0)))) %>% 
   mutate(label = c("b", "c", "d"))
 
 efficiency_curve <- ggplot()+
   geom_point(data = efficiency_curve_data, 
-             aes(x = 100*bio_benefit, y = delta_catch/10^6, size = 100*fraction_protected, col = 100*carbon_benefit), alpha = 0.9)+
+             aes(x = 100*bio_benefit, y = delta_catch/10^6, size = 100*fraction_protected, fill = 100*carbon_benefit), alpha = 0.9, shape = 21, col = "black")+
   scale_x_continuous(limits = c(0,100))+
   labs(x = "Total biodiversity benefit (%)", 
        y = "Change in catch (MMT)",
-       col = "% total carbon \nbenefits",
+       fill = "% total carbon \nbenefits",
        size = "% ocean \nprotected")+
   scale_radius( breaks = rev(c(10, 30, 50, 70, 90)))+
   geom_hline(yintercept = 0, linetype = 2)+
@@ -55,7 +55,7 @@ efficiency_curve <- ggplot()+
                    yend = max(efficiency_curve_data$delta_catch)/10^6 + 1.8),
                linetype = 2)+
   geom_point(data = pts_of_interest, 
-             aes(x = 100*bio_benefit, y = delta_catch/10^6), shape = 2)+
+             aes(x = 100*bio_benefit, y = delta_catch/10^6), shape = 17)+
   ggrepel::geom_text_repel(data = pts_of_interest, 
                            aes(x = 100*bio_benefit, y = delta_catch/10^6, label = label))+
   annotate("text", label = "Biodiversity weight", x = 50, y = max(efficiency_curve_data$delta_catch)/10^6 + 5, size = 4, colour = "Black")+
@@ -65,6 +65,7 @@ efficiency_curve <- ggplot()+
   annotate("text", label = "lower", x = 0.5, y = max(efficiency_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
   annotate("text", label = "higher", x = 99, y = max(efficiency_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
   theme_classic()+
+  scale_y_continuous(breaks = c(-40, -20, 0, 10))+
   theme(axis.text = element_text(size = 10),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 10))+
@@ -73,7 +74,8 @@ efficiency_curve <- ggplot()+
                    x = 0, xend = 100),
                linejoin = 'mitre',
                arrow = arrow(ends = "both",length = unit(0.2, "cm")))+
-  scale_color_viridis_c()
+  paletteer::scale_fill_paletteer_c("scico::roma", direction = -1)+
+  guides(fill = guide_colorbar(frame.colour = "black", ticks.colour = "black"))
 ```
 
 ## radar plots
@@ -163,18 +165,18 @@ efficiency_curve_data <- read_rds(file.path(emLab_project_dir, "data","03_output
 pts_of_interest <- bind_rows(efficiency_curve_data %>% 
                                slice(which.min(abs(bio_x_factor - 0))),
                              efficiency_curve_data %>% 
-                               slice(which.min(abs(bio_benefit - 2/3))),
+                               slice(which.min(abs(bio_x_factor - 1))),
                              efficiency_curve_data %>% 
                                slice(which.min(abs(delta_catch - 0)))) %>% 
   mutate(label = c("b", "c", "d"))
 
 efficiency_curve <- ggplot()+
   geom_point(data = efficiency_curve_data, 
-             aes(x = 100*bio_benefit, y = delta_catch/10^6, size = 100*fraction_protected, col = 100*carbon_benefit), alpha = 0.9)+
+             aes(x = 100*bio_benefit, y = delta_catch/10^6, size = 100*fraction_protected, fill = 100*carbon_benefit), alpha = 0.9, shape = 21, col = "black")+
   scale_x_continuous(limits = c(0,100))+
   labs(x = "Total biodiversity benefit (%)", 
        y = "Change in catch (MMT)",
-       col = "% total carbon \nbenefits",
+       fill = "% total carbon \nbenefits",
        size = "% ocean \nprotected")+
   scale_radius( breaks = rev(c(10, 30, 50, 70, 90)))+
   geom_hline(yintercept = 0, linetype = 2)+
@@ -195,6 +197,7 @@ efficiency_curve <- ggplot()+
   annotate("text", label = "lower", x = 0.5, y = max(efficiency_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
   annotate("text", label = "higher", x = 99, y = max(efficiency_curve_data$delta_catch)/10^6 + 3, size = 4, colour = "Black")+
   theme_classic()+
+  scale_y_continuous(breaks = c(-40, -20, 0, 10))+
   theme(axis.text = element_text(size = 10),
         axis.title = element_text(size = 12),
         legend.text = element_text(size = 10))+
@@ -203,7 +206,8 @@ efficiency_curve <- ggplot()+
                    x = 0, xend = 100),
                linejoin = 'mitre',
                arrow = arrow(ends = "both",length = unit(0.2, "cm")))+
-  scale_color_viridis_c()
+    paletteer::scale_fill_paletteer_c("scico::roma", direction = -1)+
+  guides(fill = guide_colorbar(frame.colour = "black", ticks.colour = "black"))
 ```
 
 ## radar plots

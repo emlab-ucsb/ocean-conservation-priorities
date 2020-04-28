@@ -388,6 +388,8 @@ write_rds(results_per_pixel, file.path(variant_dir, "results_per_pixel.rds"))
 ```
 
 ```{r}
+results_per_pixel <- read_rds(file.path(variant_dir, "results_per_pixel.rds"))
+
 delta_catch_curve_comparison_plot <- results_per_pixel %>% 
   arrange(pick_order_a1) %>% 
   mutate(fraction_protected = 1/n(),
@@ -575,7 +577,8 @@ ranking_diff_map <- ranking_diff %>%
   geom_raster(data = MPAs_df %>% 
                 filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
   geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
-  scale_fill_continuous_diverging(rev = T,
+  scale_fill_continuous_diverging(palette = "Blue-Red 3",
+                                  rev = T,
                                   guide = guide_colorbar(title = "ranking difference (a1 - a2)",
                                                          title.position = 'bottom',
                                                          direction = "horizontal",
@@ -605,7 +608,10 @@ ggsave(ranking_diff_map,
 
 
 ```{r}
-cowplot::plot_grid(ranking_diff_map, delta_catch_curve_comparison_plot)
+cowplot::plot_grid(ranking_diff_map, delta_catch_curve_comparison_plot,
+                   ncol = 1, rel_heights = c(2,1), labels = "auto")+
+  cowplot::ggsave2(dpi = 300, 
+                   filename = file.path(emLab_project_dir, "figures", "supplement", "compare_a1_vs_a2.png"))
 ```
 
 ```{r}
@@ -778,6 +784,8 @@ delta_catch_per_stock_per_step_a2 %>%
 
 
 ```{r}
+delta_catch_per_stock_per_step_a1 <- read_rds(file.path(variant_dir, "delta_catch_per_stock_per_step_a1.rds"))
+
 protection_and_delta_H_per_m_a1 <- delta_catch_per_stock_per_step_a1 %>% 
   group_by(cell_id, m) %>% 
   summarize(delta_catch_a1 = sum(delta_catch_a1),
@@ -803,6 +811,8 @@ protection_and_delta_H_per_m_a1 %>%
         plot.title.position = "plot")+
   ggsave(filename = file.path(variant_dir, "curves_by_m_a1.png"))
 
+delta_catch_per_stock_per_step_a2 <- read_rds(file.path(variant_dir, "delta_catch_per_stock_per_step_a2.rds"))
+
 protection_and_delta_H_per_m_a2 <- delta_catch_per_stock_per_step_a2 %>% 
   group_by(cell_id, m) %>% 
   summarize(delta_catch_a2 = sum(delta_catch_a2),
@@ -814,19 +824,21 @@ protection_and_delta_H_per_m_a2 <- delta_catch_per_stock_per_step_a2 %>%
 
 protection_and_delta_H_per_m_a2 %>% 
   ungroup() %>% 
+  mutate(delta_catch_a2 = delta_catch_a2/10^6) %>% 
   select(-cell_id) %>% 
   pivot_longer(cols = -c(m, fraction_ocean_protected), names_to = "variable") %>% 
   ggplot()+
   geom_line(aes(x = fraction_ocean_protected, y = value, col = m))+
-  facet_wrap(vars(variable), scales = 'free', ncol = 1, strip.position = "left")+
+  facet_wrap(vars(variable), scales = 'free', ncol = 1, strip.position = "left", 
+              labeller = labeller(variable = c(avg_protection = "Average protection",
+                                               delta_catch_a2 = "Delta catch (MMT)")))+
   scale_color_viridis_d()+
-  labs(y = "", 
-       title = "Food provision benefit curves and average protection levels per mobility index",
-       subtitle = "Full effort displacement")+
+  labs(y = "", x = "Fraction of the ocean protected")+
   theme(strip.background = element_blank(),
         strip.placement = "outside",
         plot.title.position = "plot")+
-  ggsave(filename = file.path(variant_dir, "curves_by_m_a2.png"))
+  ggsave(filename = file.path(emLab_project_dir,"figures", "supplement","food_curves_by_m_a2.png"), 
+         height = 6, width = 7)
 ```
 
 ```{r}
@@ -920,7 +932,7 @@ delta_catch_per_stock_per_step_a2 %>%
 ```{r}
 delta_catch_per_stock_per_step_a1 <- read_rds(file.path(variant_dir, "delta_catch_per_stock_per_step_a1.rds"))
 
-delta_catch_per_stock_at_5_percent_a1 <- delta_catch_per_stock_per_step_a1 %>% 
+delta_catch_per_stock_at_10_percent_a1 <- delta_catch_per_stock_per_step_a1 %>% 
   group_by(stockid) %>% 
   slice(which.min(abs(fraction_protected - 0.1))) 
   
@@ -930,16 +942,16 @@ stock_range_sizes <- ranked_rep_levels_a1 %>%
   pivot_longer(everything(), names_to = "stockid", values_to = "range_size") %>% 
   mutate(stockid = str_replace_all(stockid, "\\.", "-")) 
 
-delta_catch_per_stock_at_5_percent_a1 <- delta_catch_per_stock_at_5_percent_a1 %>% 
+delta_catch_per_stock_at_10_percent_a1 <- delta_catch_per_stock_at_10_percent_a1 %>% 
   left_join(stock_range_sizes) %>% 
   select(stockid, m, r, k, e , e_msy, e_over_e_msy, range_size,  msy,
          f_protected_a1, delta_catch_a1, delta_catch_a1_over_k, delta_catch_a1_over_msy)
 
-delta_catch_per_stock_at_5_percent_a1 %>% 
+delta_catch_per_stock_at_10_percent_a1 %>% 
   mutate(m = as.factor(m)) %>% 
   select(stockid, m, r, e, e_over_e_msy,  range_size) %>% 
   pivot_longer(-c(stockid, m, r), names_to = c("x_var"), values_to = "x_val") %>% 
-  left_join(delta_catch_per_stock_at_5_percent_a1 %>% 
+  left_join(delta_catch_per_stock_at_10_percent_a1 %>% 
               mutate(delta_catch_a1 = delta_catch_a1/10^6) %>% 
               select(stockid, delta_catch_a1 , delta_catch_a1_over_k, delta_catch_a1_over_msy) %>% 
               pivot_longer(-c(stockid), names_to = c("y_var"), values_to = "y_val")) %>% 
@@ -955,33 +967,33 @@ delta_catch_per_stock_at_5_percent_a1 %>%
     strip.placement = "outside",
     plot.title.position = "plot"
   )+
-  labs(title = "Delta catch per stock at 5% optimal ocean protection", 
+  labs(title = "Delta catch per stock at 10% optimal ocean protection", 
        subtitle = "No displacement model")+
   scale_color_viridis_c()+
-  ggsave(filename = file.path(variant_dir, "diagnostic_plots_at_5_percent_a1.png"), height = 10, width = 12)
+  ggsave(filename = file.path(variant_dir, "diagnostic_plots_at_10_percent_a1.png"), height = 10, width = 12)
 ```
 
 ```{r}
-delta_catch_per_stock_at_5_percent_a2 <- delta_catch_per_stock_per_step_a2 %>% 
+delta_catch_per_stock_at_10_percent_a2 <- delta_catch_per_stock_per_step_a2 %>% 
   group_by(stockid) %>% 
-  slice(which.min(abs(fraction_protected - 0.05))) 
-  
+  slice(which.min(abs(fraction_protected - .1))) 
+
 stock_range_sizes <- ranked_rep_levels_a2 %>% 
   select(-x, -y, -cell_id, -delta, -pick_order, -is_mpa) %>% 
   summarize_all(~sum(.x > 0)) %>% 
   pivot_longer(everything(), names_to = "stockid", values_to = "range_size") %>% 
-  mutate(stockid = str_replace_all(stockid, "\\.", "-")) 
+  mutate(stockid = str_replace_all(stockid, "\\.", "-"))
 
-delta_catch_per_stock_at_5_percent_a2 <- delta_catch_per_stock_at_5_percent_a2 %>% 
+delta_catch_per_stock_at_10_percent_a2 <- delta_catch_per_stock_at_10_percent_a2 %>% 
   left_join(stock_range_sizes) %>% 
   select(stockid, m, r, k, e , e_msy, e_over_e_msy, range_size,  msy,
          f_protected_a2, delta_catch_a2, delta_catch_a2_over_k, delta_catch_a2_over_msy)
 
-delta_catch_per_stock_at_5_percent_a2 %>% 
+delta_catch_per_stock_at_10_percent_a2 %>% 
   mutate(m = as.factor(m)) %>% 
   select(stockid, m, r, e, e_over_e_msy,  range_size) %>% 
   pivot_longer(-c(stockid, m, r), names_to = c("x_var"), values_to = "x_val") %>% 
-  left_join(delta_catch_per_stock_at_5_percent_a2 %>% 
+  left_join(delta_catch_per_stock_at_10_percent_a2 %>% 
               mutate(delta_catch_a2 = delta_catch_a2/10^6) %>% 
               select(stockid, delta_catch_a2 , delta_catch_a2_over_k, delta_catch_a2_over_msy) %>% 
               pivot_longer(-c(stockid), names_to = c("y_var"), values_to = "y_val")) %>% 
@@ -1000,8 +1012,34 @@ delta_catch_per_stock_at_5_percent_a2 %>%
   labs(title = "Delta catch per stock at 5% optimal ocean protection", 
        subtitle = "Full displacement model")+
   scale_color_viridis_c()+
-  ggsave(filename = file.path(variant_dir, "diagnostic_plots_at_5_percent_a2.png"), height = 10, width = 12)
+  ggsave(filename = file.path(variant_dir, "diagnostic_plots_at_10_percent_a2.png"), height = 10, width = 12)
 ```
+
+```{r}
+delta_catch_per_stock_at_10_percent_a2 %>% 
+  mutate(m = as.factor(m)) %>% 
+  select(stockid, m, r, e_over_e_msy,  range_size) %>% 
+  pivot_longer(-c(stockid, m, r), names_to = c("x_var"), values_to = "x_val") %>% 
+  left_join(delta_catch_per_stock_at_10_percent_a2 %>% 
+              mutate(delta_catch_a2 = delta_catch_a2/10^6) %>% 
+              select(stockid, delta_catch_a2_over_k) %>% 
+              pivot_longer(-c(stockid), names_to = c("y_var"), values_to = "y_val")) %>% 
+  ggplot()+
+  geom_point(aes(x = x_val, y = y_val, col = r, shape = m))+
+  facet_grid(rows = vars(y_var), cols = vars(x_var), scales = 'free', switch ="both", 
+             labeller = labeller(x_var = c(e = "Exploitation rate", e_over_e_msy = "E/E_msy", range_size = "Range size"),
+                                 y_var = c(delta_catch_a2 = "Delta H", delta_catch_a2_over_k = "Delta catch / K", delta_catch_a2_over_msy = "Delta /MSY")))+
+  labs(x = "", y = "")+
+  theme(
+    aspect.ratio = 1,
+    strip.background = element_blank(),
+    strip.placement = "outside",
+    plot.title.position = "plot"
+  )+
+  scale_color_viridis_c()+
+    ggsave(filename = file.path(emLab_project_dir,"figures","supplement", "food_provision_diagnostic_plots_at_10_percent_a2.png"), height = 5, width = 7)
+```
+
 
 ```{r}
 delta_catch_per_stock_at_5_percent_a1 %>% 

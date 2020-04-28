@@ -651,6 +651,9 @@ global_bio_curve <- bio_benefit_curves %>%
          cell_id = bio_benefit_curves$cell_id,
          fraction_protected = cumsum(fraction_protected)) %>% 
   filter(fraction_protected > fraction_in_MPA)
+
+
+global_bio_curve %>% mutate(r = scales::rescale(V)) %>% slice(which.min(r - 0.9))
 ```
 
 ```{r}

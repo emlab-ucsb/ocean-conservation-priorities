@@ -838,7 +838,7 @@ How much catch would we lose with the top 20% of biodiversity?
 
 ```{r}
 read_csv(file.path(variant_dir, "co_benefits_biodiversity_a2.csv")) %>% 
-  slice(which.min(abs(fraction_protected - 0.2075)))
+  slice(which.min(abs(fraction_protected - 0.214)))
 ```
 
 ## Carbon priority

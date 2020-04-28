@@ -558,7 +558,7 @@ Ia_carbon_map <- abatable_impact_carbon_svr %>%
   geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
   my_theme_map()+
   labs(fill = "relative risk") %>% 
-  scale_fill_gradientn(colors  = pals::viridis(n = 30),
+  scale_fill_gradientn(colors  = pals::ocean.thermal(n = 30),
                         na.value = "white")
   
 Ia_carbon_hist <- abatable_impact_carbon_svr %>% 

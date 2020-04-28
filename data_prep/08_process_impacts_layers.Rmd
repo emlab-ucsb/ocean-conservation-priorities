@@ -369,7 +369,7 @@ log_Ia_map <- Ia_log %>%
   geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
   my_theme_map()+
   labs(title = "", fill = "") + 
-  scale_fill_gradientn(colors  = pals::viridis(n = 30),
+  scale_fill_gradientn(colors  = pals::ocean.thermal(n = 30),
                        na.value = "white")
 
 log_Ia_hist <- Ia_log %>% 
@@ -413,7 +413,7 @@ log_Iu_map <- Iu_log %>%
   geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
   my_theme_map()+
   labs(title = "", fill = "") + 
-  scale_fill_gradientn(colors  = pals::viridis(n = 30),
+  scale_fill_gradientn(colors  = pals::ocean.thermal(n = 30),
                        na.value = "white")
 
 log_Iu_hist <- Iu_log %>% 
@@ -448,7 +448,7 @@ diff_log_map <- diff_made_log %>%
   geom_sf(data = land_50_moll, fill = 'grey', col = 'grey', lwd = 0.1)+
   my_theme_map()+
   labs(title = "", fill = "") + 
-  scale_fill_gradientn(colors  = pals::viridis(n = 30),
+  scale_fill_gradientn(colors  = pals::ocean.thermal(n = 30),
                         na.value = "white")
   
 diff_log_hist <- diff_made_log %>% 
