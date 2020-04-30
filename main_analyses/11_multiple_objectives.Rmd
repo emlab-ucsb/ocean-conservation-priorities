@@ -22,6 +22,7 @@ library(foreach)
 library(doParallel)
 
 source(here::here("common.R"))
+source(here::here("functions", "map_priorities.R"))
 
 variant_name <- "11_multiple_objectives"
 
@@ -580,28 +581,15 @@ ranking_raster_a1 <- MPAs_df %>%
 writeRaster(ranking_raster_a1, 
             file.path(variant_dir, "ranking_raster_equal_weights_a1.tif"), 
             overwrite = T)
+```
 
-ranking_map_a1 <- tmap::tm_shape(ranking_raster_a1)+
-  tmap::tm_raster(title = "",
-                  palette  = viridis::viridis(n = 8),
-                  breaks = priorities_map_pal$breaks,
-                  labels = priorities_map_pal$labels,
-                  legend.is.portrait = T, 
-                  legend.reverse = T)+
-  tmap::tm_shape(land_50_moll)+
-  tmap::tm_fill(col = "grey", border.col = "transparent")+
-  tmap::tm_credits("Multi-objective, equal weights, no effort displacement") +
-  tmap::tm_shape(MPAs)+
-  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "lightblue", legend.show	= F)+
-  tmap::tm_layout(title = "Global Conservation Priorities",
-                  title.position = c("center", .95),
-                  inner.margins = c(0.12, 0, 0.08, 0.04), 
-                  frame = F,
-                  legend.position = c(.99, "center")) 
+```{r}
+ranking_raster_a1 <- raster(file.path(variant_dir, "ranking_raster_equal_weights_a1.tif"))
 
-tmap::tmap_save(ranking_map_a1, 
-                filename = file.path(variant_dir, "priority_map_equal_weights_a1.png"),
-                dpi = 300,  height = 4, width = 8 )
+map_priorities(ranking_raster_a1, discrete = T, mpas_raster = MPAs, caption = "Multi-objective, equal weights, no effort displacement",
+               ocean_df = ocean_matrix)+
+  ggsave(file.path(variant_dir, "priority_map_equal_weights_a1.png"),
+         dpi = 300,  height = 4, width = 8)
 ```
 
 ## Food assumption A2
@@ -741,6 +729,22 @@ tmap::tmap_save(ranking_map_a2,
                 filename = file.path(emLab_project_dir, "figures", "supplement", "multiobjective_priority_map_equal_weights_a2.png"),
                 dpi = 300,  height = 4, width = 8 )
 ```
+
+
+```{r}
+ranking_raster_a2 <- raster(file.path(variant_dir, "ranking_raster_equal_weights_a2.tif"))
+
+map_priorities(ranking_raster_a2, discrete = T, mpas_raster = MPAs, caption = "Multi-objective, equal weights, full effort displacement",
+               ocean_df = ocean_matrix)+
+  ggsave(file.path(variant_dir, "priority_map_equal_weights_a2.png"),
+         dpi = 300,  height = 4, width = 8)
+
+map_priorities(ranking_raster_a2, discrete = T, mpas_raster = MPAs, caption = "Multi-objective, equal weights, full effort displacement",
+               ocean_df = ocean_matrix)+
+  ggsave(file.path(emLab_project_dir, "figures", "supplement", "multiobjective_priority_map_equal_weights_a2.png"),
+         dpi = 300,  height = 4, width = 8)
+```
+
 
 # Tradeoffs
 

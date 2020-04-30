@@ -22,6 +22,7 @@ library(foreach)
 library(doParallel)
 
 source(here::here("common.R"))
+source(here::here("functions", "map_priorities.R"))
 
 variant_name <- "13_efficiency_curve"
 
@@ -335,91 +336,85 @@ get_optimal_raster <- function(ranking_raster, optimal_protection){
 
   return(optimal_raster)
 }
-
-map_optimal_raster <- function(optimal_raster, caption, land_raster = land_50_moll){
-  
-  optimal_map <- optimal_raster %>% 
-    tmap::tm_shape()+
-    tmap::tm_raster(title = "",
-                    palette = viridis::viridis(n = 8), 
-                    breaks = quantile(optimal_raster),
-                    labels = c("lowest","","","", "highest"),
-                    n = 20,
-                    style = "cont",
-                    legend.is.portrait = T, 
-                    legend.reverse = T)+
-    tmap::tm_shape(land_50_moll)+
-    tmap::tm_fill(col = "grey", border.col = "transparent")+
-    tmap::tm_shape(MPAs)+
-    tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "lightblue", legend.show	= F)+
-    tmap::tm_layout(title = "",
-                    title.position = c("left", .95),
-                    inner.margins = c(0.12, 0, 0.08, 0.04), 
-                    frame = F,
-                    legend.position = c(.99, "center"))
-  
-  tmap::tmap_save(optimal_map, 
-                  filename = file.path(emLab_project_dir, "figures", "supplement",  paste0("multiobjective_optim_map_",caption, ".png")),
-                  dpi = 300,  height = 4, width = 8 )
-  
-  
-}
 ```
 
 ## Cheapest way to 90% of biodviersity benefits
 
 ```{r}
-efficiency_curve %>% 
+cheapest_90_percent_bio_benefits <- efficiency_curve %>% 
   group_by(effort_assumption) %>% 
   slice(which.min(abs(bio_benefit - 0.9))) %>% 
   mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
-         caption =  paste0("cheapest_90_percent_bio_a", run_pattern, "x_bio_", round(fraction_protected, 2), "protected"),
          ranking_df = map(run_pattern, read_ranking_file),
-         ranking_raster = map(ranking_df, create_ranking_raster,MPAs_df = MPAs_df, ocean_df = ocean_matrix, ocean_raster = ocean_low_res_moll),
-         masked_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
-         optim_map = walk2(masked_raster, caption, .f = map_optimal_raster))
+         ranking_raster = map(ranking_df, create_ranking_raster, MPAs_df = MPAs_df, ocean_df = ocean_matrix, ocean_raster = ocean_low_res_moll),
+         optim_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
+         optim_map = map(optim_raster, .f = map_priorities,  mpas_raster = MPAs, ocean_df = ocean_matrix, discrete = T))
+
+cowplot::plot_grid(cheapest_90_percent_bio_benefits$optim_map[[1]],
+                   cheapest_90_percent_bio_benefits$optim_map[[2]],
+                   ncol = 1, labels = "auto")+
+    ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "multiobjective_optim_map_cheapest_90_percent_bio.png"),
+                  dpi = 300,  height = 7, width = 6)
 ```
 
 ## Max bio benefit at "zero costs"
 
 ```{r}
-efficiency_curve %>% 
+max_bio_at_zero_cost <- efficiency_curve %>% 
   group_by(effort_assumption) %>% 
   slice(which.min(abs(delta_catch - 0))) %>% 
   mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
-         caption =  paste0("max_bio_zero_delta_catch_a", run_pattern, "x_bio_", round(fraction_protected, 2), "protected"),
          ranking_df = map(run_pattern, read_ranking_file),
          ranking_raster = map(ranking_df, create_ranking_raster,MPAs_df = MPAs_df, ocean_df = ocean_matrix, ocean_raster = ocean_low_res_moll),
-         masked_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
-         optim_map = walk2(masked_raster, caption, .f = map_optimal_raster))
+         optim_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
+         optim_map = map(optim_raster, .f = map_priorities,  mpas_raster = MPAs, ocean_df = ocean_matrix, discrete = T))
+
+cowplot::plot_grid(max_bio_at_zero_cost$optim_map[[1]],
+                   max_bio_at_zero_cost$optim_map[[2]],
+                   ncol = 1, labels = "auto", label_fontface = "plain")+
+    ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "multiobjective_optim_map_max_bio_at_zero_cost.png"),
+                  dpi = 300,  height = 7, width = 6)
 ```
 
 ## Cheapest 30% of the ocean
 
 ```{r}
-efficiency_curve %>% 
+cheapest_30_percent_protection <- efficiency_curve %>% 
   group_by(effort_assumption) %>% 
   slice(which.min(abs(fraction_protected - 0.3))) %>% 
-    mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
-         caption =  paste0("cheapest_30_percent_ocean_protected_a", run_pattern, "x_bio_", round(fraction_protected, 2), "protected"),
+  mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
          ranking_df = map(run_pattern, read_ranking_file),
          ranking_raster = map(ranking_df, create_ranking_raster,MPAs_df = MPAs_df, ocean_df = ocean_matrix, ocean_raster = ocean_low_res_moll),
-         masked_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
-         optim_map = walk2(masked_raster, caption, .f = map_optimal_raster))
+         optim_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
+         optim_map = map(optim_raster, .f = map_priorities,  mpas_raster = MPAs, ocean_df = ocean_matrix, discrete = T))
+
+cowplot::plot_grid(cheapest_30_percent_protection$optim_map[[1]],
+                   cheapest_30_percent_protection$optim_map[[2]],
+                   ncol = 1, labels = "auto", label_fontface = "plain")+
+    ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "multiobjective_optim_map_cheapest_30_percent_protection.png"),
+                  dpi = 300,  height = 7, width = 6)
 ```
 
 ## Indiferent to biodiversity
 
 ```{r}
-efficiency_curve %>% 
+bio_indifferent <- efficiency_curve %>% 
   group_by(effort_assumption) %>% 
   slice(which.min(abs(bio_x_factor - 0))) %>% 
       mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
-         caption =  paste0("biodiversity_indifferent_a", run_pattern, "x_bio_", round(fraction_protected, 2), "protected"),
          ranking_df = map(run_pattern, read_ranking_file),
          ranking_raster = map(ranking_df, create_ranking_raster,MPAs_df = MPAs_df, ocean_df = ocean_matrix, ocean_raster = ocean_low_res_moll),
-         masked_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
-         optim_map = walk2(masked_raster, caption, .f = map_optimal_raster))
+         optim_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
+         optim_map = map(optim_raster, .f = map_priorities,  mpas_raster = MPAs, ocean_df = ocean_matrix, discrete = T))
+
+cowplot::plot_grid(bio_indifferent$optim_map[[1]],
+                   bio_indifferent$optim_map[[2]],
+                   ncol = 1, labels = "auto", label_fontface = "plain")+
+    ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "multiobjective_optim_map_biodiversity_indiferent.png"),
+                  dpi = 300,  height = 7, width = 6)
+
+(10.8 - 1.177)/9.82
+(11.16 - 0.718)/10.564
 ```
 
 ## biodiversity = food
@@ -429,30 +424,25 @@ bio_equals_food <- efficiency_curve %>%
   group_by(effort_assumption) %>% 
   slice(which.min(abs(bio_x_factor - 1))) %>% 
   mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
-         caption =  paste0("biodiversity_equals_food_a", run_pattern, "x_bio_", round(fraction_protected, 2), "protected"),
          ranking_df = map(run_pattern, read_ranking_file),
          ranking_raster = map(ranking_df, create_ranking_raster,MPAs_df = MPAs_df, ocean_df = ocean_matrix, ocean_raster = ocean_low_res_moll),
-         masked_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
-         optim_map = walk2(masked_raster, caption, .f = map_optimal_raster))
+         optim_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
+         optim_map = map(optim_raster, .f = map_priorities,  mpas_raster = MPAs, ocean_df = ocean_matrix, discrete = T))
+
+
+cowplot::plot_grid(bio_equals_food$optim_map[[1]],
+                   bio_equals_food$optim_map[[2]],
+                   ncol = 1, labels = "auto", label_fontface = "plain")+
+    ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "multiobjective_optim_map_bio_equals_food.png"),
+                  dpi = 300,  height = 7, width = 6)
+
+(10.18 - 1.177)/9.82
+(10.61 - 0.718)/10.564
 
 # bio_equals_food$masked_raster[bio_equals_food$effort_assumption == 2][[1]] %>%
 #   writeRaster(file.path(emLab_project_dir, "other-project-materials", "natgeo-magazine", "equal_weights_bio_and_food.tif"))
 ```
 
-## Two thirds biodiversity
-
-```{r}
-efficiency_curve %>% 
-  group_by(effort_assumption) %>% 
-  slice(which.min(abs(bio_benefit - 2/3))) %>% 
-  mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
-         caption =  paste0("two_thirds_bio_a", run_pattern, "x_bio_", round(fraction_protected, 2), "protected"),
-         ranking_df = map(run_pattern, read_ranking_file),
-         ranking_raster = map(ranking_df, create_ranking_raster,MPAs_df = MPAs_df, ocean_df = ocean_matrix, ocean_raster = ocean_low_res_moll),
-         masked_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
-         optim_map = walk2(masked_raster, caption, .f = map_optimal_raster))
-         
-```
 
 
 

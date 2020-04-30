@@ -19,6 +19,7 @@ library(tidyverse)
 library(patchwork)
 
 source(here::here("common.R"))
+source(here::here("functions", "map_priorities.R"))
 
 variant_name <- "06_carbon"
 
@@ -504,55 +505,15 @@ writeRaster(dv_raster,
 ```{r}
 ranking_raster_se <- raster(file.path(variant_dir, "ranking_raster_se.tif"))
 
-ranking_map_se <- tmap::tm_shape(ranking_raster_se)+
-  tmap::tm_raster(title = "",
-                  palette = viridis::viridis(n = 8),
-                  breaks = priorities_map_pal$breaks,
-                  labels = priorities_map_pal$labels,
-                  legend.is.portrait = T, 
-                  legend.reverse = T)+
-  tmap::tm_shape(land_50_moll)+
-  tmap::tm_fill(col = "grey", border.col = "transparent")+
-  tmap::tm_credits("Scorched earth") +
-  tmap::tm_shape(MPAs)+
-  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
-  tmap::tm_layout(title = "Carbon Conservation Priorities",
-                  title.position = c("center", .95),
-                  inner.margins = c(0.12, 0, 0.08, 0.04), 
-                  frame = F,
-                  legend.position = c(.99, "center")) 
-
-tmap::tmap_save(ranking_map_se, 
-                filename = file.path(variant_dir, "priority_map_se.png"),
-                dpi = 300,  height = 4, width = 8 )
-
-tmap::tmap_save(ranking_map_se, 
-                filename = file.path(emLab_project_dir, "figures", "supplement", "carbon_priorities_scorched_earth.png"),
-                dpi = 300,  height = 4, width = 8 )
+map_priorities(ranking_raster_se, discrete = T, mpas_raster = MPAs, caption = "Carbon, scorched Earth", ocean_df = ocean_matrix) +
+  ggsave(file.path(variant_dir, "priority_map_se.png"),
+         dpi = 300,  height = 4, width = 8)
 
 ranking_raster <- raster(file.path(variant_dir, "ranking_raster.tif"))
 
-ranking_map <- tmap::tm_shape(ranking_raster)+
-  tmap::tm_raster(title = "",
-                  palette  = viridis::viridis(n = 8),
-                  breaks = priorities_map_pal$breaks,
-                  labels = priorities_map_pal$labels,
-                  legend.is.portrait = T, 
-                  legend.reverse = T)+
-  tmap::tm_shape(land_50_moll)+
-  tmap::tm_fill(col = "grey", border.col = "transparent")+
-  tmap::tm_credits("With impacts") +
-  tmap::tm_shape(MPAs)+
-  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "#00A600FF", legend.show	= F)+
-  tmap::tm_layout(title = "Carbon Conservation Priorities",
-                  title.position = c("center", .95),
-                  inner.margins = c(0.12, 0, 0.08, 0.04), 
-                  frame = F,
-                  legend.position = c(.99, "center")) 
-
-tmap::tmap_save(ranking_map, 
-                filename = file.path(variant_dir, "priority_map.png"),
-                dpi = 300,  height = 4, width = 8 )
+map_priorities(ranking_raster, discrete = T, mpas_raster = MPAs, caption = "Carbon, with impacts", ocean_df = ocean_matrix) +
+  ggsave(file.path(variant_dir, "priority_map.png"),
+         dpi = 300,  height = 4, width = 8)
 ```
 
 ```{r}
@@ -665,189 +626,3 @@ benefit_curve %>%
   ungroup() %>% 
   mutate(f_cell = n_cells/sum(n_cells))
 ```
-
-## rescaled maps
-
-```{r}
-ranking_raster <- raster(file.path(variant_dir, "ranking_raster.tif"))
-  
-HS_MPAs_df <- MPAs %>% 
-  mask(hs_mask, mask_value = 0, updatevalue = NA) %>% 
-  raster::as.data.frame(xy = T) %>%
-  inner_join(ocean_matrix) %>% 
-  select(lon = x, lat = y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
-  as_tibble() 
-
-HS_carbon_ranking_df <- ranking_raster %>% 
-  mask(hs_mask, mask_value = 0, updatevalue = NA) %>% 
-  as.data.frame(xy = TRUE) %>% 
-  set_names(c("lon", "lat", "rank")) %>% 
-  filter(!is.na(rank)) %>% 
-  left_join(HS_MPAs_df) %>% 
-  mutate(rank = 100*rank)
-
-fraction_HS_protected <- length(HS_carbon_ranking_df$rank[!is.na(HS_carbon_ranking_df$mpa)])/length(HS_carbon_ranking_df$rank)
-
-min_HS_MPA_rank <- min(HS_carbon_ranking_df$rank[!is.na(HS_carbon_ranking_df$mpa)])
-
-HS_breaks <- sort(unique(c(0, 50, 60, 70, 80, 85, 90, 95, min_HS_MPA_rank, 100)))
-
-HS_labels <- HS_breaks[-1]
-
-HS_colors <- priorities_map_pal$colors
-HS_colors <- viridis::viridis(n = 8)
-
-HS_colors[HS_labels > min_HS_MPA_rank] <- "lightblue"
-
-HS_labels <- 100 - HS_labels
-
-HS_labels[HS_labels ==  (100-min_HS_MPA_rank)] <- " "
-
-HS_legend_key_widths <- tibble(r = as.numeric(as.character(HS_breaks[-1]/100)),
-                                  r_lag = lag(r)) %>% 
-  replace_na(list(r_lag = 0)) %>%
-  mutate(l = r - r_lag) %>% 
-  mutate(w = ifelse(r <= 0.7, l/0.7*0.2, l/0.3*0.4),
-         w1 = l*0.6) %>% pull(w1)
-
-HS_legend_key_widths[length(HS_legend_key_widths)] <- HS_legend_key_widths[length(HS_legend_key_widths)]/4
-
-HS_carbon_map <- HS_carbon_ranking_df %>% 
-  mutate(rank_cut = cut(rank,
-                        breaks = raster::quantile(HS_carbon_ranking_df$rank,
-                                                  probs = c(0.00, 0.20, 0.50 ,0.70, 0.80,0.85, 0.90, 0.95, 1 - fraction_HS_protected, 1.00)),
-                        labels = HS_labels,
-                        include.lowest = T)) %>% 
-  ggplot()+
-  geom_raster(aes(x = lon, y = lat, fill = rank_cut))+
-  geom_raster(data = HS_MPAs_df %>% 
-                filter(!is.na(mpa)), aes(x = lon, y = lat), fill = "lightblue")+
-  geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
-  scale_fill_manual(values  = HS_colors,
-                    guide = guide_legend(
-                      title = "Top % of the High Seas",
-                      direction = "horizontal",
-                      keyheight = unit(0.01, "npc"),
-                      keywidth = unit(rev(HS_legend_key_widths)/1.5, "npc"),
-                      title.position = 'top',
-                      title.hjust = 0.5,
-                      label.hjust = -.02,
-                      nrow = 1,
-                      byrow = T,
-                      reverse = T,
-                      label.position = "bottom"))+
-  theme(legend.text = element_text(size = 6),
-        legend.text.align = 0,
-        legend.position = "bottom",
-        axis.text.x = element_text(size = 6),
-        axis.text.y = element_text(size = 6),
-        axis.ticks = element_blank(),
-        axis.line = element_blank(),
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank(),
-        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
-        panel.grid.minor = element_blank(),
-        plot.background = element_rect(fill = NA, color = NA), 
-        panel.background = element_rect(fill = NA, color = NA), 
-        legend.background = element_rect(fill = NA, color = NA),
-        panel.border = element_blank())
-```
-
-```{r}
-EEZ_MPAs_df <- MPAs %>% 
-  mask(hs_mask, mask_value = 0, updatevalue = NA, inverse = T) %>% 
-  raster::as.data.frame(xy = T) %>%
-  inner_join(ocean_matrix) %>% 
-  select(lon = x, lat = y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
-  as_tibble() 
-
-EEZ_carbon_ranking_df <- ranking_raster %>% 
-  mask(hs_mask, mask_value = 0, updatevalue = NA, inverse = T) %>% 
-  as.data.frame(xy = TRUE) %>% 
-  set_names(c("lon", "lat", "rank")) %>% 
-  filter(!is.na(rank)) %>% 
-  left_join(EEZ_MPAs_df) %>% 
-  mutate(rank = 100*rank)
-
-fraction_EEZ_protected <- length(EEZ_carbon_ranking_df$rank[!is.na(EEZ_carbon_ranking_df$mpa)])/length(EEZ_carbon_ranking_df$rank)
-
-min_EEZ_MPA_rank <- min(EEZ_carbon_ranking_df$rank[!is.na(EEZ_carbon_ranking_df$mpa)])
-
-EEZ_breaks <- sort(unique(c(0, 50, 60, 70, 80, 85, 90, 95, min_EEZ_MPA_rank, 100)))
-
-EEZ_labels <- EEZ_breaks[-1]
-
-EEZ_colors <- priorities_map_pal$colors
-EEZ_colors <- viridis::viridis(n = 8)
-
-EEZ_colors[EEZ_labels > min_EEZ_MPA_rank] <- "lightblue"
-
-EEZ_labels <- 100 - EEZ_labels
-
-EEZ_labels[EEZ_labels ==  (100-min_EEZ_MPA_rank)] <- " "
-
-EEZ_legend_key_widths <- tibble(r = as.numeric(as.character(EEZ_breaks[-1]/100)),
-                                  r_lag = lag(r)) %>% 
-  replace_na(list(r_lag = 0)) %>%
-  mutate(l = r - r_lag) %>% 
-  mutate(w = ifelse(r <= 0.7, l/0.7*0.2, l/0.3*0.4),
-         w1 = l*0.6) %>% pull(w1)
-
-EEZ_legend_key_widths[length(EEZ_legend_key_widths)] <- 0.03*0.9
-EEZ_legend_key_widths[length(EEZ_legend_key_widths) -1] <- 0.03 - 0.03*0.9
-
-EEZ_carbon_map <- EEZ_carbon_ranking_df %>% 
-  mutate(rank_cut = cut(rank,
-                        breaks = raster::quantile(EEZ_carbon_ranking_df$rank,
-                                                  probs = c(0.00, 0.20, 0.50 ,0.70, 0.80,0.85, 0.90, 0.95, 1 - fraction_EEZ_protected, 1.00)),
-                        labels = EEZ_labels,
-                        include.lowest = T)) %>% 
-  ggplot()+
-  geom_raster(aes(x = lon, y = lat, fill = rank_cut))+
-  geom_raster(data = EEZ_MPAs_df %>% 
-                filter(!is.na(mpa)), aes(x = lon, y = lat), fill = "lightblue")+
-  geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
-  scale_fill_manual(values  = EEZ_colors,
-                    guide = guide_legend(
-                      title = "Top % of the Exclusive Economic Zones",
-                      direction = "horizontal",
-                      keyheight = unit(0.01, "npc"),
-                      keywidth = unit(rev(EEZ_legend_key_widths)/1.5, "npc"),
-                      title.position = 'top',
-                      title.hjust = 0.5,
-                      label.hjust = -.02,
-                      nrow = 1,
-                      byrow = T,
-                      reverse = T,
-                      label.position = "bottom"))+
-  theme(legend.text = element_text(size = 6),
-        legend.text.align = 0,
-        legend.position = "bottom",
-        axis.text.x = element_text(size = 6),
-        axis.text.y = element_text(size = 6),
-        axis.ticks = element_blank(),
-        axis.line = element_blank(),
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank(),
-        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
-        panel.grid.minor = element_blank(),
-        plot.background = element_rect(fill = NA, color = NA), 
-        panel.background = element_rect(fill = NA, color = NA), 
-        legend.background = element_rect(fill = NA, color = NA),
-        panel.border = element_blank())
-```
-
-```{r}
-carbon_eez_vs_hs_map <- EEZ_carbon_map + 
-  HS_carbon_map + 
-  plot_annotation(tag_levels = "a")+
-  plot_layout(ncol = 1) +
-  theme(plot.margin = grid::unit(c(0,0,0,0), "mm")) 
-
-ggsave(carbon_eez_vs_hs_map, filename = file.path(emLab_project_dir, "figures", "supplement", "carbon_eez_vs_hs.pdf"), dpi = 300,  height = 9, width = 8)
-ggsave(carbon_eez_vs_hs_map, filename = file.path(emLab_project_dir, "figures", "supplement", "carbon_eez_vs_hs.png"), dpi = 300,  height = 9, width = 8)
-```
-
-
-
-

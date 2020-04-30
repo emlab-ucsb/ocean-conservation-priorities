@@ -18,6 +18,7 @@ library(sf)
 library(tidyverse)
 
 source(here::here("common.R"))
+source(here::here("functions", "map_priorities.R"))
 
 variant_name <- "01_spp"
 
@@ -435,48 +436,19 @@ writeRaster(ranking_raster,
 ```
 
 ```{r}
-ranking_map_se <- tmap::tm_shape(ranking_raster_se)+
-  tmap::tm_raster(title = "",
-                  palette = priorities_map_pal$colors,
-                  breaks = priorities_map_pal$breaks,
-                  labels = priorities_map_pal$labels,
-                  legend.is.portrait = T, 
-                  legend.reverse = T)+
-  tmap::tm_shape(land_50_moll)+
-  tmap::tm_fill(col = "black", border.col = "transparent")+
-  tmap::tm_credits("spp, scorched Earth") +
-  tmap::tm_layout(title = "Biodiversity Conservation Priorities",
-                  title.position = c("center", .95),
-                  inner.margins = c(0.12, 0, 0.08, 0.04), 
-                  frame = F,
-                  legend.position = c(.99, "center")) 
+ranking_raster_se <- raster(file.path(variant_dir, "ranking_raster_se.tif"))
 
-tmap::tmap_save(ranking_map_se, 
-                filename = file.path(variant_dir, "priority_map_se.png"),
-                dpi = 300,  height = 4, width = 8 )
+map_priorities(ranking_raster_se, discrete = T, mpas_raster = NULL, caption = "spp, scorched Earth", 
+               ocean_df = ocean_matrix) +
+  ggsave(file.path(variant_dir, "priority_map_se.png"),
+         dpi = 300,  height = 4, width = 8)
 
-ranking_raster <- raster( file.path(variant_dir, "ranking_raster.tif"), 
-            overwrite = T)
+ranking_raster <- raster(file.path(variant_dir, "ranking_raster.tif"))
 
-ranking_map <- tmap::tm_shape(ranking_raster)+
-  tmap::tm_raster(title = "",
-                  palette  = priorities_map_pal$colors,
-                  breaks = priorities_map_pal$breaks,
-                  labels = priorities_map_pal$labels,
-                  legend.is.portrait = T, 
-                  legend.reverse = T)+
-  tmap::tm_shape(land_50_moll)+
-  tmap::tm_fill(col = "black", border.col = "transparent")+
-  tmap::tm_credits("spp, with impacts") +
-  tmap::tm_layout(title = "Biodiversity Conservation Priorities",
-                  title.position = c("center", .95),
-                  inner.margins = c(0.12, 0, 0.08, 0.04), 
-                  frame = F,
-                  legend.position = c(.99, "center")) 
-
-tmap::tmap_save(ranking_map, 
-                filename = file.path(variant_dir, "priority_map.png"),
-                dpi = 300,  height = 4, width = 8 )
+map_priorities(ranking_raster, discrete = T, mpas_raster = NULL, caption = "spp, with impacts", 
+               ocean_df = ocean_matrix) +
+  ggsave(file.path(variant_dir, "priority_map.png"),
+         dpi = 300,  height = 4, width = 8)
 ```
 
 ```{r}

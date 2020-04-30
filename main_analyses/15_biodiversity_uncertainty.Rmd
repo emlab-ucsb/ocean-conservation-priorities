@@ -240,21 +240,23 @@ write_rds(ranking,
 ```{r}
 plan(multiprocess)
 
-uncertainty_runs_results <- furrr::future_map_dfr(list.files( here::here("uncertainty_runs"), full.names = T),
-                                                  
-             .f = function(x){
-               
-               xx <- read_rds(x)
-               
-               MPAs_df %>% 
-                 filter(!is.na(mpa)) %>% 
-                 select(cell_id) %>% 
-                 bind_rows(xx) %>% 
-                 mutate(is_mpa = is.na(delta)) %>% 
-                 mutate(fraction_protected = 1/n(),
-                        fraction_protected = cumsum(fraction_protected)) %>% 
-                 select(cell_id, is_mpa, fraction_protected)
-             })
+uncertainty_runs_files <- list.files(file.path(emLab_project_dir, "data", "03_output", "15_biodiversity_uncertainty", "uncertainty_runs"),
+                                     full.names = T)
+
+uncertainty_runs_results <- furrr::future_map_dfr(uncertainty_runs_files,
+                                                  .f = function(x){
+                                                    
+                                                    xx <- read_rds(x)
+                                                    
+                                                    MPAs_df %>% 
+                                                      filter(!is.na(mpa)) %>% 
+                                                      select(cell_id) %>% 
+                                                      bind_rows(xx) %>% 
+                                                      mutate(is_mpa = is.na(delta)) %>% 
+                                                      mutate(fraction_protected = 1/n(),
+                                                             fraction_protected = cumsum(fraction_protected)) %>% 
+                                                      select(cell_id, is_mpa, fraction_protected)
+                                                  })
 
 
 # Load original model
@@ -268,6 +270,48 @@ og_results <- MPAs_df %>%
   mutate(fraction_protected = 1/n(),
          fraction_protected = cumsum(fraction_protected))
 ```
+
+## Uncertainty in top 5%
+
+```{r}
+# Calculate fraction of runs in top 5%
+og_top5_cells <- og_results %>% 
+  filter(fraction_protected <= 0.05) %>% 
+  pull(cell_id)
+
+uncertainty_raster_top5 <- uncertainty_runs_results %>% 
+  filter(cell_id %in% og_top5_cells) %>% 
+  group_by(cell_id) %>% 
+  summarise(fraction_in_top5 = sum(fraction_protected <= 0.05)/n()) %>% 
+  left_join(ocean_matrix) %>% 
+  select(x, y, fraction_in_top5) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll, method = 'ngb') %>% 
+  mask(ocean_low_res_moll)
+
+uncertainty_map_top5 <- tmap::tm_shape(uncertainty_raster_top5)+
+  tmap::tm_raster(title = "",
+                  palette  = viridis::viridis(n = 4, direction = 1),
+                  breaks = c(0, 0.75, 0.9, 0.95, 1),
+                  labels = c("<75", "75-90","90-95", ">95"),
+                  legend.is.portrait = T, 
+                  legend.reverse = T)+
+  tmap::tm_shape(land_50_moll)+
+  tmap::tm_fill(col = "grey", border.col = "transparent")+
+  tmap::tm_shape(MPAs)+
+  tmap::tm_credits("% of runs within top 5%")+
+  tmap::tm_raster(col = "fully_highly_protected_reviewed_MPAs", palette = "lightblue", legend.show	= F)+
+  tmap::tm_layout(title = "Biodiversity Conservation Priorities",
+                  title.position = c("center", .95),
+                  inner.margins = c(0.12, 0, 0.08, 0.04), 
+                  frame = F,
+                  legend.position = c(.99, "center"))
+
+tmap::tmap_save(uncertainty_map_top5, 
+                filename = file.path(variant_dir, "uncertainty_map_top5.png"),
+                dpi = 300,  height = 4, width = 8 )
+```
+
 
 ## Uncertainty in top 10%
 
