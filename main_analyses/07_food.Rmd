@@ -937,6 +937,8 @@ delta_catch_per_stock_at_10_percent_a1 %>%
 ```
 
 ```{r}
+delta_catch_per_stock_per_step_a2 <- read_rds(file.path(variant_dir, "delta_catch_per_stock_per_step_a2.rds"))
+
 delta_catch_per_stock_at_10_percent_a2 <- delta_catch_per_stock_per_step_a2 %>% 
   group_by(stockid) %>% 
   slice(which.min(abs(fraction_protected - .1))) 
@@ -990,7 +992,7 @@ delta_catch_per_stock_at_10_percent_a2 %>%
   ggplot()+
   geom_point(aes(x = x_val, y = y_val, col = r, shape = m))+
   facet_grid(rows = vars(y_var), cols = vars(x_var), scales = 'free', switch ="both", 
-             labeller = labeller(x_var = c(e = "Exploitation rate", e_over_e_msy = "E/E_msy", range_size = "Range size"),
+             labeller = labeller(x_var = c(e = "Exploitation rate", e_over_e_msy = "E/E_msy", range_size = "Geographic range"),
                                  y_var = c(delta_catch_a2 = "Delta H", delta_catch_a2_over_k = "Delta catch / K", delta_catch_a2_over_msy = "Delta /MSY")))+
   labs(x = "", y = "")+
   theme(
@@ -1000,7 +1002,8 @@ delta_catch_per_stock_at_10_percent_a2 %>%
     plot.title.position = "plot"
   )+
   scale_color_viridis_c()+
-    ggsave(filename = file.path(emLab_project_dir,"figures","supplement", "food_provision_diagnostic_plots_at_10_percent_a2.png"), height = 5, width = 7)
+    ggsave(filename = file.path(emLab_project_dir,"figures","supplement", "food_provision_diagnostic_plots_at_10_percent_a2.png"), 
+           height = 4)
 ```
 
 

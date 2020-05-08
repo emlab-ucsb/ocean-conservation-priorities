@@ -439,8 +439,15 @@ cowplot::plot_grid(bio_equals_food$optim_map[[1]],
 (10.18 - 1.177)/9.82
 (10.61 - 0.718)/10.564
 
-# bio_equals_food$masked_raster[bio_equals_food$effort_assumption == 2][[1]] %>%
-#   writeRaster(file.path(emLab_project_dir, "other-project-materials", "natgeo-magazine", "equal_weights_bio_and_food.tif"))
+bio_equals_food$optim_raster[bio_equals_food$effort_assumption == 1][[1]] %>% 
+  mask(MPAs, inverse = T) %>%
+  writeRaster(file.path(emLab_project_dir, "other-project-materials", "natgeo-magazine", "equal_weights_bio_and_food_a1.tif"), 
+               overwrite = TRUE)
+
+bio_equals_food$optim_raster[bio_equals_food$effort_assumption == 2][[1]] %>% 
+  mask(MPAs, inverse = T) %>% 
+  writeRaster(file.path(emLab_project_dir, "other-project-materials", "natgeo-magazine", "equal_weights_bio_and_food_a2.tif"),
+               overwrite = TRUE)
 ```
 
 

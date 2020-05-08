@@ -19,6 +19,8 @@ library(tidyverse)
 library(patchwork)
 
 source(here::here("common.R"))
+
+my_cols <- c("#e63946",  "#457b9d",   "#ED9B40")
 ```
 
 # Read MPAS
@@ -115,7 +117,8 @@ bio_curves_plot <- bio_curve_grouped_and_rescaled %>%
   scale_y_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
   expand_limits(y = c(0, 1.1),
                 x = c(0, 1))+
-  scale_color_manual(values = paletteer::paletteer_d("wesanderson::Darjeeling1", 3),
+  scale_color_manual(values = my_cols,
+                       #paletteer::paletteer_d("wesanderson::Darjeeling1", 3),
                      labels = c("Global", "EEZ", "High Seas"))+
   geom_rect(aes(xmin = 0, 
                 xmax = fraction_in_MPA, 
@@ -243,7 +246,8 @@ carbon_curves_plot <- carbon_curve %>%
   scale_y_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
   expand_limits(y = c(0, 1.1),
                 x = c(0, 1))+
-  scale_color_manual(values = paletteer::paletteer_d("wesanderson::Darjeeling1", 3),
+  scale_color_manual(values  = my_cols,
+                     #paletteer::paletteer_d("wesanderson::Darjeeling1", 3),
                      labels = c("Global", "EEZ", "High Seas"))+
   geom_rect(aes(xmin = 0, 
                 xmax = fraction_in_MPA, 
@@ -376,7 +380,8 @@ max_food <- max(food_curve$V)/10^6
     scale_y_continuous(expand = c(0,0), sec.axis = sec_axis(~ . *max_food, name = "MMT"))+
     expand_limits(y = c(0, 1.1),
                   x = c(0, 1))+
-    scale_color_manual(values = paletteer::paletteer_d("wesanderson::Darjeeling1", 3),
+    scale_color_manual(values = my_cols,
+                       #paletteer::paletteer_d("wesanderson::Darjeeling1", 3),
                        labels = c("Global", "EEZ", "High Seas"),
                        guide = guide_legend(keyheight = 1.5)
                       )+

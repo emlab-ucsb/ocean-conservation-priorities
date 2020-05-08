@@ -1,0 +1,259 @@
+---
+title: "Food provision in Juanation"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r, message = FALSE}
+library(raster)
+library(sf)
+library(tidyverse)
+library(patchwork)
+library(parallel)
+library(foreach)
+library(doParallel)
+source(here::here("common.R"))
+source(here::here("functions", "map_priorities.R"))
+
+variant_name <- "16_food_uncertainty"
+
+variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name)
+
+dir.create(variant_dir)
+```
+
+# Ranking inputs
+
+## Stock info
+
+```{r}
+stocks <- tibble(filename = list.files(file.path(emLab_project_dir, "data", "02_processed", "stock_distributions"),
+                                       full.names = T),
+                 stockid = str_remove(basename(filename), "\\.tif"))
+
+stocks_info <- read_csv(file.path(emLab_project_dir,"data", "02_processed", "food_provision", "MegaData_UncertaintyAnalysis.csv")) %>%
+  select(stockid, 
+         k = Kfin, 
+         m = m_fin,
+         ex_rate_bau1 = ExploitationRate_BAU1, 
+         ex_rate_oa_cons = ExploitationRate_OAcons,
+         ex_rate_all_msy = ExploitationRate_AllMSY,
+         ex_rate_efin_msy = ExploitationRate_EfinMSY,
+         ex_rate_worm_oa = ExploitationRate_WormOA,
+         ex_rate_worm_msy = ExploitationRate_WormMSY,
+         ln_r_mu, 
+         r_thorson, 
+         ln_r_sd,
+         r_fishbase,
+         stdev
+         )
+
+stocks_info <- stocks %>%
+  left_join(stocks_info)
+
+stocks_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "stocks_df.csv")) %>% 
+  as_tibble()
+
+stocks_info$ex_rate_bau1[stocks_info$ex_rate_bau1 >= 1] <- 0.99999
+stocks_info$ex_rate_all_msy[stocks_info$ex_rate_all_msy >= 1] <- 0.99999
+stocks_info$ex_rate_oa_cons[stocks_info$ex_rate_oa_cons >= 1] <- 0.99999
+stocks_info$ex_rate_worm_msy[stocks_info$ex_rate_worm_msy >= 1] <- 0.99999
+stocks_info$ex_rate_efin_msy[stocks_info$ex_rate_efin_msy >= 1] <- 0.99999
+stocks_info$ex_rate_worm_oa[stocks_info$ex_rate_worm_oa >= 1] <- 0.99999
+```
+
+## Normalize and trim
+
+```{r}
+features_matrix <- stocks_df %>%
+  select(-x,-y,-cell_id) %>% 
+  as.matrix()
+
+stopifnot(
+  sum(map_lgl(stocks_df %>%
+                select(-x,-y,-cell_id), is.numeric)) == ncol(features_matrix)
+  ) # ALL numeric?
+
+Norm_features_matrix <- sweep(features_matrix, 2, colSums(features_matrix, na.rm = T), FUN = "/")
+
+rownames(Norm_features_matrix) <- stocks_df$cell_id
+
+stopifnot(
+  sum(colSums(Norm_features_matrix, na.rm = T)) == ncol(features_matrix)
+  )  # Normalized OK?
+
+Norm_features_matrix <- Norm_features_matrix[rowSums(is.na(Norm_features_matrix)) != ncol(Norm_features_matrix), ]
+
+stopifnot(
+  identical(colnames(Norm_features_matrix), 
+          stocks_df %>% 
+            select(-x,-y,-cell_id) %>% 
+            colnames())
+  )  # Is the order of the features mantained?
+
+Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
+```
+
+## Current MPAs
+
+```{r}
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+  
+MPA_vect <- rownames(Norm_features_matrix) %>% 
+  enframe() %>% 
+  select(cell_id = value) %>% 
+  left_join(MPAs_df) %>% 
+  mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
+
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix))
+
+colnames(protected_cells) <- rownames(Norm_features_matrix)
+```
+
+```{r}
+save(Norm_features_matrix, protected_cells, stocks_info,  MPAs_df, fraction_in_MPA, MPAs,
+     file = file.path("food_uncertainty_inputs.RData"))
+```
+
+
+# Useful foos
+
+```{r}
+get_full_ranking <- function(ranking_df, mpas_df, ocean_df){
+  
+  full_ranking <- mpas_df %>% 
+    filter(!is.na(mpa)) %>% 
+    select(cell_id) %>% 
+    bind_rows(ranking_df) %>% 
+    mutate(is_mpa = is.na(delta))  %>% 
+    full_join(ocean_matrix) %>% 
+    replace(is.na(.), 0) 
+  
+  return(full_ranking)
+}
+
+get_ranked_features_df <- function(ranking_df, features_df){
+  
+  ranked_features_df <- ranking_df %>% 
+    left_join(features_df %>% 
+                as_tibble(rownames = NA) %>% 
+                rownames_to_column("cell_id")) %>% 
+    replace(is.na(.), 0) 
+  
+    return(ranked_features_df)
+
+}
+```
+
+# Ranking
+
+```{r}
+registerDoParallel()
+
+foreach(i = 1:5) %dopar%{
+  
+  source(here::here("functions", "food_provision_foos.R"))
+  
+  load("food_uncertainty_inputs.RData")
+  
+  baseline_state <- protected_cells%*%Norm_features_matrix
+  
+  unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
+  
+  protected_matrix <- Norm_features_matrix[protected_cells, ]
+  
+  ranking <- list()
+  
+  current_pick <- 0
+  
+  current_state <- baseline_state 
+  
+  k_run <- stocks_info$k*(1 - runif(nrow(stocks_info), -0.15, 0.15))
+  
+  m_run <- stocks_info$m
+  
+  e_run <-  stocks_info$ex_rate_bau1
+  
+  randomize_r <- function(r_thorson, thorson_mean, thorson_sd, r_fishbase, fishbase_sd){
+    ifelse(!is.na(r_thorson), 
+           rlnorm(1, meanlog = thorson_mean, sdlog = thorson_sd),
+           rnorm(1, mean = r_fishbase, sd = fishbase_sd))
+  }
+  
+  r_run <- purrr::pmap_dbl(.l = list(r_thorson = stocks_info$r_thorson,
+                                     thorson_mean = stocks_info$ln_r_mu, 
+                                     thorson_sd = stocks_info$ln_r_sd,
+                                     r_fishbase = stocks_info$r_fishbase,
+                                     fishbase_sd = stocks_info$stdev), 
+                           .f = randomize_r)
+  
+  
+  while(nrow(unprotected_matrix) > 0){
+    
+    current_pick <- sum(current_pick, 1)
+    
+    slopes <- estimate_catch_slopes(k_protected = current_state, 
+                                    e = e_run, m = m_run, r = r_run, k = k_run, effort_assumption = 2)
+    
+    delta <- unprotected_matrix%*%as.matrix(t(slopes))
+    
+    best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+    
+    best_cells <- delta[best_cell_indeces,] %>% 
+      enframe() %>% 
+      set_names(c('cell_id', "delta")) %>% 
+      mutate(pick_order = current_pick)
+    
+    ranking <- bind_rows(ranking, best_cells)
+    
+    current_state <- unprotected_matrix[best_cell_indeces, ] %>% 
+      colSums() +
+      current_state
+    
+    unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ]
+    
+  }
+  
+  ranked_features_df <- ranking %>% 
+    get_full_ranking(mpas_df = MPAs_df, ocean_df = ocean_matrix) %>% 
+    get_ranked_features_df(features_df = Norm_features_matrix)
+  
+  food_curve <- ranked_features_df %>% 
+    mutate_all(.funs = cumsum) %>% 
+    apply(MARGIN = 1, FUN = estimate_delta_catch,  e = e_run, m = m_run, r = r_run, k = k_run, effort_assumption = 2) %>% 
+    t() %>% 
+    rowSums() %>% 
+    enframe(name = NULtL, value = "delta_catch") %>% 
+    mutate(fraction_protected = 1/n(),
+           fraction_protected =  cumsum(fraction_protected),
+           iter = i)
+  
+  write_rds(food_curve,
+            file.path(variant_dir, paste0("food_curve_", i, ".rds")))
+  
+}
+```
+
+## Results
+
+```{r}
+runs <- map(list.files(path = variant_dir, pattern = "curve", full.names = T),
+    read_rds)
+```
+

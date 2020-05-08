@@ -74,7 +74,8 @@ overlap_map_90_percent <- overlap_raster_90_percent %>%
   ggplot()+
   geom_raster(aes(x = lon, y = lat, fill = as.factor(rank)))+
   geom_sf(data = land_50_moll, col = NA, fill = "grey")+
-  scale_fill_manual(values  = c(pals::brewer.ylgn(n = 3), "4" = "lightblue"),
+  scale_fill_manual(values  = c("#f5ee9e", "#f49e4c", "#ab3428", "lightblue"),
+                      #c(pals::brewer.ylgn(n = 3), "4" = "lightblue"),
                     labels = c("1", "2", "3", "MPAs"),
                     guide = guide_legend(
                       title = "Number of goals ",
@@ -151,7 +152,7 @@ multi_objective_curves_biodiversity_priority <- co_benefits_biodiversity %>%
   theme(axis.text = element_text(size = 8),
         axis.title = element_text(size = 10))+
   labs(y = "Conservation Benefit", x = "", col = "Objective")+
-  scale_color_manual(values = c("biodiversity" = "#22577A", "carbon" = "#EAC435", "food" = "#FF6700"),
+  scale_color_manual(values = c("biodiversity" = "#04395e", "carbon" = "#dab785", "food" = "#70a288"),
                      labels = c("Biodiversity", "Carbon", "Food"))+ 
   geom_rect(aes(xmin = 0, 
                 xmax = fraction_in_MPA, 
@@ -183,7 +184,8 @@ multi_objective_curves_carbon_priority <- co_benefits_carbon %>%
          panel.border = element_blank())+
   labs(y = "", x = "Fraction Ocean Protected", col = "")+
   scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1), breaks = c(0,0.25,0.5,0.75,1), limits = c(0,1))+
-  scale_color_manual(values = c("biodiversity" = "#22577A", "carbon" = "#EAC435", "food" = "#FF6700"),
+  scale_color_manual(#values = c("biodiversity" = "#22577A", "carbon" = "#EAC435", "food" = "#FF6700"),
+                     values = c("biodiversity" = "#04395e", "carbon" = "#dab785", "food" = "#70a288"),
                      labels = c("Biodiversity", "Carbon", "Food"))+ 
   geom_rect(aes(xmin = 0, 
                 xmax = fraction_in_MPA, 
@@ -208,7 +210,8 @@ multi_objective_curves_food_priority <- co_benefits_food %>%
         legend.key = element_rect(colour = "transparent", fill = "transparent"))+
   scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1), breaks = c(0,0.25,0.5,0.75,1), limits = c(0,1))+
   labs(y = "", x = "", col = "Objective")+
-  scale_color_manual(values = c("biodiversity" = "#22577A", "carbon" = "#EAC435", "food" = "#FF6700"),
+  scale_color_manual(values = c("biodiversity" = "#04395e", "carbon" = "#dab785", "food" = "#70a288"),
+                     #values = c("biodiversity" = "#22577A", "carbon" = "#EAC435", "food" = "#FF6700"),
                      labels = c("Biodiversity", "Carbon", "Food"))+ 
   geom_rect(aes(xmin = 0, 
                 xmax = fraction_in_MPA, 

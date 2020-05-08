@@ -54,10 +54,13 @@ efficiency_curve <- ggplot()+
                    y = 0, 
                    yend = max(efficiency_curve_data$delta_catch)/10^6 + 1.8),
                linetype = 2)+
-  geom_point(data = pts_of_interest, 
-             aes(x = 100*bio_benefit, y = delta_catch/10^6), shape = 17)+
-  ggrepel::geom_text_repel(data = pts_of_interest, 
-                           aes(x = 100*bio_benefit, y = delta_catch/10^6, label = label))+
+  # geom_point(data = pts_of_interest, 
+  #            aes(x = 100*bio_benefit, y = delta_catch/10^6), shape = 17, size = 1)+
+  ggrepel::geom_text_repel(data = pts_of_interest,
+                           aes(x = 100*bio_benefit, y = delta_catch/10^6, label = label),
+                           arrow = arrow(type = "closed", length = unit(0.1, "inches")),
+                           min.segment.length = 0, nudge_x = -5, nudge_y = -5,
+                           size	 = 5)+
   annotate("text", label = "Biodiversity weight", x = 50, y = max(efficiency_curve_data$delta_catch)/10^6 + 5, size = 4, colour = "Black")+
   annotate("text", label = "0", 
            x = 100*pts_of_interest$bio_benefit[pts_of_interest$bio_x_factor == 0], 
@@ -90,7 +93,7 @@ radar_plot_b <- pts_of_interest %>%
                    gridline.mid.colour	= "grey",
                    grid.label.size	= 3, 
                    group.line.width	= 1,
-                   axis.label.size = 3,
+                   axis.label.size = 4,
                    group.colours = "#046C99") +
   theme_minimal()
 
@@ -103,7 +106,7 @@ radar_plot_c <- pts_of_interest %>%
                    gridline.mid.colour	= "grey",
                    grid.label.size	= 3,
                    group.line.width	= 1,
-                   axis.label.size = 3,
+                   axis.label.size = 4,
                    group.colours = "#046C99") +
   theme_minimal()
 
@@ -116,9 +119,8 @@ radar_plot_d <- pts_of_interest %>%
                    gridline.mid.colour	= "grey",
                    grid.label.size	= 3,
                    group.line.width	= 1,
-                   axis.label.size = 3,
-                   group.colours = "#046C99") +
-  theme_minimal()
+                   axis.label.size = 4,
+                   group.colours = "#046C99")
 
 theme_radar <- theme(legend.position = 'none',
                      legend.margin = margin(0,0,0,0),
@@ -146,11 +148,11 @@ bottom_row <- plot_grid(radar_plot_b + theme_radar,
                         label_fontface = "plain",
                         ncol = 3)
 
-plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2.4,1),label_fontface = "plain" )+
+plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2,1),label_fontface = "plain" )+
   ggsave(file.path(emLab_project_dir, "figures", "main", "figure_3.pdf"),  dpi = 300,  height = 6, width = 8)
 
-plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2.4,1),label_fontface = "plain" )+
-  ggsave(file.path(emLab_project_dir, "figures", "main", "figure_3.png"),  dpi = 300,  height = 6, width = 8)
+plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2,1),label_fontface = "plain" )+
+  ggsave(file.path(emLab_project_dir, "figures", "main", "figure_3.png"),  dpi = 300,  height = 6, width = 9)
 ```
 
 
@@ -186,10 +188,11 @@ efficiency_curve <- ggplot()+
                    y = 0, 
                    yend = max(efficiency_curve_data$delta_catch)/10^6 + 1.8),
                linetype = 2)+
-  geom_point(data = pts_of_interest, 
-             aes(x = 100*bio_benefit, y = delta_catch/10^6), shape = 2)+
-  ggrepel::geom_text_repel(data = pts_of_interest, 
-                           aes(x = 100*bio_benefit, y = delta_catch/10^6, label = label))+
+  ggrepel::geom_text_repel(data = pts_of_interest,
+                           aes(x = 100*bio_benefit, y = delta_catch/10^6, label = label),
+                           arrow = arrow(type = "closed", length = unit(0.1, "inches")),
+                           min.segment.length = 0, nudge_x = -5, nudge_y = -5,
+                           size	 = 5)+
   annotate("text", label = "Biodiversity weight", x = 50, y = max(efficiency_curve_data$delta_catch)/10^6 + 5, size = 4, colour = "Black")+
   annotate("text", label = "0", 
            x = 100*pts_of_interest$bio_benefit[pts_of_interest$bio_x_factor == 0], 
@@ -222,7 +225,7 @@ radar_plot_b <- pts_of_interest %>%
                    gridline.mid.colour	= "grey",
                    grid.label.size	= 3, 
                    group.line.width	= 1,
-                   axis.label.size = 3,
+                   axis.label.size = 4,
                    group.colours = "#046C99") +
   theme_minimal()
 
@@ -235,7 +238,7 @@ radar_plot_c <- pts_of_interest %>%
                    gridline.mid.colour	= "grey",
                    grid.label.size	= 3,
                    group.line.width	= 1,
-                   axis.label.size = 3,
+                   axis.label.size = 4,
                    group.colours = "#046C99") +
   theme_minimal()
 
@@ -248,7 +251,7 @@ radar_plot_d <- pts_of_interest %>%
                    gridline.mid.colour	= "grey",
                    grid.label.size	= 3,
                    group.line.width	= 1,
-                   axis.label.size = 3,
+                   axis.label.size = 4,
                    group.colours = "#046C99") +
   theme_minimal()
 
@@ -278,10 +281,10 @@ bottom_row <- plot_grid(radar_plot_b + theme_radar,
                         label_fontface = "plain",
                         ncol = 3)
 
-plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2.4,1),label_fontface = "plain" )+
+plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2,1),label_fontface = "plain" )+
   ggsave(file.path(emLab_project_dir, "figures", "supplement", "efficiency_curve_a1.png"),  dpi = 300,  height = 6, width = 8)
 
-plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2.4,1),label_fontface = "plain" )+
+plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2,1),label_fontface = "plain" )+
   ggsave(file.path(emLab_project_dir, "figures", "supplement", "efficiency_curve_a1.pdf"),  dpi = 300,  height = 6, width = 8)
 ```
 
