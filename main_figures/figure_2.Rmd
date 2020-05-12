@@ -220,12 +220,13 @@ multi_objective_curves_food_priority <- co_benefits_food %>%
             fill = "lightblue", alpha = 1)
 
 a <- overlap_map_90_percent
-b <- (multi_objective_curves_biodiversity_priority | multi_objective_curves_carbon_priority | multi_objective_curves_food_priority) + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+b <- (multi_objective_curves_biodiversity_priority | multi_objective_curves_food_priority | multi_objective_curves_carbon_priority) + 
+  plot_layout(guides = "collect") & theme(legend.position = 'bottom')
 
-fig2 <- a /(b) + plot_layout(ncol = 1, heights = c(2,1)) + plot_annotation(tag_levels = "a")
+fig2 <- a /(b) + plot_layout(ncol = 1, heights = c(2.5,1)) + plot_annotation(tag_levels = "a")
 
-ggsave(fig2, filename = file.path(emLab_project_dir, "figures", "main", "figure_2.pdf"), dpi = 300,  height = 6, width = 8)
-ggsave(fig2, filename = file.path(emLab_project_dir, "figures", "main", "figure_2.png"), dpi = 300,  height = 6, width = 8)
+ggsave(fig2, filename = file.path(emLab_project_dir, "figures", "main", "figure_2.pdf"), dpi = 300,  height = 8, width = 8)
+ggsave(fig2, filename = file.path(emLab_project_dir, "figures", "main", "figure_2.png"), dpi = 300,  height = 8, width = 8)
 ```
 
 ```{r}

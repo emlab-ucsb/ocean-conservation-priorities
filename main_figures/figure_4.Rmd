@@ -260,14 +260,14 @@ stats_by_country <- bind_rows(bio_stats_by_country,
 
 stats_by_country <- stats_by_country %>% 
   mutate(continent = case_when(
-    iso3 == "ATF" ~ "Southern\nIslands",
-    iso3 == "SGS" ~ "Southern\nIslands",
-    iso3 == "HMD" ~ "Southern\nIslands",
-    iso3 == "ATA" ~ "Southern\nIslands",
+    iso3 == "ATF" ~ "Southern\nOcean",
+    iso3 == "SGS" ~ "Southern\nOcean",
+    iso3 == "HMD" ~ "Southern\nOcean",
+    iso3 == "ATA" ~ "Southern\nOcean",
     iso3 == "CHG" ~ "Asia",
     iso3 == "TAA" ~ "Europe",
     iso3 == "ASC" ~ "Europe",
-    iso3 == "BVT" ~ "Southern\nIslands",
+    iso3 == "BVT" ~ "Southern\nOcean",
     iso3 == "UMI" ~ "Oceania",
     iso3 == "CCK" ~ "Oceania",
     iso3 == "IOT" ~ "Europe",
@@ -337,289 +337,111 @@ stats_by_country$country[stats_by_country$iso3 == "GNQ"] <- "Eq. Guinea"
 stats_by_country$country[stats_by_country$iso3 == "ARE"] <- "UAE"
 
 stats_by_country$country[stats_by_country$iso3 == "CCK"] <- "Keeling Isl"
+
+stats_by_country$country[stats_by_country$iso3 == "PYF"] <- "PYF"
+
+stats_by_country$country[stats_by_country$iso3 == "CPV"] <- "CPV"
+
+stats_by_country$country[stats_by_country$iso3 == "GNB"] <- "GNB"
+
+stats_by_country$country[stats_by_country$iso3 == "GLP"] <- "GLP"
 ```
 
-# Most important countries 
+# Make propeller plots
 
 ```{r}
-# bio_top_countries <- stats_by_country %>% 
-#   filter(goal == "biodiversity") %>% 
-#   top_n(100, wt = (n_cells_top_20 - n_protected_cells)/n_ocean_cells_top_20) %>% 
-#   pull(country)
+make_propeller_plot <- function(stats_by_country, objective, top_n_countries){
+  
+  top_countries <- stats_by_country %>% 
+    filter(goal == objective) %>% 
+    ungroup() %>% 
+    top_n(top_n_countries, sum_delta_v_10_percent) %>% 
+    pull(country)
+  
+  plotting_data <- stats_by_country %>% 
+    filter(country %in% top_countries, goal == objective) %>% 
+    ungroup() %>% 
+    mutate(continent = factor(continent),
+           value = fraction_top_10 - fraction_protected) %>% 
+    select(country, continent, goal, value) %>% 
+    arrange(continent, value) %>% 
+    add_row(continent = rep(unique(stats_by_country$continent), 4)) %>% ## add a couple of empty rows to separate continents
+    arrange(continent) %>% 
+    rowid_to_column("id") 
+  
+  plotting_data <- plotting_data %>% 
+    mutate(angle = 90 - 360 * (id - 0.5) /nrow(plotting_data), # substract 0.5 cause the letter must have the angle of the center of the bars. Not right(1) or left (0)
+           hjust = ifelse(angle < -90, 1, 0),
+           angle = ifelse(angle < -90, angle+180, angle)) %>% 
+    ungroup()
+  
+  continent_breaks <- plotting_data %>% 
+    group_by(continent) %>% 
+    summarize(start = min(id), 
+              end = max(id) - 3) %>% 
+    rowwise() %>% 
+    mutate(title = mean(c(start, end))) %>% 
+    ungroup() %>% 
+    mutate(end = data.table::shift(end + 1, n = 1, type = "shift", fill = max(end) + 1),
+           start = start -1) 
+  
+  continent_breaks$start[continent_breaks$continent == "Africa"] <- -2
+  continent_breaks$end[continent_breaks$continent == "Africa"] <- 0
+  
+  max_value <- 100*max(plotting_data$value, na.rm = T)
+  
+  y_max <- 20 * ceiling(max_value/20)
+  
+  v <- c(20,40,60,80,100)
+  
+  continent_breaks <- continent_breaks %>% 
+    mutate(v = list(v)) %>% 
+    unnest()
+  
+  propeller_plot <- plotting_data %>% 
+    ggplot(aes(x = as.factor(id), y = 100*value, fill = continent))+
+    geom_col(width = 0.8) +
+    geom_segment(data = continent_breaks, 
+                 aes(x = end, y = v, xend = start, yend = v), colour = "grey", size=0.3 , inherit.aes = FALSE ) +
+    annotate("text",
+             x = rep(max(plotting_data$id[plotting_data$continent == "Americas"])-2, length(v)),
+             y = v -5, label = paste0(head(v), "%"), color = "grey", size = 4 , angle = 0, fontface = "bold", hjust = 0.7)+
+    ylim(-40, y_max)+ 
+    theme_minimal() +
+    coord_polar()+
+    theme(
+      legend.position = "none",
+      axis.text = element_blank(),
+      axis.title = element_blank(),
+      panel.grid = element_blank(),
+      plot.margin = unit(rep(0,4), "cm")
+    )+
+    geom_text(data = plotting_data, 
+              aes(x = id, y = y_max, label = country, hjust = hjust), 
+              color="black",  size = 4, angle = plotting_data$angle, inherit.aes = FALSE)+
+    geom_text(data = continent_breaks, 
+              aes(x = title, y = 48, label = continent),  colour = "black", alpha = 0.8, size = 5, fontface = "bold", inherit.aes = FALSE) +
+    theme_map()+
+    paletteer::scale_fill_paletteer_d(palette = "rcartocolor::Pastel")+
+    circle_theme 
+  
+  return(propeller_plot)
+  
+}
 
-bio_top_countries <- stats_by_country %>% 
-  filter(goal == "biodiversity") %>% 
-  ungroup() %>% 
-  top_n(100, sum_delta_v_10_percent) %>% 
-  pull(country)
-
-# carbon_top_countries <- stats_by_country %>% 
-#   filter(goal == "carbon") %>% 
-#   top_n(100, wt = (n_cells_top_20 - n_protected_cells)/n_ocean_cells_top_20) %>% 
-#   pull(country)
-
-carbon_top_countries <-stats_by_country %>% 
-  filter(goal == "carbon") %>% 
-  ungroup() %>% 
-  top_n(100, wt = sum_delta_v_10_percent) %>% 
-  pull(country)
-
-# food_top_countries <- stats_by_country %>% 
-#   filter(goal == "food") %>% 
-#   top_n(100, wt = (n_cells_top_20 - n_protected_cells)/n_ocean_cells_top_20) %>% 
-#   pull(country)
-
-food_top_countries <- stats_by_country %>% 
-  filter(goal == "food") %>% 
-  ungroup() %>% 
-  arrange(desc(sum_delta_v_10_percent)) %>% 
-  head(100) %>%
-  pull(country)
-```
-
-# Make plots
-
-## Biodiversity
-
-```{r}
-plotting_data <- stats_by_country %>% 
-  filter(country %in% bio_top_countries, goal == "biodiversity" ) %>% 
-  ungroup() %>% 
-  mutate(continent = factor(continent),
-         value = fraction_top_10 - fraction_protected) %>% 
-  select(country, continent, goal, value) %>% 
-  arrange(continent, value)
-
-plotting_data <- plotting_data %>% 
-  add_row(continent = rep(unique(plotting_data$continent), 3)) %>% 
-  arrange(continent) %>% 
-  rowid_to_column("id")
-
-label_data <- plotting_data %>%  
-  mutate(angle = 90 - 360 * (id - 0.5) /nrow(plotting_data)) %>% # I substract 0.5 because the letter must have the angle of the center of the bars. Not extreme right(1) or extreme left (0)
-  mutate(hjust = ifelse(angle < -90, 1, 0),
-         angle = ifelse(angle < -90, angle+180, angle))
-
-# prepare a data frame for base lines
-base_data <- plotting_data %>% 
-  group_by(continent) %>% 
-  summarize(start = min(id), 
-            end = max(id) - 3) %>% 
-  rowwise() %>% 
-  mutate(title = mean(c(start, end))) %>% 
-  ungroup()
-
-#base_data$hjust <- c(1, 0.7, 0 , 0, 0.4, 0.5)
-
-# prepare a data frame for grid (scales)
-grid_data <- base_data %>%
-  mutate(end = data.table::shift(end + 1, n = 1, type = "shift", fill = max(end) + 1),
-         start = start -1) %>% 
-  slice(-1)
-
-max_value <- 100*max(plotting_data$value, na.rm = T)
-
-y_max <- 20 * ceiling(max_value/20)
-
-#v <- seq(20, y_max, by = 20)
-v <- c(20,40,60,80,100)
-
-grid_data <- grid_data %>% 
-  mutate(v = list(v)) %>% 
-  unnest()
-
-propeller_bio_plot <- plotting_data %>% 
-  ggplot(aes(x = as.factor(id), y = 100*value, fill = continent))+
-  geom_col(width = 0.8) +
-  geom_segment(data = grid_data, 
-               aes(x = end, y = v, xend = start, yend = v), colour = "grey", size=0.3 , inherit.aes = FALSE ) +
-  annotate("text", 
-           x = rep(max(plotting_data$id), length(v)), 
-           y = v , label = paste0(head(v), "%"), color = "grey", size = 4 , angle = 0, fontface = "bold", hjust = 0.7)+
-  ylim(-40, y_max)+ 
-  theme_minimal() +
-  coord_polar()+
-  theme(
-    legend.position = "none",
-    axis.text = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank(),
-    plot.margin = unit(rep(0,4), "cm")
-  )+
-  geom_text(data = label_data, 
-            aes(x = id, y = y_max, label = country, hjust = hjust), 
-            color="black",  size = 4, angle = label_data$angle, inherit.aes = FALSE)+
-  geom_text(data = base_data, 
-            aes(x = title, y = 35, label = continent),  colour = "black", alpha = 0.8, size = 4, fontface = "bold", inherit.aes = FALSE) +
-  theme_map()+
-  paletteer::scale_fill_paletteer_d(palette = "rcartocolor::Pastel")+
-  circle_theme 
+propeller_bio_plot <- make_propeller_plot(stats_by_country = stats_by_country, objective = "biodiversity", top_n_countries = 100)
 
 ggsave(propeller_bio_plot, 
        filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_bio.png"), 
        dpi = 300,  height = 13, width = 13)
-```
 
-## Carbon
+make_propeller_plot(stats_by_country = stats_by_country, objective = "carbon", top_n_countries = 100) %>% 
+  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_carbon.png"), 
+         dpi = 300,  height = 13, width = 13)
 
-```{r}
-plotting_data <- stats_by_country %>% 
-  filter(country %in% carbon_top_countries, goal == "carbon" ) %>% 
-  ungroup() %>% 
-  mutate(continent = factor(continent),
-         value = fraction_top_10 - fraction_protected) %>% 
-  select(country, continent, goal, value) %>% 
-  arrange(continent, value)
-
-plotting_data <- plotting_data %>% 
-  add_row(continent = rep(unique(plotting_data$continent), 3)) %>% 
-  arrange(continent) %>% 
-  rowid_to_column("id")
-
-label_data <- plotting_data %>%  
-  mutate(angle = 90 - 360 * (id - 0.5) /nrow(plotting_data)) %>% # I substract 0.5 because the letter must have the angle of the center of the bars. Not extreme right(1) or extreme left (0)
-  mutate(hjust = ifelse(angle < -90, 1, 0),
-         angle = ifelse(angle < -90, angle+180, angle))
-
-# prepare a data frame for base lines
-base_data <- plotting_data %>% 
-  group_by(continent) %>% 
-  summarize(start = min(id), 
-            end = max(id) - 3) %>% 
-  rowwise() %>% 
-  mutate(title = mean(c(start, end))) %>% 
-  ungroup()
-
-#base_data$hjust <- c(1, 0.7, 0 , 0, 0.4, 0.5)
-
-# prepare a data frame for grid (scales)
-grid_data <- base_data %>%
-  mutate(end = data.table::shift(end + 1, n = 1, type = "shift", fill = max(end) + 1),
-         start = start -1) %>% 
-  slice(-1)
-
-max_value <- 100*max(plotting_data$value, na.rm = T)
-
-y_max <- 20 * ceiling(max_value/20)
-
-#v <- seq(20, y_max, by = 20)
-v <- c(20,40,60,80,100)
-
-grid_data <- grid_data %>% 
-  mutate(v = list(v)) %>% 
-  unnest()
-
-propeller_carbon_plot <- plotting_data %>% 
-  ggplot(aes(x = as.factor(id), y = 100*value, fill = continent))+
-  geom_col(width = 0.8) +
-  geom_segment(data = grid_data, 
-               aes(x = end, y = v, xend = start, yend = v), colour = "grey", size=0.3 , inherit.aes = FALSE ) +
-  annotate("text", 
-           x = rep(max(plotting_data$id), length(v)), 
-           y = v , label = paste0(head(v), "%"), color = "grey", size = 4 , angle = 0, fontface = "bold", hjust = 0.7)+
-  ylim(-40, y_max)+ 
-  theme_minimal() +
-  coord_polar()+
-  theme(
-    legend.position = "none",
-    axis.text = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank(),
-    plot.margin = unit(rep(0,4), "cm")
-  )+
-  geom_text(data = label_data, 
-            aes(x = id, y = y_max, label = country, hjust = hjust), 
-            color="black",  size = 4, angle = label_data$angle, inherit.aes = FALSE)+
-  geom_text(data = base_data, 
-            aes(x = title, y = 35, label = continent),  colour = "black", alpha = 0.8, size = 4, fontface = "bold", inherit.aes = FALSE) +
-  theme_map()+
-  paletteer::scale_fill_paletteer_d(palette = "rcartocolor::Pastel")+
-  circle_theme 
-
-ggsave(propeller_carbon_plot, 
-       filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_carbon.png"), 
-       dpi = 300,  height = 13, width = 13)
-```
-
-## Food
-
-```{r}
-plotting_data <- stats_by_country %>% 
-  filter(country %in% food_top_countries, goal == "food" ) %>% 
-  ungroup() %>% 
-  mutate(continent = factor(continent),
-         value = fraction_top_10 - fraction_protected) %>% 
-  select(country, continent, goal, value) %>% 
-  arrange(continent, value)
-
-plotting_data <- plotting_data %>% 
-  add_row(continent = rep(unique(plotting_data$continent), 3)) %>% 
-  arrange(continent) %>% 
-  rowid_to_column("id")
-
-label_data <- plotting_data %>%  
-  mutate(angle = 90 - 360 * (id - 0.5) /nrow(plotting_data)) %>% # I substract 0.5 because the letter must have the angle of the center of the bars. Not extreme right(1) or extreme left (0)
-  mutate(hjust = ifelse(angle < -90, 1, 0),
-         angle = ifelse(angle < -90, angle+180, angle))
-
-# prepare a data frame for base lines
-base_data <- plotting_data %>% 
-  group_by(continent) %>% 
-  summarize(start = min(id), 
-            end = max(id) - 3) %>% 
-  rowwise() %>% 
-  mutate(title = mean(c(start, end))) %>% 
-  ungroup()
-
-#base_data$hjust <- c(1, 0.7, 0 , 0, 0.4, 0.5)
-
-# prepare a data frame for grid (scales)
-grid_data <- base_data %>%
-  mutate(end = data.table::shift(end + 1, n = 1, type = "shift", fill = max(end) + 1),
-         start = start -1) %>% 
-  slice(-1)
-
-max_value <- 100*max(plotting_data$value, na.rm = T)
-
-y_max <- 20 * ceiling(max_value/20)
-
-#v <- seq(20, y_max, by = 20)
-v <- c(20,40,60,80,100)
-
-grid_data <- grid_data %>% 
-  mutate(v = list(v)) %>% 
-  unnest()
-
-propeller_food_plot <- plotting_data %>% 
-  ggplot(aes(x = as.factor(id), y = 100*value, fill = continent))+
-  geom_col(width = 0.8) +
-  geom_segment(data = grid_data, 
-               aes(x = end, y = v, xend = start, yend = v), colour = "grey", size=0.3 , inherit.aes = FALSE ) +
-  annotate("text", 
-           x = rep(max(plotting_data$id), length(v)), 
-           y = v , label = paste0(head(v), "%"), color = "grey", size = 4 , angle = 0, fontface = "bold", hjust = 0.7)+
-  ylim(-40, y_max)+ 
-  theme_minimal() +
-  coord_polar()+
-  theme(
-    legend.position = "none",
-    axis.text = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank(),
-    plot.margin = unit(rep(0,4), "cm")
-  )+
-  geom_text(data = label_data, 
-            aes(x = id, y = y_max, label = country, hjust = hjust), 
-            color="black",  size = 4, angle = label_data$angle, inherit.aes = FALSE)+
-  geom_text(data = base_data, 
-            aes(x = title, y = 35, label = continent),  colour = "black", alpha = 0.8, size = 4, fontface = "bold", inherit.aes = FALSE) +
-  theme_map()+
-  paletteer::scale_fill_paletteer_d(palette = "rcartocolor::Pastel")+
-  circle_theme 
-
-ggsave(propeller_food_plot, 
-       filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_food.png"), 
-       dpi = 300,  height = 13, width = 13)
+make_propeller_plot(stats_by_country = stats_by_country, objective = "food", top_n_countries = 100) %>% 
+  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_food.png"), 
+         dpi = 300,  height = 13, width = 13)
 ```
 
 # Efficiency loss
@@ -661,7 +483,7 @@ national_benefit_curve <- read_csv(file.path(emLab_project_dir, "data", "03_outp
   filter(fraction_protected > fraction_in_MPA)
 
 random_benefit_curves <- list.files(file.path(emLab_project_dir, "data", "03_output", "09_biodiversity_random", "random_runs"),
-                                    full.names = T) %>% 
+                                    full.names = T)[[1]] %>% 
   map(read_csv) %>% 
   reduce(bind_rows) %>% 
   filter(fraction_protected > fraction_in_MPA) %>% 
@@ -689,9 +511,9 @@ efficiency_plot <- ggplot()+
   theme_classic()+
   scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1), breaks = c(0,0.25,0.5,0.75,1), limits = c(0,1))+
   scale_y_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1), breaks = c(0,0.25,0.5,0.75,1))+
-  theme(axis.text = element_text(size = 12),
+  theme(axis.text = element_text(size = 14),
         axis.title = element_text(size = 14),
-        legend.text = element_text(size = 12),
+        legend.text = element_text(size = 14),
         plot.margin = margin(0, 5, 0, 5, "cm"))+
   expand_limits(y = c(0, 1.01),
                 x = c(0, 1.05))+
@@ -699,13 +521,15 @@ efficiency_plot <- ggplot()+
                      labels = c("Global", "National", "Random"))
 ```
 
+# Make Figure
+
 ```{r}
 fig_4 <- propeller_bio_plot + efficiency_plot + 
          plot_annotation(tag_levels = "a")+
-         plot_layout(ncol = 1, heights = c(2.6, 1)) 
+         plot_layout(ncol = 1, heights = c(4, 1)) 
 
-ggsave(fig_4, filename = file.path(emLab_project_dir, "figures", "main", "figure_4.png"), dpi = 300,  height = 11, width = 13)
+ggsave(fig_4, filename = file.path(emLab_project_dir, "figures", "main", "figure_4.png"), dpi = 300,  height = 10, width = 13)
 
-ggsave(fig_4, filename = file.path(emLab_project_dir, "figures", "main", "figure_4.pdf"), dpi = 300,  height = 12, width = 11)
+ggsave(fig_4, filename = file.path(emLab_project_dir, "figures", "main", "figure_4.pdf"), dpi = 300,  height = 10, width = 13)
 ```
 

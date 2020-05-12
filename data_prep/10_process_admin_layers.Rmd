@@ -39,7 +39,7 @@ MPAtlas_gdb_path <- file.path(emLab_shrd_data_dir, "mpa-atlas", "MPAtlas_2019091
 
 fc_list <- ogrListLayers(MPAtlas_gdb_path)
 
-print(fc_list)
+#print(fc_list)
 
 # Read the feature class
 
@@ -140,14 +140,18 @@ MPAs_to_add <- designated_fully_highly_protected_MPAs %>%
   st_set_geometry(NULL) %>% 
   filter(!mpa_id %in% implemented_MPA_ids,
          !mpa_id %in% MPAs_to_xclude)
+
+# c(68808472, 68808467, 68808466, 68808416, 68808415, 68808409, 15907, 14985, 14982, 12864, 9234, 737)
 ```
 
 ```{r}
-reviewed_fully_highly_protected_MPAs_raster_moll <- all_MPAs %>% 
+reviewed_fully_highly_protected_MPAs_moll <- all_MPAs %>% 
   filter((is_mpa == TRUE & status != "Proposed" & implemented == TRUE & protection_level %in% c("Full, High", "Full, High (Partially Zoned)")) | 
            mpa_id %in% MPAs_to_add$mpa_id | country == "GAB") %>% 
   filter(mpa_id != 68808627) %>% # remove Pacifico mexicano profundo
-  st_transform("+proj=moll") %>% 
+  st_transform("+proj=moll") 
+
+reviewed_fully_highly_protected_MPAs_raster_moll <- reviewed_fully_highly_protected_MPAs_moll %>% 
   fasterize::fasterize(ocean_low_res_moll) %>% 
   mask(ocean_low_res_moll)
 
@@ -172,11 +176,20 @@ writeRaster(reviewed_fully_highly_protected_MPAs_raster_moll,
 ```
 
 ```{r}
-reviewed_implemented_MPAs_raster_moll <- all_MPAs %>% 
+reviewed_implemented_MPAs_moll <- all_MPAs %>% 
   filter((is_mpa == TRUE & status != "Proposed" & implemented == TRUE) | 
            mpa_id %in% MPAs_to_add$mpa_id | country == "GAB") %>% 
   filter(mpa_id != 68808627) %>% # remove Pacifico mexicano profundo
-  st_transform("+proj=moll") %>% 
+  st_transform("+proj=moll") 
+
+# tmp_sf <- reviewed_implemented_MPAs_moll %>% 
+#   sf::st_simplify(preserveTopology = T, dTolerance = 1000000)
+# 
+# 
+# ggplot()+
+#   geom_sf(data = head(tmp_sf, 100), lwd = .2, fill = "transparent")
+
+reviewed_implemented_MPAs_raster_moll <- reviewed_implemented_MPAs_moll %>% 
   fasterize::fasterize(ocean_low_res_moll) %>% 
   mask(ocean_low_res_moll)
 

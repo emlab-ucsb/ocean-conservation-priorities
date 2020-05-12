@@ -18,6 +18,7 @@ library(sf)
 library(tidyverse)
 library(patchwork)
 
+source(here::here("functions", "map_priorities.R"))
 source(here::here("common.R"))
 
 variant_name <- "14_upgrade_weak_MPAs"
@@ -273,7 +274,7 @@ benefit_curve %>%
                 xmax = fraction_in_MPA, 
                 ymin = min(benefit_curve$V)/sum(feature_wts), 
                 ymax = max(benefit_curve$V)/sum(feature_wts)),
-                fill = "#69B578", alpha = 0.01)+
+                fill = "lightblue", alpha = 0.01)+
   ggsave(file.path(variant_dir, "benefit_curve.png"),
          width = 7, height = 4)
 ```
@@ -317,7 +318,7 @@ representation_curves %>%
                 xmax = fraction_in_MPA, 
                 ymin = 0,
                 ymax = 1),
-                fill = "#69B578", alpha = 0.01)+
+                fill = "lightblue", alpha = 0.01)+
   ggsave(file.path(variant_dir, "representation_curve.png"),
          width = 7, height = 5)
 ```
@@ -341,39 +342,20 @@ ranking_raster <- MPAs_df %>%
 writeRaster(ranking_raster, 
             file.path(variant_dir, "ranking_raster.tif"), 
             overwrite = T)
+
+map_priorities(ranking_raster, discrete = T, mpas_raster = MPAs, caption = "Biodiversity with all MPAs", ocean_df = ocean_matrix)+
+  ggsave(file.path(variant_dir, "priority_map.png"),
+         dpi = 300,  height = 4, width = 8)
 ```
 
-```{r}
-ranking_map <- tmap::tm_shape(ranking_raster)+
-  tmap::tm_raster(title = "",
-                  palette  = priorities_map_pal$colors,
-                  breaks = priorities_map_pal$breaks,
-                  labels = priorities_map_pal$labels,
-                  legend.is.portrait = T, 
-                  legend.reverse = T)+
-  tmap::tm_shape(land_50_moll)+
-  tmap::tm_fill(col = "black", border.col = "transparent")+
-  tmap::tm_credits("Biodiversity + MPAs, with impacts") +
-  tmap::tm_shape(MPAs)+
-  tmap::tm_raster(col = "reviewed_implemented_MPAs_all_protection_levels", palette = "#00A600FF", legend.show	= F)+
-  tmap::tm_layout(title = "Biodiversity Conservation Priorities",
-                  title.position = c("center", .95),
-                  inner.margins = c(0.12, 0, 0.08, 0.04), 
-                  frame = F,
-                  legend.position = c(.99, "center")) 
-
-tmap::tmap_save(ranking_map, 
-                filename = file.path(variant_dir, "priority_map.png"),
-                dpi = 300,  height = 4, width = 8 )
-```
 
 # Where would upgrading weak MPAs take us?
 
 ```{r}
 bio_benefit_curves_upgrade_MPAs <- read_rds(file.path(variant_dir, "benefit_curves.rds"))
 
-bio_benefit_curves_today_MPAs <- read_rds("~/Google Drive File Stream/Shared drives/emlab/projects/current-projects/ocean-conservation-priorities/data/03_output/05_spp_wts_smts_provs_MPAs/benefit_curves.rds")
-  
+bio_benefit_curves_today_MPAs <- read_rds(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "benefit_curves.rds"))
+
 bio_curve_upgrade <- bio_benefit_curves_upgrade_MPAs %>% 
   select(-cell_id) %>% 
   as.matrix() %*% as.matrix(feature_wts) %>% 
@@ -411,8 +393,8 @@ full_join(bio_curve_today %>%
   scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
   scale_y_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
   expand_limits(y = c(0, 1.1),
-                x = c(0, 1))
-    ggsave(filename = file.path(DIR_GCS, "Supplement/fig_upgraded_MPAs_bio_benefit.png"), 
+                x = c(0, 1))+
+    ggsave(filename = file.path(emLab_project_dir,"figures", "supplement", "upgrading_weak_MPAs_benefit_curves.png"), 
          dpi = 300,  height = 5, width = 8)
 ```
 
@@ -425,5 +407,53 @@ bio_curve_upgrade %>%
   filter(fraction_protected < fraction_in_MPA) %>% 
   slice(which.max(V_rescaled))
 ```
+
+## Map weak MPAS on top priorities
+
+```{r}
+MPAtlas_gdb_path <- file.path(emLab_shrd_data_dir, "mpa-atlas", "MPAtlas_20190910.gdb/")
+
+all_MPAs <- sf::st_read(dsn = MPAtlas_gdb_path, layer = "mpatlas_20190910_poly")
+
+MPAs_to_include <- c(68808472, 68808467, 68808466, 68808416, 68808415, 68808409, 15907, 14985, 14982, 12864, 9234, 737)
+
+reviewed_fully_highly_protected_MPAs_moll <- all_MPAs %>% 
+  filter((is_mpa == TRUE & status != "Proposed" & implemented == TRUE & protection_level %in% c("Full, High", "Full, High (Partially Zoned)")) | 
+           mpa_id %in% MPAs_to_include | country == "GAB") %>% 
+  filter(mpa_id != 68808627) %>% # remove Pacifico mexicano profundo
+  st_transform("+proj=moll") 
+
+reviewed_implemented_MPAs_moll <- all_MPAs %>% 
+  filter(mpa_id %in% MPAs_to_include |
+         country == "GAB" |
+         (is_mpa == TRUE & status != "Proposed" & implemented == TRUE)
+         ) %>% 
+  filter(!mpa_id %in% reviewed_fully_highly_protected_MPAs_moll$mpa_id) %>% 
+  filter(mpa_id != 68808627) %>% # remove Pacifico mexicano profundo
+  st_transform("+proj=moll") %>% 
+  sf::st_simplify(preserveTopology = T, dTolerance = 100)
+```
+
+
+```{r}
+bio_ranking_with_strong_mpas <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "ranking_raster.tif"))
+
+strong_mpas <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+top_20_priorities_and_weak_mpas <- bio_ranking_with_strong_mpas %>% 
+  mask(bio_ranking_with_strong_mpas > 0.8, maskvalue = 0) %>% 
+  map_priorities(discrete = T, mpas_raster = strong_mpas, caption = "", ocean_df = ocean_matrix)+
+  geom_sf(data = reviewed_implemented_MPAs_moll, lwd = .15, fill = "transparent", col = "red")+
+  geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)
+
+start <- Sys.time()
+top_20_priorities_and_weak_mpas+
+  ggsave(file.path(emLab_project_dir, "figures", "supplement","top_bio_priorities_and_weak_mpas.png"),
+         dpi = 300,  height = 4, width = 8)
+end <- Sys.time()
+end-start
+```
+
+
 
 
