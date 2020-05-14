@@ -205,134 +205,6 @@ bio_map <- bio_ranking_df %>%
         panel.border = element_blank())
 ```
 
-# Carbon
-
-```{r}
-carbon_benefit_curves <- read_rds(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "carbon_benefit.rds")) %>% 
-  mutate(cell_id = as.character(cell_id))
-
-carbon_curve <- carbon_benefit_curves %>% 
-  select(-cell_id) %>% 
-  rowSums() %>% 
-  as_tibble() %>% 
-  set_names("V") %>%
-  mutate(fraction_protected = 1/n(),
-         cell_id = carbon_benefit_curves$cell_id,
-         fraction_protected = cumsum(fraction_protected))
-
-carbon_curves_plot <- carbon_curve %>% 
-  mutate(percent_index = 1:nrow(carbon_curve) %/% 1,
-         percent_index = scales::rescale(percent_index),
-         V_rescaled = scales::rescale(V),
-         dV = V_rescaled - lag(V_rescaled),
-         in_EEZ = cell_id %in% eez_mask_df_moll$cell_id) %>% 
-  replace_na(list(dV = 0)) %>% 
-  group_by(percent_index) %>% 
-  summarise(V = sum(dV),
-            V_eez = sum(dV[in_EEZ], na.rm = T),
-            V_HS = sum(dV[!in_EEZ],na.rm = T)) %>% 
-  ungroup() %>% 
-  gather(var, value, -percent_index) %>% 
-  group_by(var) %>% 
-  mutate(cv = cumsum(value)) %>% 
-  filter(percent_index >= fraction_in_MPA) %>% 
-  ggplot()+
-  geom_line(aes(percent_index, cv, col = var))+
-  labs(x = "Fraction Ocean Protected",
-       y = "Carbon benefit",
-       col = "")+
-  theme_classic()+
-  scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
-  scale_y_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
-  expand_limits(y = c(0, 1.1),
-                x = c(0, 1))+
-  scale_color_manual(values  = my_cols,
-                     #paletteer::paletteer_d("wesanderson::Darjeeling1", 3),
-                     labels = c("Global", "EEZ", "High Seas"))+
-  geom_rect(aes(xmin = 0, 
-                xmax = fraction_in_MPA, 
-                ymin = 0,
-                ymax = 1),
-                fill = "lightblue", alpha = 1)
-```
-
-```{r}
-carbon_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster.tif"))
-
-carbon_ranking_df <- carbon_ranking %>% 
-  as.data.frame(xy = TRUE, centroids = T) %>% 
-  set_names(c("lon", "lat", "rank")) %>% 
-  mutate(rank = rank*100) %>% 
-  filter(!is.na(rank))
-
-min_global_MPA_rank <- carbon_ranking %>% 
-      mask(MPAs) %>% 
-      cellStats(function(x, ...) min(x, na.rm = T)) %>% 
-      as.numeric()
-
-global_breaks <- sort(unique(c(0, 50, 60, 70, 80, 85, 90, 95, 100*min_global_MPA_rank, 100)))
-
-global_labels <- global_breaks[-1]
-
-global_colors <- priorities_map_pal$colors
-
-global_colors <- viridis::viridis(n = 8)
-
-global_colors[global_labels > 100*min_global_MPA_rank] <- "lightblue"
-
-global_labels <- 100 - global_labels
-
-global_labels[global_labels ==  (100-100*min_global_MPA_rank)] <- " "
-
-#global_labels[global_labels == 100] <- ""
-
-global_legend_key_widths <- tibble(r = as.numeric(as.character(global_breaks[-1]/100)),
-                                  r_lag = lag(r)) %>% 
-  replace_na(list(r_lag = 0)) %>%
-  mutate(l = r - r_lag) %>% 
-  mutate(w = ifelse(r <= 0.7, l/0.7*0.2, l/0.3*0.4),
-         w1 = l*0.6) %>% pull(w1)
-
-carbon_map <- carbon_ranking_df %>% 
-  mutate(rank_cut = cut(rank, 
-                        breaks = global_breaks,
-                        labels = global_labels,
-                        include.lowest = T)) %>% 
-  ggplot()+
-  geom_raster(aes(x = lon, y = lat, fill = rank_cut))+
-  geom_raster(data = MPAs_df %>% 
-  filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
-  geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
-  scale_fill_manual(values  = global_colors,
-                    guide = guide_legend(
-                      title = "Top % of the Ocean",
-                      direction = "horizontal",
-                      keyheight = unit(0.01, "npc"),
-                      #keywidth = unit(rev(global_legend_key_widths), "npc"),
-                      title.position = 'top',
-                      title.hjust = 0.5,
-                      label.hjust = -.02,
-                      nrow = 1,
-                      byrow = T,
-                      reverse = T,
-                      label.position = "bottom"))+
-  theme(legend.text = element_text(size = 6),
-        legend.text.align = 0,
-        legend.position = "bottom",
-        axis.text.x = element_text(size = 6),
-        axis.text.y = element_text(size = 6),
-        axis.ticks = element_blank(),
-        axis.line = element_blank(),
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank(),
-        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
-        panel.grid.minor = element_blank(),
-        plot.background = element_rect(fill = NA, color = NA), 
-        panel.background = element_rect(fill = NA, color = NA), 
-        legend.background = element_rect(fill = NA, color = NA),
-        panel.border = element_blank())
-```
-
 # Food
 
 ```{r}
@@ -468,6 +340,137 @@ food_map <- food_ranking_df %>%
         legend.background = element_rect(fill = NA, color = NA),
         panel.border = element_blank())
 ```
+# Carbon
+
+```{r}
+carbon_benefit_curves <- read_rds(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "carbon_benefit.rds")) %>% 
+  mutate(cell_id = as.character(cell_id))
+
+carbon_curve <- carbon_benefit_curves %>% 
+  select(-cell_id) %>% 
+  rowSums() %>% 
+  as_tibble() %>% 
+  set_names("V") %>%
+  mutate(fraction_protected = 1/n(),
+         cell_id = carbon_benefit_curves$cell_id,
+         fraction_protected = cumsum(fraction_protected))
+
+carbon_curves_plot <- carbon_curve %>% 
+  mutate(percent_index = 1:nrow(carbon_curve) %/% 1,
+         percent_index = scales::rescale(percent_index),
+         V_rescaled = scales::rescale(V),
+         dV = V_rescaled - lag(V_rescaled),
+         in_EEZ = cell_id %in% eez_mask_df_moll$cell_id) %>% 
+  replace_na(list(dV = 0)) %>% 
+  group_by(percent_index) %>% 
+  summarise(V = sum(dV),
+            V_eez = sum(dV[in_EEZ], na.rm = T),
+            V_HS = sum(dV[!in_EEZ],na.rm = T)) %>% 
+  ungroup() %>% 
+  gather(var, value, -percent_index) %>% 
+  group_by(var) %>% 
+  mutate(cv = cumsum(value)) %>% 
+  filter(percent_index >= fraction_in_MPA) %>% 
+  ggplot()+
+  geom_line(aes(percent_index, cv, col = var))+
+  labs(x = "Fraction Ocean Protected",
+       y = "Carbon benefit",
+       col = "")+
+  theme_classic()+
+  theme(legend.text = element_text(size = 10),
+        legend.text.align = 0,
+        legend.position = "bottom")+
+  scale_x_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
+  scale_y_continuous(expand = c(0,0), labels = c(0,0.25,0.5,0.75,1))+
+  expand_limits(y = c(0, 1.1),
+                x = c(0, 1))+
+  scale_color_manual(values  = my_cols,
+                     #paletteer::paletteer_d("wesanderson::Darjeeling1", 3),
+                     labels = c("Global", "EEZ", "High Seas"))+
+  geom_rect(aes(xmin = 0, 
+                xmax = fraction_in_MPA, 
+                ymin = 0,
+                ymax = 1),
+            fill = "lightblue", alpha = 1)
+```
+
+```{r}
+carbon_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster.tif"))
+
+carbon_ranking_df <- carbon_ranking %>% 
+  as.data.frame(xy = TRUE, centroids = T) %>% 
+  set_names(c("lon", "lat", "rank")) %>% 
+  mutate(rank = rank*100) %>% 
+  filter(!is.na(rank))
+
+min_global_MPA_rank <- carbon_ranking %>% 
+      mask(MPAs) %>% 
+      cellStats(function(x, ...) min(x, na.rm = T)) %>% 
+      as.numeric()
+
+global_breaks <- sort(unique(c(0, 50, 60, 70, 80, 85, 90, 95, 100*min_global_MPA_rank, 100)))
+
+global_labels <- global_breaks[-1]
+
+global_colors <- priorities_map_pal$colors
+
+global_colors <- viridis::viridis(n = 8)
+
+global_colors[global_labels > 100*min_global_MPA_rank] <- "lightblue"
+
+global_labels <- 100 - global_labels
+
+global_labels[global_labels ==  (100-100*min_global_MPA_rank)] <- " "
+
+#global_labels[global_labels == 100] <- ""
+
+global_legend_key_widths <- tibble(r = as.numeric(as.character(global_breaks[-1]/100)),
+                                  r_lag = lag(r)) %>% 
+  replace_na(list(r_lag = 0)) %>%
+  mutate(l = r - r_lag) %>% 
+  mutate(w = ifelse(r <= 0.7, l/0.7*0.2, l/0.3*0.4),
+         w1 = l*0.6) %>% pull(w1)
+
+carbon_map <- carbon_ranking_df %>% 
+  mutate(rank_cut = cut(rank, 
+                        breaks = global_breaks,
+                        labels = global_labels,
+                        include.lowest = T)) %>% 
+  ggplot()+
+  geom_raster(aes(x = lon, y = lat, fill = rank_cut))+
+  geom_raster(data = MPAs_df %>% 
+  filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
+  geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
+  scale_fill_manual(values  = global_colors,
+                    guide = guide_legend(
+                      title = "Top % of the Ocean",
+                      direction = "horizontal",
+                      keyheight = unit(0.01, "npc"),
+                      #keywidth = unit(rev(global_legend_key_widths), "npc"),
+                      keywidth = unit(c(0.05, 0.05,rep(.1, 7))/1.7,"npc"),
+                      title.position = 'top',
+                      title.hjust = 0.5,
+                      label.hjust = -.02,
+                      nrow = 1,
+                      byrow = T,
+                      reverse = T,
+                      label.position = "bottom"))+
+  theme(legend.text = element_text(size = 6),
+        legend.text.align = 0,
+        legend.position = "bottom",
+        axis.text.x = element_text(size = 6),
+        axis.text.y = element_text(size = 6),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = NA, color = NA), 
+        panel.background = element_rect(fill = NA, color = NA), 
+        legend.background = element_rect(fill = NA, color = NA),
+        panel.border = element_blank())
+```
 
 # Make Figure
 
@@ -477,14 +480,14 @@ fig_1 <- bio_map + theme(legend.position = "none") +
                                   axis.title.x = element_blank(), 
                                   axis.title.y = element_text(size = 13),
                                   axis.text = element_text(size = 10)) +
-         carbon_map + theme(legend.position = "none") + 
-         carbon_curves_plot + theme(legend.position = "none", 
+         food_map + theme(legend.position = "none") + 
+         food_curves_plot + theme(legend.position = "none", 
                                     axis.title.x = element_blank(),
                                     axis.title.y = element_text(size = 13),
                                     axis.text = element_text(size = 10)) + 
-         food_map + theme(legend.text = element_text(size = 12), 
+         carbon_map + theme(legend.text = element_text(size = 12), 
                           legend.title = element_text(size = 13)) +
-         food_curves_plot + theme(legend.text = element_text(size = 13), 
+         carbon_curves_plot + theme(legend.text = element_text(size = 13), 
                                   axis.title.y = element_text(size = 13),
                                   axis.title.x = element_text(size = 13, vjust = 0.1),
                                   axis.text = element_text(size = 10))+

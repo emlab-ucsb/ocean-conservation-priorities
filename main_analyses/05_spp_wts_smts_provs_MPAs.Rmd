@@ -984,16 +984,28 @@ avg_rep_today %>%
 
 ```{r}
 rep_today_vs_future <- avg_rep_today %>% 
-  mutate(scenario = "today") %>% 
+  mutate(scenario = "Current") %>% 
   rename(rep = current_rep) %>% 
   bind_rows(avg_rep_top_20 %>% 
               rename(rep = rep_top_20) %>% 
-              mutate(scenario = "in top 20%")) 
+              mutate(scenario = "Protecting the most important 20% of the ocean")) 
  
 rep_means <- rep_today_vs_future %>% 
   group_by(scenario) %>% 
   summarize(mean_rep = mean(rep))
  
+
+rep_today_vs_future %>% 
+  ggplot()+
+  geom_histogram(aes(rep, fill = scenario),, show.legend = F)+
+  geom_vline(data = rep_means, 
+             aes(xintercept = mean_rep), col = "black", linetype ="dashed", size=1)+
+  facet_wrap("scenario", nrow = 2)+
+  scale_fill_brewer(palette="Dark2")+
+  labs(x = "Fraction in MPA", y = "Number of provinces", col =  "")+
+  ggsave(filename = file.path(emLab_project_dir, "figures","supplement","bio_provinces_representation_histogram.png"), 
+         dpi = 300,  height = 5, width = 8)
+
 rep_today_vs_future %>%   
   ggplot()+
   geom_density(aes(x = rep, y = ..scaled.., col = scenario), alpha = 0.3)+
