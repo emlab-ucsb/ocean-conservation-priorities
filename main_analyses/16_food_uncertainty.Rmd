@@ -20,6 +20,8 @@ library(patchwork)
 library(parallel)
 library(foreach)
 library(doParallel)
+library(furrr)
+
 source(here::here("common.R"))
 source(here::here("functions", "map_priorities.R"))
 
@@ -34,26 +36,34 @@ dir.create(variant_dir)
 
 ## Stock info
 
-```{r}
+```{r, eval = F}
 stocks <- tibble(filename = list.files(file.path(emLab_project_dir, "data", "02_processed", "stock_distributions"),
                                        full.names = T),
                  stockid = str_remove(basename(filename), "\\.tif"))
 
 stocks_info <- read_csv(file.path(emLab_project_dir,"data", "02_processed", "food_provision", "MegaData_UncertaintyAnalysis.csv")) %>%
-  select(stockid, 
-         k = Kfin, 
+  select(stockid,
+         k = Kfin,
          m = m_fin,
-         ex_rate_bau1 = ExploitationRate_BAU1, 
+         r = r_fin,
+         ex_rate_bau1 = ExploitationRate_BAU1,
          ex_rate_oa_cons = ExploitationRate_OAcons,
          ex_rate_all_msy = ExploitationRate_AllMSY,
          ex_rate_efin_msy = ExploitationRate_EfinMSY,
          ex_rate_worm_oa = ExploitationRate_WormOA,
          ex_rate_worm_msy = ExploitationRate_WormMSY,
-         ln_r_mu, 
-         r_thorson, 
+         ln_r_mu,
+         r_thorson,
          ln_r_sd,
          r_fishbase,
-         stdev
+         stdev,
+         is_managed = Manage,
+         f_status = Fstatus,
+         b_status = Bstatus,
+         e_manage = Emanage,
+         er = ER,
+         bvk_fin,
+         bk_2012 = BK2012
          )
 
 stocks_info <- stocks %>%
@@ -61,18 +71,11 @@ stocks_info <- stocks %>%
 
 stocks_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "stocks_df.csv")) %>% 
   as_tibble()
-
-stocks_info$ex_rate_bau1[stocks_info$ex_rate_bau1 >= 1] <- 0.99999
-stocks_info$ex_rate_all_msy[stocks_info$ex_rate_all_msy >= 1] <- 0.99999
-stocks_info$ex_rate_oa_cons[stocks_info$ex_rate_oa_cons >= 1] <- 0.99999
-stocks_info$ex_rate_worm_msy[stocks_info$ex_rate_worm_msy >= 1] <- 0.99999
-stocks_info$ex_rate_efin_msy[stocks_info$ex_rate_efin_msy >= 1] <- 0.99999
-stocks_info$ex_rate_worm_oa[stocks_info$ex_rate_worm_oa >= 1] <- 0.99999
 ```
 
 ## Normalize and trim
 
-```{r}
+```{r,  eval = F}
 features_matrix <- stocks_df %>%
   select(-x,-y,-cell_id) %>% 
   as.matrix()
@@ -98,13 +101,11 @@ stopifnot(
             select(-x,-y,-cell_id) %>% 
             colnames())
   )  # Is the order of the features mantained?
-
-Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
 ```
 
-## Current MPAs
+# Current MPAs
 
-```{r}
+```{r,  eval = F}
 MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
 
 MPAs_df <- MPAs %>% 
@@ -126,11 +127,19 @@ protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix))
 colnames(protected_cells) <- rownames(Norm_features_matrix)
 ```
 
-```{r}
-save(Norm_features_matrix, protected_cells, stocks_info,  MPAs_df, fraction_in_MPA, MPAs,
-     file = file.path("food_uncertainty_inputs.RData"))
+```{r,  eval = F}
+effective_cells <- ocean_matrix %>% 
+  filter(cell_id %in% (MPAs_df %>% filter(!is.na(mpa)) %>% pull(cell_id)) |
+           cell_id %in% rownames(Norm_features_matrix)) %>% 
+  pull(cell_id)
 ```
 
+```{r,  eval = F}
+Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
+
+save(Norm_features_matrix, protected_cells, stocks_info,  MPAs_df, fraction_in_MPA, MPAs, effective_cells,
+     file = file.path("food_uncertainty_inputs.RData"))
+```
 
 # Useful foos
 
@@ -161,12 +170,70 @@ get_ranked_features_df <- function(ranking_df, features_df){
 }
 ```
 
+```{r}
+recalculate_ex_rate <- function(scenario, is_managed, f_status, b_status, e_manage, er, r_run, bvk_fin, bk_2012){
+  
+  if(scenario == "ex_rate_bau1"){
+    
+    ex_rate_run <- if_else(is_managed | f_status >= 1 | b_status <= 1,
+                           if_else(e_manage != -1 & er > r_run,
+                                   r_run, 
+                                   if_else(e_manage != -1 & er <= r_run,
+                                           er,
+                                           (1 - bvk_fin)*r_run)),
+                           (1 - bk_2012)*r_run)
+    
+  } else if (scenario == "ex_rate_oa_cons"){
+    
+    ex_rate_run <- if_else(e_manage != -1 & er > r_run,
+                           r_run, 
+                           if_else(e_manage != -1 & er <= r_run,
+                                   er,
+                                   (1 - bvk_fin)*r_run))
+    
+  } else if (scenario == "ex_rate_all_msy"){
+    
+    ex_rate_run <- 0.5*r_run
+    
+  } else if (scenario == "ex_rate_efin_msy"){
+    
+    ex_rate_run <- if_else(!is_managed,
+                           if_else(e_manage != -1 & er > r_run,
+                                   r_run, 
+                                   if_else(e_manage != -1 & er <= r_run,
+                                           er,
+                                           (1 - bvk_fin)*r_run)),
+                           0.5*r_run)
+    
+  } else if (scenario == "ex_rate_worm_oa"){
+    
+    ex_rate_run <- if_else(e_manage != -1 & er > r_run,
+                           r_run, 
+                           if_else(e_manage != -1 & er <= r_run,
+                                   er, 
+                                   0.9*r_run))
+    
+  } else if (scenario == "ex_rate_worm_msy"){
+    
+    ex_rate_run <- if_else(e_manage != -1, 
+                           0.5*r_run, 
+                           0.9*r_run)
+    
+  }
+  
+  ex_rate_run[ex_rate_run >= 1] <- 0.99999999999999
+  
+  return(ex_rate_run)
+  
+}
+```
+
 # Ranking
 
 ```{r}
-registerDoParallel()
-
-foreach(i = 1:5) %dopar%{
+run_food_uncertainty <- function(e_var, step_size){
+  
+  foreach(i = 1:100) %dopar%{
   
   source(here::here("functions", "food_provision_foos.R"))
   
@@ -188,22 +255,26 @@ foreach(i = 1:5) %dopar%{
   
   m_run <- stocks_info$m
   
-  e_run <-  stocks_info$ex_rate_bau1
+  stocks_info <- stocks_info %>%
+    rowwise() %>%
+    mutate(r_run = ifelse(is.na(r_thorson),
+                          rnorm(1, mean = r_fishbase, sd = stdev),
+                          rlnorm(1, meanlog = ln_r_mu, sdlog = ln_r_sd)))
   
-  randomize_r <- function(r_thorson, thorson_mean, thorson_sd, r_fishbase, fishbase_sd){
-    ifelse(!is.na(r_thorson), 
-           rlnorm(1, meanlog = thorson_mean, sdlog = thorson_sd),
-           rnorm(1, mean = r_fishbase, sd = fishbase_sd))
-  }
+  r_run <- stocks_info$r_run
   
-  r_run <- purrr::pmap_dbl(.l = list(r_thorson = stocks_info$r_thorson,
-                                     thorson_mean = stocks_info$ln_r_mu, 
-                                     thorson_sd = stocks_info$ln_r_sd,
-                                     r_fishbase = stocks_info$r_fishbase,
-                                     fishbase_sd = stocks_info$stdev), 
-                           .f = randomize_r)
+  e_run <- recalculate_ex_rate(scenario = e_var,
+                               is_managed = stocks_info$is_managed,
+                               f_status = stocks_info$f_status,
+                               b_status = stocks_info$b_status,
+                               e_manage = stocks_info$e_manage,
+                               er = stocks_info$er,
+                               r_run = r_run,
+                               bvk_fin = stocks_info$bvk_fin,
+                               bk_2012 = stocks_info$bk_2012)
   
-  
+  e_run[e_run >= 1] <- 0.99999999999999
+
   while(nrow(unprotected_matrix) > 0){
     
     current_pick <- sum(current_pick, 1)
@@ -213,7 +284,7 @@ foreach(i = 1:5) %dopar%{
     
     delta <- unprotected_matrix%*%as.matrix(t(slopes))
     
-    best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+    best_cell_indeces <- doBy::which.maxn(delta, n = step_size)
     
     best_cells <- delta[best_cell_indeces,] %>% 
       enframe() %>% 
@@ -235,25 +306,105 @@ foreach(i = 1:5) %dopar%{
     get_ranked_features_df(features_df = Norm_features_matrix)
   
   food_curve <- ranked_features_df %>% 
+    select(-cell_id, -delta, -pick_order, -is_mpa, -x, -y) %>% 
     mutate_all(.funs = cumsum) %>% 
     apply(MARGIN = 1, FUN = estimate_delta_catch,  e = e_run, m = m_run, r = r_run, k = k_run, effort_assumption = 2) %>% 
     t() %>% 
     rowSums() %>% 
-    enframe(name = NULtL, value = "delta_catch") %>% 
+    enframe(name = NULL, value = "delta_catch") %>% 
     mutate(fraction_protected = 1/n(),
            fraction_protected =  cumsum(fraction_protected),
            iter = i)
   
-  write_rds(food_curve,
-            file.path(variant_dir, paste0("food_curve_", i, ".rds")))
+  results <- food_curve %>% 
+    dplyr::bind_cols(ranked_features_df %>% 
+                       select(cell_id, is_mpa)) %>% 
+    select(iter, cell_id, is_mpa, fraction_protected, delta_catch)
+
+  write_rds(results,
+            file.path("16_food_uncertainty", paste0("results_",e_var,"_run_", i, ".rds")))
   
-}
+  }
+  }
+```
+
+```{r}
+scenarios <- c("ex_rate_bau1", "ex_rate_all_msy", "ex_rate_oa_cons","ex_rate_efin_msy", "ex_rate_worm_oa", "ex_rate_worm_msy")
+
+registerDoParallel(70)
+
+start <- Sys.time()
+food_uncertainty <- tryCatch(purrr::map(.x = scenarios,
+                                        .f = run_food_uncertainty,
+                                        step_size = 100),
+                             error = function(e) print(e))
+end <- Sys.time()
+end-start
 ```
 
 ## Results
 
 ```{r}
-runs <- map(list.files(path = variant_dir, pattern = "curve", full.names = T),
-    read_rds)
+compile_results <- function(scenario){
+  
+  load("food_uncertainty_inputs.RData")
+  
+  runs<- map_dfr(list.files(path = "16_food_uncertainty", pattern = scenario, full.names = T),
+                 read_rds)
+  
+  results <- runs %>%
+    filter(!is_mpa,
+           cell_id %in% effective_cells) %>% 
+    group_by(iter) %>% 
+    mutate(delta_catch_current_mpa = first(delta_catch),
+           dH = delta_catch - delta_catch_current_mpa) %>% 
+    select(iter, fraction_protected, delta_catch, delta_catch_current_mpa, dH) 
+  
+  write_rds(results, file.path(variant_dir, paste0("results_", scenario, ".rds")))
+  
+  results %>% 
+    ggplot()+
+    geom_line(aes(x = fraction_protected, y = dH/10^6, group = iter))+
+    labs(caption = scenario, y = "Change in catch (MMT)", x = "Fraction of the Ocean protected") +
+    ggsave(file.path(variant_dir, paste0("curves_", scenario, ".png")))
+}
+
+
+registerDoParallel(6)
+
+process_results <- foreach(i = scenarios)%dopar%{
+  
+  t <- tryCatch(compile_results(i),
+                error = function(e) print(e))
+}
 ```
+
+```{r}
+calculate_mean_dH <- function(scenario, stat){
+  
+  results <- read_rds(file.path(variant_dir, paste0("results_", scenario, ".rds")))
+  
+  stats <- results %>% 
+    group_by(iter) %>% 
+    summarize(dH = max(dH)) %>% 
+    ungroup() %>% 
+    summarize(mean_dh = mean(dH),
+              median_dH = median(dH))
+  
+  if(stat == "mean"){
+    
+    return(stats$mean_dh)
+    
+  } else if(stat == "median"){
+    
+    return(stats$median_dH)
+  }
+  
+}
+
+tmp_df <- tibble(scenario = scenarios) %>% 
+  mutate(mean_dH =  map_dbl(.x = scenario, .f = calculate_mean_dH, stat = "mean"),
+         median_dH =  map_dbl(.x = scenario, .f = calculate_mean_dH,  stat = "median"))
+```
+
 
