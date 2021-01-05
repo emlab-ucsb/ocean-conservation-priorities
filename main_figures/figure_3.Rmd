@@ -91,7 +91,7 @@ radar_plot_b <- pts_of_interest %>%
   filter(label == "b") %>% 
   ggradar::ggradar(group.point.size = 2, 
                    gridline.mid.colour	= "grey",
-                   grid.label.size	= 3, 
+                   grid.label.size	= 4, 
                    group.line.width	= 1,
                    axis.label.size = 4,
                    group.colours = "#046C99") +
@@ -104,7 +104,7 @@ radar_plot_c <- pts_of_interest %>%
   filter(label == "c") %>% 
   ggradar::ggradar(group.point.size = 2, 
                    gridline.mid.colour	= "grey",
-                   grid.label.size	= 3,
+                   grid.label.size	= 4,
                    group.line.width	= 1,
                    axis.label.size = 4,
                    group.colours = "#046C99") +
@@ -117,7 +117,7 @@ radar_plot_d <- pts_of_interest %>%
   filter(label == "d") %>% 
   ggradar::ggradar(group.point.size = 2, 
                    gridline.mid.colour	= "grey",
-                   grid.label.size	= 3,
+                   grid.label.size	= 4,
                    group.line.width	= 1,
                    axis.label.size = 4,
                    group.colours = "#046C99")
