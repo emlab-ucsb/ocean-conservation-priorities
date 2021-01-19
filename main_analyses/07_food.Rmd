@@ -23,7 +23,7 @@ source(here::here("functions", "map_priorities.R"))
 
 variant_name <- "07_food"
 
-variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name)
+variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name, "ray")
 
 dir.create(variant_dir)
 ```
@@ -50,8 +50,13 @@ stocks <- tibble(filename = list.files(file.path(emLab_project_dir, "data", "02_
                                        full.names = T),
                  stockid = str_remove(basename(filename), "\\.tif"))
 
-stocks_info <- read_csv(file.path(emLab_project_dir,"data", "02_processed", "food_provision", "MegaData_UncertaintyAnalysis.csv")) %>%
-  select(stockid, k = Kfin, ex_rate = ExploitationRate_BAU1, m = m_fin, r = r_fin)
+# stocks_info <- read_csv(file.path(emLab_project_dir,
+#                                   "data", "02_processed", "food_provision", "MegaData_UncertaintyAnalysis.csv")) %>%
+#   select(stockid, k = Kfin, ex_rate = ExploitationRate_BAU1, m = m_fin, r = r_fin)
+
+stocks_info <- read_rds(file.path(emLab_project_dir,
+                                  "data", "02_processed", "food_provision", "MegaData_Ray.rds")) %>%
+    select(stockid, k = Kfin, ex_rate = ExploitationRate_BAU1_Ray, m = m_fin, r = r_fin)
 
 stocks_info <- stocks %>%
   left_join(stocks_info)
@@ -110,6 +115,7 @@ MPA_vect <- rownames(Norm_features_matrix) %>%
   mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
 ```
 
+
 # Load delta catch functions
 
 ```{r}
@@ -133,6 +139,12 @@ write_rds(Norm_features_matrix,
           file.path(variant_dir, "norm_matrix.rds"))
 ```
 
+```{r}
+stocks_info %>% 
+  mutate(bau = ex_rate*(m*k*(1 - 0)/(ex_rate*0 + m)*(1 - ex_rate*(1 - 0)*m/((ex_rate*0 + m)*r)))) %>% 
+  summarize(sum(bau))
+```
+
 ## Assumption 1: Effort goes away
 
 ```{r}
@@ -153,7 +165,11 @@ while(nrow(unprotected_matrix) > 0){
   current_pick <- sum(current_pick, 1)
   
   slopes <- estimate_catch_slopes(k_protected = current_state, 
-                                  e = stocks_info$ex_rate, m = stocks_info$m, r = stocks_info$r, k = stocks_info$k, effort_assumption = 1)
+                                  e = stocks_info$ex_rate, 
+                                  m = stocks_info$m, 
+                                  r = stocks_info$r, 
+                                  k = stocks_info$k, 
+                                  effort_assumption = 1)
   
   delta <- unprotected_matrix%*%as.matrix(t(slopes))
   
@@ -184,6 +200,7 @@ write_rds(ranking,
 
 ## Assumption 2: Effort is fully displaced
 
+
 ```{r}
 unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
 
@@ -202,7 +219,11 @@ while(nrow(unprotected_matrix) > 0){
   current_pick <- sum(current_pick, 1)
   
   slopes <- estimate_catch_slopes(k_protected = current_state, 
-                                  e = stocks_info$ex_rate, m = stocks_info$m, r = stocks_info$r, k = stocks_info$k, effort_assumption = 2)
+                                  e = stocks_info$ex_rate, 
+                                  m = stocks_info$m, 
+                                  r = stocks_info$r, 
+                                  k = stocks_info$k, 
+                                  effort_assumption = 2)
   
   delta <- unprotected_matrix%*%as.matrix(t(slopes))
   
@@ -540,14 +561,14 @@ ranking_diff_map <- ranking_diff %>%
   geom_raster(data = MPAs_df %>% 
                 filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
   geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
-  scale_fill_continuous_diverging(palette = "Blue-Red 3",
-                                  rev = T,
-                                  guide = guide_colorbar(title = "ranking difference (a1 - a2)",
-                                                         title.position = 'bottom',
-                                                         direction = "horizontal",
-                                                         title.hjust = 0.5,
-                                                         label.hjust = -.02,
-                                                         keywidth = 0.3))+
+  scale_fill_gradient2(low = "navy",
+                       high = "red",
+                      guide = guide_colorbar(title = "ranking difference (a1 - a2)",
+                                             title.position = 'bottom',
+                                             direction = "horizontal",
+                                             title.hjust = 0.5,
+                                             label.hjust = -.02,
+                                             keywidth = 0.3))+
   theme(legend.text = element_text(size = 6),
         legend.text.align = 0,
         legend.position = "bottom",
@@ -865,7 +886,7 @@ protection_and_delta_H_per_E_a2 %>%
 ```
 
 ```{r, eval = F}
-rm(list = ls()[!(ls() %in% c('delta_catch_per_stock_per_step_a1','delta_catch_per_stock_per_step_a2', "variant_dir"))])
+#rm(list = ls()[!(ls() %in% c('delta_catch_per_stock_per_step_a1','delta_catch_per_stock_per_step_a2', "variant_dir"))])
 
 delta_catch_per_stock_per_step_a1 %>% 
   mutate(e_over_e_msy = cut(e_over_e_msy, 
@@ -935,6 +956,7 @@ delta_catch_per_stock_at_10_percent_a1 %>%
   scale_color_viridis_c()+
   ggsave(filename = file.path(variant_dir, "diagnostic_plots_at_10_percent_a1.png"), height = 10, width = 12)
 ```
+
 
 ```{r}
 delta_catch_per_stock_per_step_a2 <- read_rds(file.path(variant_dir, "delta_catch_per_stock_per_step_a2.rds"))
@@ -1008,6 +1030,15 @@ delta_catch_per_stock_at_10_percent_a2 %>%
 
 
 ```{r}
+delta_catch_per_stock_at_5_percent_a1 <- delta_catch_per_stock_per_step_a1 %>% 
+  group_by(stockid) %>% 
+  slice(which.min(abs(fraction_protected - .05))) 
+
+delta_catch_per_stock_at_5_percent_a2 <- delta_catch_per_stock_per_step_a2 %>% 
+  group_by(stockid) %>% 
+  slice(which.min(abs(fraction_protected - .05))) 
+
+
 delta_catch_per_stock_at_5_percent_a1 %>% 
   ggplot()+
   geom_point(aes(x = e_over_e_msy, y = f_protected_a1, col = delta_catch_a1_over_k, size = delta_catch_a1/10^6))+
@@ -1030,4 +1061,3 @@ delta_catch_per_stock_at_5_percent_a2 %>%
   theme(plot.title.position = "plot")+
   ggsave(filename = file.path(variant_dir, "protection_per_stock_at_5_percent_a2.png"))
 ```
-

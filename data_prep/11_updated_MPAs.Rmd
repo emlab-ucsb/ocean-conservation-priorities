@@ -1,0 +1,96 @@
+---
+title: "Current highly protected MPAs"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r setup, message=F,warning=F}
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',message = FALSE, warning = FALSE)
+
+library(sf)
+library(raster)
+library(tidyverse)
+library(rgdal)
+
+source(here::here("common.R"))
+```
+
+```{r}
+ps_mpas <- sf::st_read(file.path(emLab_project_dir, "data", "01_raw", "ps_mpas", "PS_MPAs_allpolys.shp")) %>% 
+  rename(name = Name1)
+
+plot(ps_mpas)
+
+ps_mpas %>% st_drop_geometry()
+
+mpa_atlas <- sf::st_read(dsn = file.path(emLab_shrd_data_dir, "mpa-atlas", "MPAtlas_20190910.gdb/"),
+                         layer = "mpatlas_20190910_poly")
+
+updated_mpas <- sf::st_read(file.path(emLab_shrd_data_dir, "mpa-atlas", "MPAtlas_20200407", "mpatlas_20200407_FullCalcs.shp"))
+
+all_mpas_info <- mpa_atlas %>% 
+  st_drop_geometry()
+
+mpa_atlas %>% 
+  filter(country == "RUS") %>% 
+  sf::st_write("../ancillary_analyses/russias_mpas.gpkg")
+
+mpa_atlas %>% 
+  filter(mpa_id == "68808197") %>% 
+  plot()
+```
+
+Fix Palau's MPA in PS dataset
+
+```{r}
+# Need to fix the Palau MPA
+
+ps_mpas <- ps_mpas %>% 
+  filter(!name %in% c("Palau", "Malpelo", "Ross Sea", "Franz Josef Land	")) 
+
+ps_mpas %>% 
+  st_drop_geometry()
+ross_sea <- updated_mpas %>% 
+  filter(mpa_id %in% c(68813308, 68813307, 9047)) %>% 
+  group_by(wdpa_id) %>% 
+  summarize(name = "Ross Sea") %>% 
+  select(name)
+
+palau_n_malpelo <- updated_mpas %>% 
+  filter(mpa_id %in% c(3803, 68807606, 9049))%>%
+  select(name)
+
+ps_mpas <- ps_mpas %>% 
+  rbind(palau_n_malpelo) %>% 
+  rbind(ross_sea)
+
+sf::st_write(ps_mpas,
+             file.path(emLab_project_dir, "other-project-materials", "natgeo-magazine","ps_mpas.gpkg"), append = FALSE)
+```
+
+Get Highly or Fully protected MPAs
+
+```{r}
+mpas_to_include <- c(15907, 14985, 14982, 12864, 9234, 737, 9051, 68813326, 68807894)
+
+strong_mpas <- mpa_atlas %>% 
+  filter(!mpa_id %in% c(68808636, 68808627, 68808621, 15625)) %>% # remove Rapa, Pacifico Mexicano Profundo, Coral Sea
+  filter((is_mpa == TRUE & 
+            status != "Proposed" & 
+            implemented == TRUE &
+            protection_level %in% c("Full, High", "Full, High (Partially Zoned)"))
+         | mpa_id %in% mpas_to_include)
+
+sf::st_write(strong_mpas,
+             file.path(emLab_project_dir, "other-project-materials", "natgeo-magazine","strong_mpas.gpkg"), append = FALSE)
+```
+
+

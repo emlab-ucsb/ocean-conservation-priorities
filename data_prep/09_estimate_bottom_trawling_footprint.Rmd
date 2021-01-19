@@ -20,46 +20,88 @@ library(tidyverse)
 library(DBI)
 library(bigrquery)
 library(sf)
+library(connections)
 
 source(here::here("common.R"))
 ```
 
 ```{r}
-BQ_connection <-  dbConnect(bigquery(), 
+BQ_connection <-  dbConnect(bigquery(),
                             project = 'emlab-gcp',
                             dataset = "carbon_trawl",
                             billing = "emlab-gcp", # your billing account name
                             use_legacy_sql = FALSE) # specify we are using Standard SQL
 
-knitr::opts_chunk$set(connection = "BQ_connection")
+gfw_research <- connection_open(bigquery(),
+                                project = "world-fishing-827",  # Note how I connect to the GFW project
+                                dataset = "gfw_research",
+                                billing = "world-fishing-827",          # But the billing stays the same
+                                use_legacy_sql = FALSE,
+                                allowLargeResults = TRUE)
+
+#knitr::opts_chunk$set(connection = "BQ_connection")
+
+options(scipen = 20)
 ```
 
 # Vessels of interest
 
-```{sql, connection = "BQ_connection", output.var = "gfw_vessels", eval = F}
-SELECT
-  year,
-  ssvid,
-  ais_identity.n_shipname_mostcommon.value AS ship_name,
-  registry_info.best_known_imo AS imo,
-  registry_info.best_known_callsign AS callsign,
-  best.best_flag AS flag,
-  best.best_length_m AS length,
-  best.best_engine_power_kw AS engine_power,
-  best.best_vessel_class AS vessel_class,
-  activity.active_hours AS active_hours,
-  activity.fishing_hours AS fishing_hours,
-  activity.avg_depth_fishing_m AS avg_fishing_depth
-FROM
-  `world-fishing-827.gfw_research.vi_ssvid_byyear_v20200312` AS vessels
-INNER JOIN
-  `world-fishing-827.gfw_research.fishing_vessels_ssvid_v20200312` AS FILTER
-USING
-  (year, ssvid)
-WHERE
-  best.best_vessel_class IN ("trawlers", "dredge_fishing")
-  AND year > 2015
-  AND year < 2020
+```{r, eval = F}
+gfw_fishing_vessels <- tbl(gfw_research, "fishing_vessels_ssvid_v20200410")
+
+bad_mmsi <- tbl(gfw_research, "bad_mmsi") %>% 
+  collect() %>% 
+  unnest() %>% 
+  transmute(ssvid = as.character(ssvid)) 
+
+likely_gear <- tbl(gfw_research, "vi_ssvid_v20200410") %>% 
+  filter(on_fishing_list_best) %>% 
+  mutate(shipname_mostcommon = ais_identity$shipname_mostcommon$value) %>%
+  filter(REGEXP_CONTAINS(shipname_mostcommon, "(.*)([\\s]+[0-9]+%)$")|
+           REGEXP_CONTAINS(shipname_mostcommon, "[0-9].[0-9]V")|
+           REGEXP_CONTAINS(shipname_mostcommon, "[0-9]*\\ [0-9]V")|
+           REGEXP_CONTAINS(shipname_mostcommon, "(.*)[@]+([0-9]+V[0-9]?)$")|
+           REGEXP_CONTAINS(shipname_mostcommon, "BOUY")|
+           REGEXP_CONTAINS(shipname_mostcommon, "BUOY")|
+           REGEXP_CONTAINS(shipname_mostcommon, "NET MARK")|
+           REGEXP_CONTAINS(shipname_mostcommon, "NETMARK")|
+           REGEXP_CONTAINS(shipname_mostcommon, "^[0-9]*-[0-9]*$")|
+           REGEXP_CONTAINS(shipname_mostcommon, "NET FISHING")|
+           REGEXP_CONTAINS(shipname_mostcommon, "NETFISHING")) %>% 
+  select(ssvid) 
+
+nasty_ssvid <- tbl(gfw_research, "pipe_v20190502_segs") %>% 
+  filter(dist_avg_pos_sat_vessel_km > 3000,
+         sat_positions_known > 5,
+         first_timestamp < TIMESTAMP("2018-12-31"),
+         last_timestamp > TIMESTAMP("2016-01-01")) %>% 
+  group_by(ssvid) %>% 
+  summarize(positions = sum(positions, na.rm = T)) %>% 
+  ungroup() %>% 
+  filter(positions > 50) %>% 
+  select(ssvid)
+
+gfw_trawlers <- tbl(gfw_research, "vi_ssvid_byyear_v20200410") %>% 
+  filter(on_fishing_list_best &
+           best$best_vessel_class %in% c("trawlers", "dredge_fishing") & 
+           year > 2015 &
+           year < 2020) %>% 
+  filter(!ssvid %in% !!bad_mmsi$ssvid) %>% 
+  mutate(ship_name = ais_identity$n_shipname_mostcommon$value,
+         imo = registry_info$best_known_imo,
+         callsign = registry_info$best_known_callsign,
+         flag = best$best_flag,
+         length = best$best_length_m,
+         engine_power = best$best_engine_power_kw,
+         vessel_class = best$best_vessel_class,
+         active_hours = activity$active_hours,
+         fishing_hours = activity$fishing_hours,
+         avg_fishing_depth = activity$avg_depth_fishing_m) %>% 
+  select(year, ssvid, ship_name, imo, callsign, flag, length, engine_power, vessel_class, active_hours, fishing_hours, avg_fishing_depth) %>% 
+  inner_join(gfw_fishing_vessels) %>% 
+  anti_join(full_join(nasty_ssvid, 
+                      likely_gear)) %>% 
+  collect()
 ```
 
 # Refine gear type
@@ -104,16 +146,16 @@ WHERE
 ```
 
 ```{r, eval = F}
-write_rds(gfw_vessels, file.path(emLab_project_dir, "data", "02_processed","impacts", "bottom_trawling", "gfw_vessels.rds"))
-write_rds(CCAMLR_OTM, file.path(emLab_project_dir, "data", "02_processed","impacts", "bottom_trawling", "gfw_CCAMLR_vessels.rds"))
-write_rds(EU_gear_types, file.path(emLab_project_dir, "data", "02_processed","impacts", "bottom_trawling", "gfw_EU_vessels.rds"))
+write_rds(gfw_trawlers, file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling","gfw_trawlers.rds"))
+write_rds(CCAMLR_OTM, file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "gfw_CCAMLR_vessels.rds"))
+write_rds(EU_gear_types, file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "gfw_EU_vessels.rds"))
 ```
 
 ## join lists
 
 ```{r}
-gfw_vessels <- read_rds(file.path(emLab_project_dir, "data", "02_processed","impacts", "bottom_trawling", "gfw_vessels.rds"))
-CCAMLR_OTM <- read_rds(file.path(emLab_project_dir, "data", "02_processed","impacts", "bottom_trawling", "gfw_CCAMLR_vessels.rds"))
+gfw_trawlers <- read_rds(file.path(emLab_project_dir, "data", "02_processed","impacts", "bottom_trawling","gfw_trawlers.rds"))
+CCAMLR_OTM <- read_rds(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling","gfw_CCAMLR_vessels.rds"))
 EU_gear_types <- read_rds(file.path(emLab_project_dir, "data", "02_processed","impacts", "bottom_trawling", "gfw_EU_vessels.rds"))
 ```
 
@@ -139,7 +181,7 @@ EU_gear_group <- EU_gear_types %>%
 If there is no gear group we assume they are otter trawls as they are the most common. We also remove all midwater trawlers. 
 
 ```{r}
-vessels_of_interest <- gfw_vessels %>% 
+vessels_of_interest <- gfw_trawlers %>% 
   left_join(EU_gear_group) %>% 
   mutate(gear_group = case_when(
     !is.na(gear_group) ~ gear_group,
@@ -188,254 +230,165 @@ DBI::dbWriteTable(conn = BQ_connection,
                   name = "ssvid_of_interest",
                   value = vessels_of_interest[c("year", "ssvid", "gear_group", "gear_width")],
                   fields = as_bq_fields(vessels_of_interest[c("year", "ssvid", "gear_group", "gear_width")]),
-                  overwrite = F
-                  )
+                  overwrite = T)
 ```
 
-# Effort
-
-```{sql, connection = "BQ_connection", output.var = "binned_effort_by_ssvid", eval = F}
-WITH
-  --------------------------------------------------------
-  -- Use a slightly more agressive filter for good segments
-  --------------------------------------------------------
-  good_segments AS (
-  SELECT
-    seg_id
-  FROM
-    `world-fishing-827.gfw_research.pipe_production_v20190502_segs` 
-  WHERE
-    good_seg
-    AND positions > 10
-    AND NOT overlapping_and_short ),
-  --------------------------------------------------------
-  -- Likely gear
-  -------------------------------------------------------
-  likely_gear AS (
-  SELECT
-    ssvid
-  FROM
-    `world-fishing-827.gfw_research.vi_ssvid_v20190430`
-  WHERE 
-   REGEXP_CONTAINS(ais_identity.shipname_mostcommon.value, r"(.*)([\\s]+[0-9]+%)$")
-    OR REGEXP_CONTAINS(ais_identity.shipname_mostcommon.value, r"[0-9].[0-9]V")
-    OR REGEXP_CONTAINS(ais_identity.shipname_mostcommon.value, r"[0-9]*\\ [0-9]V")
-    OR REGEXP_CONTAINS(ais_identity.shipname_mostcommon.value, r"(.*)[@]+([0-9]+V[0-9]?)$")
-    OR REGEXP_CONTAINS(ais_identity.shipname_mostcommon.value, r"BOUY")
-    OR REGEXP_CONTAINS(ais_identity.shipname_mostcommon.value, r"BUOY")
-    OR REGEXP_CONTAINS(ais_identity.shipname_mostcommon.value, r"NET MARK")
-    OR REGEXP_CONTAINS(ais_identity.shipname_mostcommon.value, r"NETMARK")
-    OR REGEXP_CONTAINS(ais_identity.shipname_mostcommon.value, r"^[0-9]*-[0-9]*$")
-    OR REGEXP_CONTAINS(ais_identity.shipname_mostcommon.value, r"NET FISHING")
-    OR REGEXP_CONTAINS(ais_identity.shipname_mostcommon.value, r"NETFISHING")),
-  ---------------------------------------------------
-  -- nast_ssvid are ssvid that are likely offsetting because they have
-  -- lots of positions more than 3000 km from the satellite
-  ------------------------------------------------------
-  nast_ssvid AS (
-  SELECT
-    ssvid,
-    SUM( positions) positions
-  FROM
-    `world-fishing-827.gfw_research.pipe_production_v20190502_segs`
-  WHERE
-    ((dist_avg_pos_sat_vessel_km > 3000 AND sat_positions_known > 5) )
-    AND first_timestamp < TIMESTAMP("2018-12-31")
-    AND last_timestamp > TIMESTAMP("2016-01-01")
-  GROUP BY
-    ssvid
-  HAVING
-    positions > 50 ),
-  --------------------------------------------------------
-  -- good_ssvid here are ones that are definitely not spoofing
-  -- and which have a at least 10 days of activity
-  -------------------------------------------------------
-  good_ssvid AS (
-  SELECT
-   *
-  FROM
-    `emlab-gcp.carbon_trawl.ssvid_of_interest` 
-  WHERE
-    ssvid NOT IN (SELECT ssvid FROM nast_ssvid)
-    AND ssvid NOT IN (SELECT ssvid FROM likely_gear)
-    AND CAST(ssvid AS int64) not in (SELECT ssvid FROM `world-fishing-827.gfw_research.bad_mmsi` CROSS JOIN UNNEST(ssvid) AS ssvid)),
-  -----------------
-  -- raw position data
-  ----------------
-  position_table AS (
-  SELECT
-    distinct extract(year from timestamp) as year, 
-    ssvid,
-    lon, 
-    lat,
-    hours,
-    timestamp, 
-    nnet_score, 
-    speed_knots,
-    implied_speed_knots,
-    elevation_m
-  FROM
-    `world-fishing-827.gfw_research.pipe_production_v20190502_fishing`
-  WHERE
-    timestamp BETWEEN TIMESTAMP("2016-01-01")
-    AND TIMESTAMP("2018-12-31")
-    AND seg_id IN (SELECT seg_id FROM good_segments)
-    and ssvid in (select ssvid from good_ssvid))
-  --------------------------------------------------
-  -- estimate fishing effort by ssvid, lon, lat
-  -------------------------------------------------
-SELECT
-year, 
-ssvid,
-FLOOR(lat/0.5)*0.5 + 0.5*0.5 lat_bin,
-FLOOR(lon/0.5)*0.5 + 0.5*0.5 lon_bin,
-gear_group,
-gear_width,
-  case 
-    when gear_group = "OT" then SUM(IF(speed_knots >= 2 and speed_knots <= 4 and elevation_m >= -2000, hours, 0))
-    when gear_group = "BT" then SUM(IF(speed_knots >= 2.5 and speed_knots <= 7 and elevation_m >= -100, hours, 0))  
-    when gear_group in ("TD", "HD") then SUM(IF(speed_knots >= 2 and speed_knots <= 2.5, hours, 0))  
-    end as fishing_hours,
-  case 
-    when gear_group = "OT" then SUM(IF(speed_knots >= 2 and speed_knots <= 4 and elevation_m >= -2000, hours*speed_knots, 0))
-    when gear_group = "BT" then SUM(IF(speed_knots >= 2.5 and speed_knots <= 7 and elevation_m >= -100, hours*speed_knots, 0))  
-    when gear_group in ("TD", "HD") then SUM(IF(speed_knots >= 2 and speed_knots <= 2.5, hours*speed_knots, 0))  
-    end as distance_fished_nm,
-  sum(if(elevation_m >= -2200, hours*4, 0)) as old_distance_fished_nm
-FROM
-  position_table
-INNER JOIN
-  good_ssvid
-USING
-  (year, ssvid)
-WHERE 
-  nnet_score > 0.5
-GROUP BY
-  year, 
-  ssvid,
-  lat_bin,
-  lon_bin,
-  gear_group, 
-  gear_width
-```
+# Query Effort
 
 ```{r, eval = F}
-write_rds(binned_effort_by_ssvid, file.path(emLab_project_dir, "data", "02_processed","impacts", "bottom_trawling", "gfw_binned_effort_by_ssvid.rds"))
-```
+vessels_of_interest <- gfw_research %>% 
+    tbl("emlab-gcp.carbon_trawl.ssvid_of_interest")
 
+good_segs <- tbl(gfw_research, "pipe_v20190502_segs")%>% 
+  filter(positions > 10, 
+         overlapping_and_short == FALSE, 
+         good_seg == TRUE) %>% 
+  select(seg_id)
+
+res <- 0.5
+
+ais_positions <- gfw_research %>% 
+    tbl("pipe_v20190502_fishing") %>% 
+    mutate(year = year(date)) %>% 
+    select(year, date, timestamp, ssvid, seg_id, lat, lon, speed_knots, hours, nnet_score, regions, elevation_m) %>% 
+    filter(timestamp < TIMESTAMP("2020-01-01"),
+           timestamp > TIMESTAMP("2016-01-01"),
+           nnet_score == 1,
+           speed_knots > 0) %>% 
+  inner_join(vessels_of_interest, by = c("ssvid", "year")) %>% 
+  inner_join(good_segs) 
+
+binned_effort_by_ssvid <-  ais_positions %>% 
+  mutate(lat_bin = floor(lat/res)*res + 0.5*res,
+         lon_bin = floor(lon/res)*res + 0.5*res) %>% 
+  mutate(hours = case_when(gear_group == "OT" & speed_knots >= 2 & speed_knots <= 4 & elevation_m >= -2000 ~ hours,
+                           gear_group == "BT" & speed_knots >= 2.5 & speed_knots <= 7 & elevation_m >= -100 ~ hours,
+                           gear_group %in% c("TD", "HD")  & speed_knots >= 2 & speed_knots <= 2.5 ~ hours,
+                           TRUE ~ 0),
+         gear_width = round(gear_width, 2)) %>% 
+  group_by(year, ssvid, gear_group, gear_width, lat_bin, lon_bin) %>% 
+  summarize(fishing_hours = round(sum(hours, na.rm = T), 2),
+            distance_fished_nm = round(sum(hours*speed_knots, na.rm = T), 2)) %>%
+  ungroup() %>% 
+  mutate(swept_area_m2 = gear_width*distance_fished_nm*1852) %>% 
+  filter(fishing_hours > 0) %>% 
+  collect()
+
+write_rds(binned_effort_by_ssvid, 
+          file.path(emLab_project_dir, "data", "02_processed","impacts", "bottom_trawling", "gfw_binned_effort_by_ssvid_updated.rds"))
+```
 
 ```{r}
-binned_effort_by_ssvid <- read_rds(file.path(emLab_project_dir, "data", "02_processed","impacts", "bottom_trawling", "gfw_binned_effort_by_ssvid.rds"))
+binned_effort_by_ssvid <- read_rds(file.path(emLab_project_dir, 
+                                             "data", "02_processed","impacts", "bottom_trawling", "gfw_binned_effort_by_ssvid_updated.rds"))
 
-binned_effort_by_ssvid <- binned_effort_by_ssvid %>% 
-  mutate(swept_area_m2 = gear_width*distance_fished_nm*1852,
-         old_swept_area_m2 = 200*old_distance_fished_nm*1852) # previous fast approach using 200m widths an 4 knots speed
-
-binned_effort_by_ssvid %>% 
-  summarize(sum(swept_area_m2, na.rm = T)/sum(old_swept_area_m2, na.rm = T)) # informed approach minimizes swept area by 85%
+binned_effort_by_ssvid %>%
+  filter(fishing_hours != 0) %>% 
+  group_by(year) %>% 
+  summarize(n_distinct(ssvid))
 ```
+
+# Four Metrics:
+
+## Swept Area
 
 ```{r}
 swept_area_raster <- binned_effort_by_ssvid %>%
   filter(fishing_hours != 0) %>% 
   group_by(lon_bin, lat_bin) %>% 
-  summarise(avg_swept_area_km2 = 1/3*sum(swept_area_m2, na.rm = T)/10^6) %>% 
+  summarise(avg_swept_area_km2 = 1/4*sum(swept_area_m2, na.rm = T)/10^6) %>% 
   raster::rasterFromXYZ(crs = ocean_low_res_wgs84) %>% 
-  projectRaster(ocean_low_res_wgs84) %>%
+  projectRaster(to = ocean_low_res_wgs84) %>% 
   mask(ocean_low_res_wgs84)
+
+swept_area_raster[swept_area_raster < 0] <- 0
 
 SAR_raster <- swept_area_raster/raster::area(swept_area_raster)
 
-plot(SAR_raster)
-```
- 
-```{r}
-c_raster_05 <- raster(file.path(emLab_project_dir, "data", "02_processed", "carbon","carbon_lr_mean_wgs84.tif")) %>% 
-  projectRaster(ocean_low_res_wgs84) %>% 
-  mask(ocean_low_res_wgs84)
-
-total_c_05 <- cellStats(c_raster_05, sum)/10^6
+SAR_raster <- SAR_raster %>% 
+  projectRaster(to = ocean_low_res_moll, method = "bilinear") %>% 
+  mask(ocean_low_res_moll)
 
 SAR_raster_reclass <-  SAR_raster %>% 
   reclassify(c(1, Inf, 1))
-
-c_disturbed_raster <- SAR_raster_reclass*c_raster_05
-
-total_c_disturbed <- c_disturbed_raster %>% 
-  raster::cellStats(stat = sum, na.rm = T)/10^6
-
-100*(total_c_disturbed)/total_c_05
 ```
-How does this compare with doing the previous uninformed approach? 
-
+ 
 ```{r}
-effort_raster_05 <- binned_effort_by_ssvid %>%
-  group_by(lon_bin, lat_bin) %>%
-  summarise(fishing_hours = sum(fishing_hours, na.rm = T)) %>%
-  raster::rasterFromXYZ(crs = ocean_low_res_wgs84) %>%
-  projectRaster(ocean_low_res_wgs84) %>%
-  mask(ocean_low_res_wgs84)
+carbon_lr <- raster(file.path(emLab_project_dir, "data", "02_processed", "carbon", "carbon_lr_mean_moll.tif")) 
 
-SAR_raster_v2 <- 1/3*(effort_raster_05*4*1.852*0.2)/(raster::area(effort_raster_05))
+total_carbon_lr <- cellStats(carbon_lr, sum)
 
-SAR_raster_v2_reclass <- SAR_raster_v2 %>% 
-  reclassify(c(1, Inf, 1)) 
+disturbed_carbon <- SAR_raster_reclass*carbon_lr
 
-c_disturbed_raster_v2 <- SAR_raster_v2_reclass*c_raster_05
+total_disturbed_carbon <- raster::cellStats(disturbed_carbon, stat = sum, na.rm = T)
 
-total_c_disturbed_v2 <- c_disturbed_raster_v2 %>% 
-  raster::cellStats(stat = sum, na.rm = T)/10^6
+# fraction carbon disturbed
 
-100*(total_c_disturbed_v2)/total_c_05  
+total_disturbed_carbon/total_carbon_lr # aprox 1.5%
+
+# total C disturbed
+total_disturbed_carbon/10^6 # 14.14 
+
+# max remineralized CO2
+
+3.67*total_disturbed_carbon/10^6 # 51.89
 ```
 
-
-```{r}
-#How about against the old analyis? The difference is that this one ignored dredgers
-
-# SAR_raster_old <-  raster("~/gcs/git-annex/global_blue_carbon/files/processed_files/GFW_SAR_05_rez.tif") %>%
-#   projectRaster(ocean_low_res_wgs84)
-# 
-# c_disturbed_raster_old <- SAR_raster_old*c_raster_05
-# 
-# total_c_disturbed_old<- c_disturbed_raster_old %>% 
-#   raster::cellStats(stat = sum, na.rm = T)/10^6
-# 
-# 100*(total_c_disturbed_old)/total_c_05
-```
-
-# Penetration depths
-
-We can use the average penetration depth by gear type from hiddink et al as follows
+## Swept Volume 
 
 ```{r}
 p_depth_by_gear <- tibble(gear_group = c("OT", "BT", "TD", "HD"),
                           p_depth = c(2.44, 2.72, 5.47, 16.11)/100)
-```
 
-```{r}
 swept_volume_raster <- binned_effort_by_ssvid %>%
   filter(fishing_hours > 0) %>% 
   left_join(p_depth_by_gear) %>% 
   group_by(lon_bin, lat_bin) %>% 
-  summarise(avg_vol = 1/3*sum(p_depth*swept_area_m2, na.rm = T)/10^6) %>% 
+  summarise(avg_vol_km3 = 1/4*sum(p_depth*swept_area_m2, na.rm = T)/10^9) %>% 
   raster::rasterFromXYZ(crs = ocean_low_res_wgs84) %>% 
   projectRaster(ocean_low_res_wgs84, over = T) %>%
   mask(ocean_low_res_wgs84)
 
 swept_volume_raster[swept_volume_raster < 0] <- 0
 
-SVR_raster <- swept_volume_raster/raster::area(swept_area_raster)
+svr_raster <- swept_volume_raster/(raster::area(swept_area_raster)*0.001)
 
-plot(SVR_raster)
+svr_raster[is.na(svr_raster)] <- 0
 
-# % carbon disturbed 
-100*(raster::cellStats((SVR_raster*c_raster_05), stat = sum, na.rm = T)/10^6)/total_c_05
+svr_raster <- svr_raster %>%
+  projectRaster(ocean_low_res_moll) %>% 
+  mask(ocean_low_res_moll)
+
+svr_raster <- svr_raster %>% 
+  mask(svr_raster > 0 | is.na(svr_raster), maskvalue = 0) 
+
+plot(svr_raster)
+
+raster::writeRaster(svr_raster, 
+                    file.path(emLab_project_dir, 
+                              "data", "02_processed", "impacts", "bottom_trawling", "svr.tif"), overwrite = T)
 ```
 
-# Sediment types
-
 ```{r}
+svr_disturbed_carbon <- svr_raster*carbon_lr
+
+total_svr_disturbed_carbon <- raster::cellStats(svr_disturbed_carbon, stat = sum, na.rm = T)
+
+# fraction carbon disturbed
+
+total_svr_disturbed_carbon/total_carbon_lr # 0.00048
+
+# total C disturbed
+total_svr_disturbed_carbon/10^6 # 0.48
+
+# max remineralized CO2
+
+3.67*total_svr_disturbed_carbon/10^6 # 1.76
+```
+
+## Remineralization risk 
+
+```{r, eval = F}
 sediments_raster <- raster::raster(file.path(emLab_shrd_data_dir, "seafloor-lithology", "seabed_lithology_v1.nc"))
 
 reclass_df <- tibble(sediment_type = unique(sediments_raster)) %>% 
@@ -478,39 +431,33 @@ tmap::tmap_save(sediment_risk_factor_map,
                 dpi = 300,  height = 4, width = 8)
 ```
 
-Are there data gaps? 
-
-```{r}
-overlay(sediment_risk_factor, c_raster_05, fun = function(x, y){is.na(x) & !is.na(y)}) %>% 
-  plot()
-```
-
 Assign empty sediment type width moderate (2) risk
 
-```{r}
+```{r, eval = F}
 sediment_risk_factor_gf <- sediment_risk_factor
 
 sediment_risk_factor_gf[is.na(sediment_risk_factor_gf)] <- 2
 
-sediment_risk_factor_gf <- sediment_risk_factor_gf %>% 
-  mask(ocean_low_res_wgs84)
-
-plot(sediment_risk_factor_gf)
+sediment_risk_factor_gf %>% 
+  projectRaster(ocean_low_res_moll, method = "ngb") %>% 
+  mask(ocean_low_res_moll) %>% 
+  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "sediment_risk_factor_gf.tif"), overwrite=TRUE)
 ```
 
-```{r}
-SVR_raster_gf <- SVR_raster
-
-SVR_raster_gf[is.na(SVR_raster_gf)] <- 0
-
-SVR_raster_gf <- SVR_raster_gf %>%
-  mask(ocean_low_res_wgs84) %>% 
-  mask(SVR_raster_gf > 0 | is.na(SVR_raster_gf), maskvalue = 0) 
-
-plot(SVR_raster_gf)
+```{r, eval = F}
+# sediment_risk_factor_gf <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "sediment_risk_factor_gf.tif"))
+# 
+# svr_disturbed_carbon %>% 
+#   as.data.frame(xy = T) %>% 
+#   drop_na() %>% 
+#   left_join(sediment_risk_factor_gf %>% 
+#               as.data.frame(xy = T)) %>% 
+#   group_by(sediment_risk_factor_gf) %>% 
+#   summarize(total_c = sum(layer, na.rm = T)) %>% 
+#   mutate(f = total_c/sum(total_c))
 ```
 
-```{r}
+```{r, eval = F}
 Ia_carbon <- sediment_risk_factor_gf*SVR_raster_gf
 
 Ia_carbon_rescaled <- (Ia_carbon - cellStats(Ia_carbon, 'min')) / (cellStats(Ia_carbon,'max') - cellStats(Ia_carbon, 'min'))
@@ -525,10 +472,11 @@ plot(Ia_carbon_rescaled)
 hist(Ia_carbon_rescaled)
 
 raster::writeRaster(Ia_carbon_rescaled, 
-                    file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr.tif"), overwrite = T)
+                    file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr.tif"), 
+                    overwrite = F)
 ```
 
-```{r}
+```{r,  eval = F}
 Ia_carbon_log <- log(Ia_carbon)
 
 Ia_carbon_log_rescaled <- (Ia_carbon_log - cellStats(Ia_carbon_log, 'min')) / (cellStats(Ia_carbon_log,'max') - cellStats(Ia_carbon_log, 'min'))
@@ -543,13 +491,13 @@ plot(Ia_carbon_log_rescaled)
 hist(Ia_carbon_log_rescaled)
 
 raster::writeRaster(Ia_carbon_log_rescaled, 
-                    file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr_log.tif"), overwrite = T)
+                    file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr_log.tif"),
+                    overwrite = F)
 ```
 
-# Visualize
-
-```{r}
-abatable_impact_carbon_svr <- raster::raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr_log.tif"))
+```{r, eval = F}
+abatable_impact_carbon_svr <- raster::raster(file.path(emLab_project_dir, 
+                                                       "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr_log.tif"))
 
 Ia_carbon_map <- abatable_impact_carbon_svr %>% 
   as.data.frame(xy = T) %>% 
@@ -569,5 +517,292 @@ Ia_carbon_hist <- abatable_impact_carbon_svr %>%
   labs(x = "Relative remineralization risk", y = "")
 
 cowplot::plot_grid(Ia_carbon_map, Ia_carbon_hist, labels = NULL, ncol = 1, rel_heights = c(2,1))+
-  cowplot::ggsave2(dpi = 300, filename = file.path(emLab_project_dir, "figures", "supplement", "abatable_impacts_carbon.png"), height = 4, width = 6)
+  cowplot::ggsave2(dpi = 300, 
+                   filename = file.path(emLab_project_dir, "figures", "supplement", "abatable_impacts_carbon.png"), 
+                   height = 4, width = 6)
+```
+
+## Remineralized CO2
+
+```{r, eval = F}
+p_labile <- sediment_risk_factor_gf
+
+p_labile[p_labile == 1] <- 0.04
+p_labile[p_labile == 2] <- 0.286
+p_labile[p_labile == 3] <- 0.7
+
+plot(p_labile)
+
+p_labile %>%
+  projectRaster(ocean_low_res_moll, method = "ngb") %>% 
+  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "p_labile.tif"), overwrite=TRUE)
+```
+
+```{r, eval = F}
+seas_shp <- sf::st_read(file.path(emLab_shrd_data_dir, "World_Seas_IHO_v3", "World_Seas_IHO_v3.shp")) 
+
+seas_lut <- read_csv(file.path(emLab_project_dir, "data", "01_raw", "sea_regions.csv")) %>% 
+  janitor::clean_names()
+
+seas_shp <- seas_shp %>% 
+  left_join(seas_lut, by = c("ID" = "iso_id")) %>% 
+  mutate(project_region = trim(project_region),
+         k = case_when(project_region == c("Atlantic") | iso_name == "Baltic Sea" ~ 3.62*10^(-1),
+                       project_region == "Arctic" ~ 2.75*10^(-1),
+                       project_region == "Gulf of Mexico" ~ 1.68*10^(1),
+                       project_region == "Indian" ~ 4.76*10^(0),
+                       project_region == "Mediterranean" ~ 1.23*10^(1),
+                       project_region == "North Pacific" ~ 1.67*10^(0),
+                       project_region == "South Pacific" ~ 3.84*10^(0))) 
+
+k_decay <- rasterize(seas_shp, ocean_low_res_wgs84, method = "ngb", field = "k") 
+
+k_decay %>% 
+  projectRaster(ocean_low_res_moll, method = "ngb") %>% 
+  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "k_decay.tif"), 
+                      overwrite=TRUE)
+
+plot(k_decay)
+```
+
+```{r}
+p_crd <- 0.87
+
+svr_raster_gf <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "svr_gf.tif"))
+
+k_decay <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "k_decay.tif")) 
+
+p_labile <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "p_labile.tif")) 
+
+remineralized_carbon <- carbon_lr*(svr_raster_gf*p_crd*p_labile)*(1 - exp(-k_decay))
+
+total_remineralized_carbon <- raster::cellStats(remineralized_carbon, stat = sum, na.rm = T)
+
+# fraction carbon remineralized
+
+total_remineralized_carbon/total_carbon_lr # 0.0001374601
+
+# total C remineralized
+total_remineralized_carbon/10^6 # 0.1363386
+
+# remineralized to CO2
+
+3.67*total_remineralized_carbon/10^6 # 0.5003627
+
+# total C in ocean
+
+total_1km_carbon <-  3117263*10^6
+
+# total remineralized C
+
+3.67*total_1km_carbon*(total_remineralized_carbon/total_carbon_lr)/10^9 # 1.57x10^9 Mg CO2
+
+# Money?
+
+50*3.67*total_1km_carbon*(total_remineralized_carbon/total_carbon_lr)/10^9 # 78.62961 billion usd at 50$ per ton of CO2
+
+plot(round(remineralized_carbon*total_1km_carbon/total_carbon_lr))
+```
+
+
+```{r}
+carbon_lr_sum <- raster(file.path(emLab_project_dir, "data", "02_processed", "carbon", "carbon_lr_sum_wgs84.tif")) %>% 
+   projectRaster(ocean_low_res_moll, 'bilinear') 
+
+carbon_lr_sum[carbon_lr_sum<0] <- NA
+
+sum_total_carbon <- raster::cellStats(carbon_lr_sum, stat = sum, na.rm = T)
+
+rem_carbon_v2 <- (carbon_lr_sum*SVR_raster_gf*p_crd*p_labile) - (carbon_lr_sum*SVR_raster_gf*p_crd*p_labile)*exp(-k_decay)
+
+# fraction oftotal C remineralized
+
+raster::cellStats(rem_carbon_v2, stat = sum, na.rm = T)/sum_total_carbon # 0.0001270932
+
+# total remineralized to CO2
+
+3.67*raster::cellStats(rem_carbon_v2, stat = sum, na.rm = T)/10^9 # 1.35
+
+# Money?
+
+50*raster::cellStats(rem_carbon_v2, stat = sum, na.rm = T)*3.67/10^9  # 68 billion usd at 50$ per ton of CO2
+```
+
+### validation
+
+```{r, eval = F}
+validation_df <- tibble(name = c("Westerchlede", "White Oak",  "Thermaic gulf","Sweden", "Aarhus Bay"),
+                        obs_mol_co2_km2 = c(3.55E+07, 3.99E+06, 8.74E+06, 4.39E+06,  1.26E+07))
+
+validation_df$poly[validation_df$name == "Westerchlede"] <- "POLYGON((3.348461 51.549847, 4.311777 51.549847, 4.311777 51.310398, 3.348461 51.310398, 3.348461 51.549847))"
+validation_df$poly[validation_df$name == "White Oak"] <- "POLYGON((-77.150693 34.770435, -77.067296 34.770435, -77.067296 34.691695, -77.150693 34.691695, -77.150693 34.770435))"
+validation_df$poly[validation_df$name == "Thermaic gulf"] <- "POLYGON((22.5323 40.6552, 23.3282 40.6552, 23.3282 39.831, 22.5323 39.831, 22.5323 40.6552))"
+validation_df$poly[validation_df$name == "Sweden"] <- "POLYGON((11.666691 57.702016, 11.758501 57.702016, 11.758501 57.660455, 11.666691 57.660455, 11.666691 57.702016))"
+validation_df$poly[validation_df$name == "Aarhus Bay"] <- "POLYGON((10.1941 56.3014, 10.6975 56.3014, 10.6975 55.7348, 10.1941 55.7348, 10.1941 56.3014))"
+
+validation_sf <- validation_df %>% 
+  sf::st_as_sf(wkt = "poly", crs = 4326) %>%
+  st_transform(crs = crs(ocean_low_res_moll)) %>% 
+  rownames_to_column("region_id")
+```
+
+```{r}
+validation_df_lr <- validation_sf %>% 
+  left_join(rem_carbon_v2 %>% 
+              raster::extract(validation_sf, df = T) %>% 
+              set_names(c("region_id", "rem_carbon")) %>% 
+              mutate(region_id = as.character(region_id))) %>% 
+  filter(!is.na(rem_carbon)) %>% 
+  group_by(name) %>% 
+  summarize(n_pixels = n(),
+            obs_mol_co2_km2 = mean(obs_mol_co2_km2, na.rm = T),
+            rem_co2 = 3.67*sum(rem_carbon, na.rm = T),
+            rem_mol_co2 = rem_co2*22722, #convert from Mg CO2 to mol CO2
+            rem_mol_co2_km2 = rem_mol_co2/(n_pixels*25000))    # divide by the area of each cell. We can do this because we are in mollweide here
+
+validation_df_lr %>% 
+  ggplot()+
+  geom_point(aes(x = log(obs_mol_co2_km2), y = log(rem_mol_co2_km2)))
+```
+
+### High Res
+
+```{r, eval = F}
+carbon_hr <- raster(file.path(emLab_shrd_data_dir, "global-marine-sedimentary-carbon", "Mean carbon_stock.tif"))
+
+res <- 0.01
+
+binned_effort_by_ssvid_hr <-  ais_positions %>% 
+  mutate(lat_bin = floor(lat/res)*res + 0.5*res,
+         lon_bin = floor(lon/res)*res + 0.5*res) %>% 
+  mutate(hours = case_when(gear_group == "OT" & speed_knots >= 2 & speed_knots <= 4 & elevation_m >= -2000 ~ hours,
+                           gear_group == "BT" & speed_knots >= 2.5 & speed_knots <= 7 & elevation_m >= -100 ~ hours,
+                           gear_group %in% c("TD", "HD")  & speed_knots >= 2 & speed_knots <= 2.5 ~ hours,
+                           TRUE ~ 0),
+         gear_width = round(gear_width, 2)) %>% 
+  group_by(year, ssvid, gear_group, gear_width, lat_bin, lon_bin) %>% 
+  summarize(fishing_hours = round(sum(hours, na.rm = T), 2),
+            distance_fished_nm = round(sum(hours*speed_knots, na.rm = T), 2)) %>%
+  ungroup() %>% 
+  mutate(swept_area_m2 = gear_width*distance_fished_nm*1852) %>% 
+  filter(fishing_hours > 0) %>% 
+  collect()
+
+write_rds(binned_effort_by_ssvid_hr, 
+          file.path(emLab_project_dir, "data", "02_processed","impacts", "bottom_trawling", "gfw_binned_effort_by_ssvid_updated_hr.rds"))
+
+swept_volume_raster_hr <- binned_effort_by_ssvid_hr %>%
+  filter(fishing_hours > 0) %>% 
+  left_join(p_depth_by_gear) %>% 
+  group_by(lon_bin, lat_bin) %>% 
+  summarise(avg_vol = 1/4*sum(p_depth*swept_area_m2, na.rm = T)/10^6) %>% 
+  raster::rasterFromXYZ(crs = carbon_hr) %>% 
+  projectRaster(carbon_hr, over = T) %>%
+  mask(carbon_hr)
+
+swept_volume_raster_hr[swept_volume_raster_hr < 0] <- 0
+
+SVR_raster_hr <- swept_volume_raster_hr/raster::area(swept_volume_raster_hr)
+
+#SVR_raster_hr[is.na(SVR_raster_hr)] <- 0
+
+# SVR_raster_gf <- SVR_raster_gf %>%
+#   projectRaster(ocean_low_res_moll) %>% 
+#   mask(ocean_low_res_moll)
+# 
+# SVR_raster_gf <- SVR_raster_gf%>% 
+#   mask(SVR_raster_gf > 0 | is.na(SVR_raster_gf), maskvalue = 0) 
+
+plot(SVR_raster_hr)
+
+SVR_raster_hr %>% 
+  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "svr_hr.tif"), 
+                      overwrite=TRUE)
+```
+
+
+```{r, eval = F}
+p_labile_hr <- p_labile %>% 
+  projectRaster(carbon_hr, "ngb")
+
+p_labile_hr %>% 
+  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "p_labile_hr.tif"), overwrite=TRUE)
+  
+k_decay_hr <- k_decay %>% 
+  projectRaster(carbon_hr, "ngb")
+
+k_decay_hr %>% 
+  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "k_decay_hr.tif"), overwrite=TRUE)
+```
+
+```{r}
+carbon_hr <- raster(file.path(emLab_shrd_data_dir, "global-marine-sedimentary-carbon", "Mean carbon_stock.tif"))
+
+k_decay_hr <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "k_decay_hr.tif"))
+
+p_labile_hr <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "p_labile_hr.tif"))
+
+SVR_raster_hr <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "svr_hr.tif"))
+
+SVR_raster_hr <- raster("../../../Google Drive File Stream/Shared drives/emlab/projects/current-projects/carbon-trawl/data/03_output/carbon_disturbed_svr_per_km2.tif")
+```
+
+```{r, eval = F}
+rem_carbon_hr <- (carbon_hr*SVR_raster_hr*p_crd*p_labile_hr)*(1 - exp(-k_decay_hr))
+
+rem_carbon_hr %>%
+  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "rem_carbon_hr.tif"), overwrite=TRUE)
+```
+
+```{r}
+rem_carbon_hr <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "rem_carbon_hr.tif"))
+
+validations_hr <- validation_sf %>% 
+  st_transform(crs = crs(rem_carbon_hr))
+
+tmp <- validations_hr %>% 
+  left_join(rem_carbon_hr %>% 
+              raster::extract(validations_hr, df = T) %>% 
+              set_names(c("region_id", "rem_carbon")) %>% 
+              mutate(region_id = as.character(region_id))) %>% 
+  filter(rem_carbon > 0) %>% 
+  group_by(name) %>% 
+  summarize(obs_mol_co2_km2 = mean(obs_mol_co2_km2, na.rm = T),
+            model_Mg_co2 = sum(rem_carbon*3.67, na.rm = T),
+            model_mol_co2 = sum(model_Mg_co2*22722, na.rm = T))
+  
+areas_hr <- raster::area(rem_carbon_hr) %>% 
+  mask(rem_carbon_hr)
+
+t <- rem_carbon_hr*areas_hr
+
+total_audra <- cellStats(t, sum)
+
+total_audra/10^9
+
+plot(areas_hr)
+
+fishing_area <- validations_hr %>% 
+  left_join(areas_hr %>% 
+              raster::extract(validations_hr, df = T) %>% 
+              set_names(c("region_id", "fishing_area")) %>% 
+              mutate(region_id = as.character(region_id))) %>% 
+  filter(fishing_area > 0) %>% 
+  group_by(name) %>% 
+  summarize(fishing_area_km2 = sum(fishing_area, na.rm = T)) %>% 
+  st_drop_geometry()
+
+validation_df_hr <- tmp %>% 
+  left_join(fishing_area) %>% 
+  mutate(model_mol_co2_km2 = model_mol_co2/fishing_area_km2) 
+
+
+validation_df_hr %>% 
+  mutate(model_mol_co2_km2/obs_mol_co2_km2)
+
+
+
+  ggplot()+
+  geom_point(aes(x = log(model_mol_co2_km2), y = log(obs_mol_co2_km2)))+
+  geom_abline(slope = 1, intercept = 0)
 ```

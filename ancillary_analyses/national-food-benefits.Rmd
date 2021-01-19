@@ -1,0 +1,288 @@
+---
+title: "National food provision benefits"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+library(patchwork)
+
+source(here::here("common.R"))
+source(here::here("functions", "map_priorities.R"))
+source(here::here("functions", "food_provision_foos.R"))
+```
+
+## Read data
+
+```{r}
+Norm_features_matrix <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "norm_matrix.rds"))
+  
+stocks_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "stocks_df.csv")) %>% 
+  as_tibble()
+
+stocks <- tibble(filename = list.files(file.path(emLab_project_dir, "data", "02_processed", "stock_distributions"),
+                                       full.names = T),
+                 stockid = str_remove(basename(filename), "\\.tif"))
+
+stocks_info <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "food_provision", "MegaData_UncertaintyAnalysis.csv")) %>%
+  select(stockid, k = Kfin, ex_rate = ExploitationRate_BAU1, m = m_fin, r = r_fin)
+
+stocks_info <- stocks %>%
+  left_join(stocks_info)
+
+stocks_info$ex_rate[stocks_info$ex_rate >= 1] <- 0.99999
+
+n_stocks <- nrow(stocks_info)
+
+stock_names <- colnames(stocks_df)[c(-1,-2,-3)]
+```
+
+# Current MPAs
+
+```{r}
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+  
+MPA_vect <- rownames(Norm_features_matrix) %>% 
+  enframe() %>% 
+  select(cell_id = value) %>% 
+  left_join(MPAs_df) %>% 
+  mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
+
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix))
+```
+
+```{r}
+territories_mask <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories.tif")) # 1 equals high seas
+
+territories_df <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories_lookup.csv"))
+
+eez <- sf::st_read(file.path(emLab_shrd_data_dir, "marine-regions-eez-v10", "World_EEZ_v10_20180221", "eez_v10.shp")) %>% 
+  sf::st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  sf::st_transform(crs(ocean_low_res_moll)) %>% 
+  sf::st_simplify(dTolerance = 10000, preserveTopology = TRUE) %>% 
+  janitor::clean_names()
+
+china_eez <- eez %>% 
+  janitor::clean_names() %>% 
+  filter(mrgid_sov1 != 0, iso_ter1 == "CHN") %>% 
+  sf::st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+    sf::st_simplify(dTolerance = 10000, preserveTopology = TRUE)
+
+```
+
+
+```{r}
+country_results <- list()
+
+territories_of_interest <- c("CHN")
+
+terri_iso <- "CHN"
+
+for(terri_iso in territories_of_interest){
+  
+  Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
+  
+  protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix))
+  
+  colnames(protected_cells) <- rownames(Norm_features_matrix)
+  
+  baseline_state <- protected_cells%*%Norm_features_matrix
+  
+  unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
+  
+  protected_matrix <- Norm_features_matrix[protected_cells, ]
+  
+  stocks_info$max_frac_k <-   matrixStats::colMaxs(unprotected_matrix, na.rm = T)
+  
+  terri_id <- territories_df %>% 
+    filter(iso_ter1 == terri_iso, mrgid_ter1 != 0) %>% 
+    pull(mrgid_ter1)
+  
+  terri_raster <- territories_mask %>% 
+    mask(territories_mask == terri_id, maskvalue = 0) %>% 
+    trim()
+  
+  terri_df <- terri_raster %>% 
+    raster::as.data.frame(xy = T) %>% 
+    filter(!is.na(territories)) %>% 
+    left_join(ocean_matrix)
+  
+  terri_MPAs_df <- terri_df %>% 
+    filter(cell_id %in% MPAs_df$cell_id[!is.na(MPAs_df$mpa)])
+  
+  unprotected_matrix <- unprotected_matrix[rownames(unprotected_matrix) %in% terri_df$cell_id,] ## Algorithm can only choose fro mwithint EEZ. 
+  
+  ranking <- list()
+  
+  current_pick <- 0
+  
+  current_state <- baseline_state 
+  
+  while(nrow(unprotected_matrix) > 0){
+    
+    current_pick <- sum(current_pick, 1)
+    
+    slopes <- estimate_catch_slopes(k_protected = current_state, 
+                                  e = stocks_info$ex_rate, m = stocks_info$m, r = stocks_info$r, k = stocks_info$k, effort_assumption = 1)
+  
+  delta <- unprotected_matrix%*%as.matrix(t(slopes))
+  
+  best_cell_indeces <- doBy::which.maxn(delta, n = 10)
+  
+  best_cells <- delta[best_cell_indeces,] %>% 
+    enframe() %>% 
+    set_names(c('cell_id', "delta")) %>% 
+    mutate(pick_order = current_pick)
+  
+  ranking <- bind_rows(ranking, best_cells)
+  
+  current_state <- unprotected_matrix[best_cell_indeces, ] %>% 
+    colSums() +
+    current_state
+  
+  unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ]
+    
+  }
+  
+  ranking <- bind_rows(select(terri_MPAs_df, cell_id),
+                       ranking) %>% 
+    mutate(is_mpa = is.na(delta))
+  
+  country_results[[terri_iso]] <- ranking
+  
+}
+```
+
+```{r}
+representation_curves <- ranking %>%  
+  select(-is_mpa) %>% 
+  left_join(ocean_matrix) %>% 
+  left_join(Norm_features_matrix %>% 
+              as_tibble(rownames = NA) %>% 
+              rownames_to_column("cell_id")) %>% 
+  replace(is.na(.), 0) %>% 
+  select(-x, -y, -cell_id, -delta, -pick_order) %>% 
+  mutate_all(.funs = cumsum)
+
+benefit_curves <- representation_curves %>% 
+    apply(MARGIN = 1, 
+          estimate_delta_catch, 
+          e = stocks_info$ex_rate, m = stocks_info$m, r = stocks_info$r, k = stocks_info$k, effort_assumption = 1)  %>% 
+  t() %>% 
+  rowSums() %>% 
+  enframe() %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected =  cumsum(fraction_protected))
+
+benefit_curves %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, value/10^6))+
+  labs(x = "Fraction EEZ Protected",
+       y = "Change in Global Catch (Million tons)",
+       title = "Contribution to global catch")+
+  theme_minimal()+
+  theme_classic()+
+  ylim(0, NA)+
+  scale_x_continuous(breaks = c(0,.2,.4,.6,.8,1))+
+  ggsave(file.path(emLab_project_dir, "figures", "local-food-benefits", "CHN_food_curve.png"),
+         width = 7, height = 5)
+```
+
+```{r}
+benefit_curves %>% 
+  slice(which.min(abs(fraction_protected - 0.3))) # 846 K tons more if protecting the right 30%
+
+benefit_curves %>% 
+  slice(which.min(abs(value - max(benefit_curves$value)))) # 993
+```
+
+
+
+```{r}
+Taiwan_land <- rnaturalearth::ne_countries(scale = 50, country = "Taiwan", returnclass = "sf")
+
+china_land <- rnaturalearth::ne_countries(scale = 50, country = "China", returnclass = "sf")
+
+marine_regions_info <- mregions::mr_names(layer = "MarineRegions:eez")
+
+china_eez <- mregions::mr_shp(key = "MarineRegions:eez",
+                              filter = "Chinese Exclusive Economic Zone")
+
+
+local_ranking <- ranking %>% 
+  left_join(ocean_matrix) %>% 
+  tibble::rowid_to_column("ID") %>% 
+  mutate(rank = 1 - scales::rescale(ID)) %>% 
+  select(lon = x, lat = y, rank) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_wgs84) %>% 
+  mask(ocean_low_res_wgs84) %>% 
+  as.data.frame(xy = T, centroids = T) %>% 
+  filter(!is.na(rank)) %>% 
+  select(lon = x, lat = y, rank)
+
+rank_breaks = c(0, 5, 10, 15, 20, 30,  40, 50, 100)
+
+(priorities_map <- local_ranking %>% 
+  mutate(rank = if_else(rank < 0, 0, 1 - rank)) %>% 
+  mutate(rank_cut = cut(rank, 
+                        breaks = rank_breaks/100,
+                        labels = head(rank_breaks, -1),
+                        include.lowest = T)) %>%
+  ggplot()+
+  geom_raster(aes(x = lon, y = lat, fill = rank_cut))+
+  scale_fill_viridis_d(direction = -1)+
+  geom_sf(data = china_land, inherit.aes = F)+
+  geom_sf(data = china_eez, inherit.aes = F, alpha = 0, size = 0.3)+
+  guides(fill = guide_legend(title = "Most important % of the EEZ",
+                                   direction = "horizontal",
+                                   title.position = 'top',
+                                   title.hjust = 0.5,
+                                   label.hjust = -.02,
+                                   nrow = 1,
+                                   byrow = T,
+                                   label.position = "bottom"))+
+  theme(#axis.line = element_blank(), 
+          #axis.text = element_blank(),
+          #axis.ticks = element_blank(), 
+          axis.title = element_blank(),
+          panel.background = element_blank(), 
+          #panel.border = element_blank(),
+          #panel.spacing = unit(0, "lines"), 
+          #panel.grid = element_line(color = "transparent"),
+          plot.background = element_blank(),
+          plot.title.position = "plot",
+          legend.position = 'bottom', 
+          legend.text = element_text(size = 10),
+          legend.text.align = 0,
+          legend.key.height = unit(0.01, 'npc'),
+          legend.key.width = unit(0.05, 'npc'),
+          legend.background =  element_blank(),
+          legend.title = element_text(hjust = 0.5),
+          legend.margin = margin(t = 0, r = 0, b = 0, l = 0, unit ='cm'))+
+  labs(title = "China's Conservation Priorities for Food Provision"))
+
+ggsave(plot = priorities_map,
+       filename = file.path(emLab_project_dir, "figures", "local-food-benefits", "CHN_food_map.png"),
+         width = 7, height = 7)
+```

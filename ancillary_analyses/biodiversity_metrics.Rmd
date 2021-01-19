@@ -1,0 +1,130 @@
+---
+title: "Biodiversity metrics"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, comment = F, message = F)
+
+library(raster)
+library(sf)
+library(tidyverse)
+library(treemapify)
+
+source(here::here("common.R"))
+source(here::here("functions", "map_priorities.R"))
+```
+
+```{r}
+bio_stack <- raster::stack(x = c(file.path(emLab_project_dir, "data", "02_processed", "species_richness","spp_richness.tif"),
+                    file.path(emLab_project_dir, "data", "02_processed", "species_richness", "range_rarity.tif"),
+                    file.path(emLab_project_dir, "data", "02_processed", "species_richness", "iucn_weighted_rr.tif"),
+                    file.path(emLab_project_dir, "data", "02_processed", "species_richness", "iucn_fd_ed_weighted_rr.tif")))
+
+included_aquamaps_spp_info <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list", "included_aquamaps_spp_list_with_ED_FD.csv"))
+
+included_seabirds_spp_info <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list", "included_birdlife_spp_list_with_ED_FD.csv"))
+
+full_included_spp_list <- bind_rows(included_aquamaps_spp_info %>% 
+                                      select(valid_sci_name, genus, order, family, class, phylum, kingdom, iucn_category, ED, FD),
+                                    included_seabirds_spp_info %>% 
+                                      select(valid_sci_name, genus, order, family, class, phylum, kingdom, iucn_category,  ED, FD))
+
+full_included_spp_list <- full_included_spp_list %>% 
+  mutate(iucn_weight = case_when(
+    iucn_category == "CR" ~ 1,
+    iucn_category == "EN" ~ .75,
+    iucn_category == "VU" ~ .5, 
+    iucn_category == "NT" ~ .25, 
+    iucn_category == "DD" ~ .25,
+    iucn_category == "LC" ~ .125,
+    is.na(iucn_category) ~ .25
+  )) %>% 
+  mutate(full_weight = iucn_weight*(ED + FD))
+```
+
+This documents describes four initial biodiversity metrics derived from existing datasets produced for Sala et al. The metrics are built using species distribution maps from Aquamaps and Birdlife for a subset of species that are directly or indirectly impacted by fishing and habitat destruction. All metrics have been re-scaled globally between 0-1. We limit the analysis to these species because 1) these are species most affected by MPAs (or the lack thereof), and 2) variables such as functional and evolutionary distinctiveness are only available for these. The final sample contains `r nrow(full_included_spp_list)` species - a quarter of which are directly exploited - and is comprised as follows:
+
+```{r}
+full_included_spp_list %>% 
+  group_by(class, family) %>% 
+  summarize(n_spp = n(),
+            w = sum(full_weight)) %>% 
+  ungroup() %>% 
+  ggplot(aes(area = n_spp, 
+             fill = class,
+             label = paste(family, n_spp, sep = "\n"),
+             subgroup = class), show.legend = F)+
+  geom_treemap(show.legend = F) +
+  geom_treemap_subgroup_border(show.legend = F) +
+  geom_treemap_subgroup_text(place = "centre", grow = T, alpha = 0.5, colour =
+                             "black", fontface = "italic", min.size = 0) +
+  geom_treemap_text(colour = "white", place = "topleft", reflow = T)
+```
+
+## Species richness
+
+Species richness in pixel *i* ($\text{SR}_{i}$) is estimated as:
+
+$$SR_{i} = \sum_{j} x_{i,j}$$ where $x_{i,j}$ corresponds to the presence or absence of species *j* in pixel *i*
+
+```{r}
+plot(bio_stack$spp_richness)
+```
+
+## Range rarity
+
+Range rarity in pixel *i* ($\text{RR}_{i}$) is estimated as:
+
+$$RR_{i} = \sum_{j} \frac{s_{i,j}}{\sum_{i} s_{i,j}}$$
+
+where $s_{i,j}$ corresponds to the suitability of pixel *i* for species *j*.
+
+```{r}
+plot(bio_stack$range_rarity)
+```
+
+## Range rarity weighted by IUCN threat status
+
+This metric measures range rarity and assign weights to species according to their IUCN status.
+
+$$SR^*_{i} = \sum_{j} \text{IUCN}_j \times \frac{s_{i,j}}{\sum_{i} s_{i,j}}$$
+
+where $s_{i,j}$ corresponds to the suitability of pixel *i* for species *j*, and $\text{IUCN}_j$ corresponds to the numerical classification of status in Sala et al.
+
+```{r}
+tribble(~iucn_category, ~value,
+        "CR", 1,
+        "EN", 0.75,
+        "VU", 0.5, 
+        "NT", 0.25, 
+        "DD", 0.25,
+        "LC", 0.1,
+        "Unknown", 0.25) %>% 
+  knitr::kable()
+  
+  
+  
+plot(bio_stack$iucn_weighted_rr)
+```
+
+## Range rarity weighted by IUCN threat status, functional distinctiveness, and evolutionary distinctiveness.
+
+This metric measures range rarity and assign weights to species according to their IUCN status, functional distinctiveness, and evolutionary distinctiveness.
+
+$$SR_{i} = \sum_{j} \text{IUCN}_j \times (FD_j + ED_j)\times \frac{s_{i,j}}{\sum_{i} s_{i,j}}$$
+
+where $s_{i,j}$ corresponds to the suitability of pixel *i* for species *j*, and $\text{IUCN}_j$ corresponds to the numerical classification of status in Sala et al, and FD and ED correspond to functional and evolutionary distinctiveness, respectively. **This weighting scheme is the one used in Sala et al**
+
+```{r}
+plot(bio_stack$iucn_fd_ed_weighted_rr)
+```

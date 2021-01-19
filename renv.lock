@@ -58,13 +58,6 @@
       "Repository": "CRAN",
       "Hash": "e031418365a7f7a766181ab5a41a5716"
     },
-    "Rcpp": {
-      "Package": "Rcpp",
-      "Version": "1.0.4.4",
-      "Source": "Repository",
-      "Repository": "CRAN",
-      "Hash": "2335397890c45dd797d9703ed6fae6c3"
-    },
     "V8": {
       "Package": "V8",
       "Version": "3.0.2",
@@ -1254,13 +1247,6 @@
       "Source": "Repository",
       "Repository": "CRAN",
       "Hash": "ccd8453a7b9e380628f6cd2862e46cad"
-    },
-    "xml2": {
-      "Package": "xml2",
-      "Version": "1.2.5",
-      "Source": "Repository",
-      "Repository": "CRAN",
-      "Hash": "13efdfe4c591af40c1c29dc6408281ed"
     },
     "yaml": {
       "Package": "yaml",

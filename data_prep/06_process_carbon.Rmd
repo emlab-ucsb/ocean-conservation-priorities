@@ -49,6 +49,27 @@ tmap::tmap_save(carbon_map_high_res,
                 dpi = 300,  height = 4, width = 8)
 ```
 
+
+```{r, eval = F}
+carbon_hr <- raster(file.path(emLab_shrd_data_dir, "global-marine-sedimentary-carbon", "Mean carbon_stock.tif"))
+
+area_hr <- area(carbon_hr)
+
+plot(area_hr)
+
+total_carbon_hr <- cellStats(area_hr*carbon_hr, sum) # 2.32 x10^12
+
+total_carbon_hr/10^12
+
+carbon_hr <- carbon_hr %>% 
+  projectRaster(ocean_hr, "bilinear") %>% 
+  mask(ocean_hr)
+
+raster::writeRaster(carbon_hr, 
+                    file.path(emLab_project_dir, 
+                              "data", "02_processed", "impacts", "bottom_trawling", "carbon_hr.tif"), overwrite = T)
+```
+
 # Resample
 
 How can we aggregate this high res raster?
@@ -60,9 +81,15 @@ agg_fact <- round(res(ocean_low_res_wgs84)[1]/res(carbon_raster)[1])
 
 carbon_raster_lr_sum <- aggregate(carbon_raster, 
                                   fact = agg_fact, 
-                                  fun = sum, na.rm = T)
+                                  fun = sum, na.rm = T) %>% 
+  projectRaster(ocean_low_res_wgs84) %>% 
+  mask(ocean_low_res_wgs84)
 
 raster::cellStats(carbon_raster_lr_sum, sum)/10^6 # 3117263 millions of Tons, same as in the raw data
+
+carbon_raster_lr_sum %>% 
+  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed","carbon","carbon_lr_sum_wgs84.tif"), 
+                      overwrite = T)
 ```
 
 ```{r}

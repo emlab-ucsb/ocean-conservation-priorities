@@ -37,7 +37,7 @@ spp_files <- tibble(filepath = list.files(c(file.path(emLab_project_dir, "data",
   arrange(valid_sci_name)
 
 features_df <- data.table::fread(file.path(emLab_project_dir, 
-                                           "data", "02_processed", "species_distributions", "all_spp_distributions_df.csv")) %>% 
+                                           "data", "02_processed", "features_df", "all_spp_distributions_df.csv")) %>% 
   as_tibble()
 
 n_features <- nrow(spp_files) 
@@ -96,8 +96,7 @@ aquamaps_weights <- aquamaps_spp_info %>%
     is.na(iucn_category) ~ 0.25
   )) %>% 
   mutate(spp_weight = iucn_weight*(ED + FD)) %>% 
-  arrange(valid_sci_name) %>% 
-  select(valid_sci_name, spp_weight)
+  arrange(valid_sci_name) 
 
 seabirds_weights <- seabirds_spp_info %>% 
   mutate(iucn_weight = case_when(
@@ -110,11 +109,12 @@ seabirds_weights <- seabirds_spp_info %>%
     is.na(iucn_category) ~ 0.25
   )) %>% 
   mutate(spp_weight = iucn_weight*(ED + FD)) %>% 
-  arrange(valid_sci_name) %>% 
-  select(valid_sci_name, spp_weight)
+  arrange(valid_sci_name) 
 
-spp_weights <- bind_rows(aquamaps_weights, 
-                         seabirds_weights)
+spp_weights <- bind_rows(select(aquamaps_weights, 
+                                valid_sci_name, iucn_weight, ED, FD, spp_weight),
+                         select(seabirds_weights, 
+                                valid_sci_name, iucn_weight, ED, FD, spp_weight))
 
 spp_weights <- spp_files %>% 
   left_join(spp_weights, by = "valid_sci_name")
@@ -125,6 +125,62 @@ write_csv(spp_weights,
 feature_wts <- spp_weights$spp_weight
 
 names(feature_wts) <- feature_names
+```
+
+## traditional biodiversity metrics (not relevant for this paper)
+
+```{r}
+features_matrix_cutoff <- ifelse(features_matrix < 0.5, 0, 1) 
+
+spp_richness <- rowSums(features_matrix_cutoff, na.rm = T) %>%
+  enframe(name = "cell_id", value = "spp_richness") 
+
+range_rarity <- rowSums(Norm_features_matrix) %>% 
+  enframe(name = "cell_id", value = "range_rarity") 
+
+range_rarity_iucn <- rowSums(Norm_features_matrix*spp_weights$iucn_weight) %>% 
+  enframe(name = "cell_id", value = "range_rarity_iucn") 
+
+range_rarity_fd <- rowSums(Norm_features_matrix*spp_weights$FD) %>% 
+  enframe(name = "cell_id", value = "range_rarity_fd") 
+
+range_rarity_ed <- rowSums(Norm_features_matrix*spp_weights$ED) %>% 
+  enframe(name = "cell_id", value = "range_rarity_ed") 
+
+range_rarity_iucn_ed_fd <- rowSums(Norm_features_matrix*spp_weights$spp_weight) %>% 
+  enframe(name = "cell_id", value = "range_rarity_iucn_ed_fd") 
+
+iucn_mean <- rowMeans(features_matrix_cutoff*spp_weights$iucn_weight, na.rm = T) %>% 
+  enframe(name = "cell_id", value = "iucn_mean") 
+
+ed_mean <- rowMeans(features_matrix_cutoff*spp_weights$ED, na.rm = T) %>% 
+  enframe(name = "cell_id", value = "ed_mean") 
+
+fd_mean <- rowMeans(features_matrix_cutoff*spp_weights$FD, na.rm = T) %>% 
+  enframe(name = "cell_id", value = "fd_mean")
+
+bio_metrics_df <- list(spp_richness, range_rarity, range_rarity_ed, range_rarity_fd, range_rarity_iucn, range_rarity_iucn_ed_fd, iucn_mean, ed_mean, fd_mean) %>% 
+  reduce(left_join) %>% 
+  left_join(ocean_matrix) %>% 
+  mutate_at(vars(-x, -y, -cell_id), scales::rescale) %>% 
+  select(x, y, everything(), -cell_id)
+
+bio_metrics_stack <- bio_metrics_df %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll) %>% 
+  mask(ocean_low_res_moll) 
+
+
+write_rds(bio_metrics_stack, 
+          file.path(emLab_project_dir, "data", "02_processed", "species_richness", "bio_metrics.rds"))
+
+# raster::writeRaster(bio_metrics_stack, 
+#                     overwrite=TRUE,
+#                     format="GTiff",
+#                     bylayer=TRUE,
+#                     filename = paste0(file.path(emLab_project_dir, "data", "02_processed", "species_richness/"),
+#                                       names(bio_metrics_stack),
+#                                       ".tif"))
 ```
 
 # Ranking

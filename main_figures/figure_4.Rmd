@@ -76,6 +76,9 @@ eez_shp <- sf::st_read(file.path(emLab_shrd_data_dir, "marine-regions-EEZ-land-u
   sf::st_simplify(dTolerance = 0) %>% 
   janitor::clean_names()
 
+eez_shp <- eez_shp %>% 
+  filter(iso_ter1 != "ATA")
+
 eez_info <- eez_shp %>% 
   st_drop_geometry() 
   
@@ -105,187 +108,193 @@ eez_info <- eez_info %>%
   TRUE ~ iso_ter1
   )) 
 
+territories_mask <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories.tif")) # 1 equals high seas
+
+territories_df <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories_lookup.csv"))
+
+eez_mask <- ocean_low_res_moll %>% 
+  mask(territories_mask) %>% 
+  mask(territories_mask == 1926, maskvalue = 1) # remove Antartica
+
+hs_mask <- ocean_low_res_moll %>% 
+  mask(eez_mask, inverse = T)
 ```
 
 # Biodiversity
 
 ```{r}
-biodiversity_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "ranking_raster.tif"))
+biodiversity_priorities_raster <- raster(file.path(emLab_project_dir, 
+                                                   "data", "03_output", "05_spp_wts_smts_provs_MPAs", "ranking_raster.tif"))
 
 delta_bio_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "delta_v_raster.tif"))
 
-n_ocean_cells_top_5 <- cellStats(biodiversity_priorities_raster, function(x, ...) sum(x >= 0.95, na.rm = T))
-n_ocean_cells_top_10 <- cellStats(biodiversity_priorities_raster, function(x, ...) sum(x >= 0.9, na.rm = T))
-n_ocean_cells_top_20 <- cellStats(biodiversity_priorities_raster, function(x, ...) sum(x >= 0.8, na.rm = T))
-n_ocean_cells_top_30 <- cellStats(biodiversity_priorities_raster, function(x, ...) sum(x >= 0.7, na.rm = T))
-
-bio_stats_by_country <- biodiversity_priorities_raster %>% 
-  mask(MPAs, updatevalue = 100, inverse = T) %>% 
+bio_results_by_territory <- stack(biodiversity_priorities_raster, 
+                               delta_bio_V_raster, 
+                               MPAs) %>% 
   raster::extract(eez_shp, df = T) %>% 
-  select(ID, cell_rank = 2) %>% 
-  group_by(ID) %>% 
-  summarize(n_cells = sum(cell_rank >= 0, na.rm = T),
-            n_protected_cells = sum(cell_rank >= 100, na.rm = T),
-            n_cells_top_20 = sum(cell_rank >= .80, na.rm = T),
-            n_cells_top_10 = sum(cell_rank >= .90, na.rm = T),
-            n_cells_top_5 = sum(cell_rank >= .95, na.rm = T)) %>% 
-  ungroup() %>% 
-  filter(n_cells > 0) %>% 
+  rename(ranking = ranking_raster,
+         delta_v = delta_v_raster,
+         is_mpa = fully_highly_protected_reviewed_MPAs) 
+
+bio_stats_by_territory <- bio_results_by_territory %>% 
+  group_by(ID) %>%
+  summarize(n_cells = sum(ranking >= 0, na.rm = T),
+            n_protected_cells = sum(is_mpa, na.rm = T),
+            n_cells_top_30 = sum(ranking >= .70 & is.na(is_mpa), na.rm = T),
+            n_cells_top_20 = sum(ranking >= .80 & is.na(is_mpa), na.rm = T),
+            n_cells_top_10 = sum(ranking >= .90 & is.na(is_mpa), na.rm = T),
+            n_cells_top_5 = sum(ranking >= .95 & is.na(is_mpa), na.rm = T),
+            sum_dv_top_30 = sum(delta_v[ranking >= .70 & is.na(is_mpa)], na.rm = T),
+            sum_dv_top_20 = sum(delta_v[ranking >= .80 & is.na(is_mpa)], na.rm = T),
+            sum_dv_top_10 = sum(delta_v[ranking >= .90 & is.na(is_mpa)], na.rm = T),
+            sum_dv_top_5 = sum(delta_v[ranking >= .95 & is.na(is_mpa)], na.rm = T))
+
+bio_stats_by_territory <- bio_stats_by_territory %>% 
   left_join(eez_info %>% 
               rowid_to_column() %>% 
-              select(ID = rowid, iso3 =  iso_ter1, iso3_sov = iso_sov1, mrgid_ter1, mrgid_eez, name)) %>% 
-  select(mrgid_ter1, iso3, iso3_sov, mrgid_eez, everything(), -ID) %>% 
-  mutate(goal = "biodiversity") 
-
-bio_contribution_to_top_10 <- delta_bio_V_raster %>% 
-  mask(MPAs, inverse = T) %>% 
-  mask(biodiversity_priorities_raster >= 0.9, maskvalue = 0) %>% 
-  raster::extract(eez_shp, df = T) %>% 
-  select(ID, dV = 2) %>% 
-  group_by(ID) %>% 
-  summarize(sum_dV = sum(dV, na.rm = T)) %>% 
-  left_join(eez_info %>% 
-              rowid_to_column() %>% 
-              select(ID = rowid, iso3 =  iso_ter1, iso3_sov = iso_sov1, mrgid_ter1, mrgid_eez)) %>% 
-  select(mrgid_ter1, iso3, iso3_sov, mrgid_eez, everything(), -ID)
-
-bio_stats_by_country <- bio_stats_by_country %>% 
-  left_join(bio_contribution_to_top_10) %>% 
-  rename(sum_delta_v_10_percent = sum_dV)
+              select(ID = rowid, territory_name = name, territory_iso3 = iso_ter1, mrgid_ter1, mrgid_eez, sov_iso3 = iso_sov1)) %>% 
+  mutate(goal = "biodiversity") %>% 
+  select(goal, territory_name, territory_iso3, mrgid_ter1, mrgid_eez, sov_iso3, everything(), -ID) %>% 
+  filter(n_cells > 0) %>%
+  arrange(territory_name)
 ```
 
 # Carbon
 
 ```{r}
-carbon_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster.tif"))
-delta_carbon_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "delta_v_raster.tif"))
+carbon_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster_updated.tif"))
+delta_carbon_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "delta_v_raster_updated.tif"))
 
-carbon_stats_by_country <- carbon_priorities_raster %>% 
-  mask(MPAs, updatevalue = 100, inverse = T) %>% 
+carbon_results_by_territory <- stack(carbon_priorities_raster, 
+                                  delta_carbon_V_raster, 
+                                  MPAs) %>% 
   raster::extract(eez_shp, df = T) %>% 
-  select(ID, cell_rank = 2) %>% 
-  group_by(ID) %>% 
-  summarize(n_cells = sum(cell_rank >= 0, na.rm = T),
-            n_protected_cells = sum(cell_rank >= 100, na.rm = T),
-            n_cells_top_20 = sum(cell_rank >= .80, na.rm = T),
-            n_cells_top_10 = sum(cell_rank >= .90, na.rm = T),
-            n_cells_top_5 = sum(cell_rank >= .95, na.rm = T)) %>% 
-  ungroup() %>% 
-  filter(n_cells > 0) %>% 
+  rename(ranking = ranking_raster_updated,
+         delta_v = delta_v_raster_updated,
+         is_mpa = fully_highly_protected_reviewed_MPAs) 
+
+carbon_stats_by_territory <- carbon_results_by_territory %>% 
+  group_by(ID) %>%
+  summarize(n_cells = sum(ranking >= 0, na.rm = T),
+            n_protected_cells = sum(is_mpa, na.rm = T),
+            n_cells_top_30 = sum(ranking >= .70 & is.na(is_mpa), na.rm = T),
+            n_cells_top_20 = sum(ranking >= .80 & is.na(is_mpa), na.rm = T),
+            n_cells_top_10 = sum(ranking >= .90 & is.na(is_mpa), na.rm = T),
+            n_cells_top_5 = sum(ranking >= .95 & is.na(is_mpa), na.rm = T),
+            sum_dv_top_30 = sum(delta_v[ranking >= .70 & is.na(is_mpa)], na.rm = T),
+            sum_dv_top_20 = sum(delta_v[ranking >= .80 & is.na(is_mpa)], na.rm = T),
+            sum_dv_top_10 = sum(delta_v[ranking >= .90 & is.na(is_mpa)], na.rm = T),
+            sum_dv_top_5 = sum(delta_v[ranking >= .95 & is.na(is_mpa)], na.rm = T))
+
+carbon_stats_by_territory <- carbon_stats_by_territory %>% 
   left_join(eez_info %>% 
               rowid_to_column() %>% 
-              select(ID = rowid, iso3 =  iso_ter1, iso3_sov = iso_sov1, mrgid_ter1, mrgid_eez, name)) %>% 
-  select(mrgid_ter1, iso3, iso3_sov, mrgid_eez, everything(), -ID) %>% 
-  mutate(goal = "carbon") 
-
-carbon_contribution_to_top_10 <- delta_carbon_V_raster %>% 
-  mask(MPAs, inverse = T) %>% 
-  mask(carbon_priorities_raster >= 0.9, maskvalue = 0) %>% 
-  raster::extract(eez_shp, df = T) %>% 
-  select(ID, dV = 2) %>% 
-  group_by(ID) %>% 
-  summarize(sum_dV = sum(dV, na.rm = T)) %>% 
-  left_join(eez_info %>% 
-              rowid_to_column() %>% 
-              select(ID = rowid, iso3 =  iso_ter1, iso3_sov = iso_sov1, mrgid_ter1, mrgid_eez)) %>% 
-  select(mrgid_ter1, iso3, iso3_sov, mrgid_eez, everything(), -ID)
-
-carbon_stats_by_country <- carbon_stats_by_country %>% 
-  left_join(carbon_contribution_to_top_10) %>% 
-  rename(sum_delta_v_10_percent = sum_dV)
+              select(ID = rowid, territory_name = name, territory_iso3 = iso_ter1, mrgid_ter1, mrgid_eez, sov_iso3 = iso_sov1)) %>% 
+  mutate(goal = "carbon") %>% 
+  select(goal, territory_name, territory_iso3, mrgid_ter1, mrgid_eez, sov_iso3, everything(), -ID) %>% 
+  filter(n_cells > 0) %>%
+  arrange(territory_name)
 ```
 
 # Food
 
 ```{r}
-food_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster_a2.tif"))
-delta_food_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "delta_v_raster_a2.tif"))
+food_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ray","ranking_raster_a2.tif"))
+delta_food_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ray","delta_v_raster_a2.tif"))
 
-food_stats_by_country <- food_priorities_raster %>% 
-  mask(MPAs, updatevalue = 100, inverse = T) %>% 
+food_results_by_territory <- stack(food_priorities_raster, 
+                                   delta_food_V_raster, 
+                                   MPAs) %>% 
   raster::extract(eez_shp, df = T) %>% 
-  select(ID, cell_rank = 2) %>% 
-  group_by(ID) %>% 
-  summarize(n_cells = sum(cell_rank >= 0, na.rm = T),
-            n_protected_cells = sum(cell_rank >= 100, na.rm = T),
-            n_cells_top_20 = sum(cell_rank >= .80, na.rm = T),
-            n_cells_top_10 = sum(cell_rank >= .90, na.rm = T),
-            n_cells_top_5 = sum(cell_rank >= .95, na.rm = T)) %>% 
-  ungroup() %>% 
-  filter(n_cells > 0) %>% 
+  rename(ranking = ranking_raster_a2,
+         delta_v = delta_v_raster_a2,
+         is_mpa = fully_highly_protected_reviewed_MPAs) 
+
+food_stats_by_territory <- food_results_by_territory %>% 
+  group_by(ID) %>%
+  summarize(n_cells = sum(ranking >= 0, na.rm = T),
+            n_protected_cells = sum(is_mpa, na.rm = T),
+            n_cells_top_30 = sum(ranking >= .70 & is.na(is_mpa), na.rm = T),
+            n_cells_top_20 = sum(ranking >= .80 & is.na(is_mpa), na.rm = T),
+            n_cells_top_10 = sum(ranking >= .90 & is.na(is_mpa), na.rm = T),
+            n_cells_top_5 = sum(ranking >= .95 & is.na(is_mpa), na.rm = T),
+            sum_dv_top_30 = sum(delta_v[ranking >= .70 & is.na(is_mpa)], na.rm = T),
+            sum_dv_top_20 = sum(delta_v[ranking >= .80 & is.na(is_mpa)], na.rm = T),
+            sum_dv_top_10 = sum(delta_v[ranking >= .90 & is.na(is_mpa)], na.rm = T),
+            sum_dv_top_5 = sum(delta_v[ranking >= .95 & is.na(is_mpa)], na.rm = T))
+
+food_stats_by_territory <- food_stats_by_territory %>% 
   left_join(eez_info %>% 
               rowid_to_column() %>% 
-              select(ID = rowid, iso3 =  iso_ter1, iso3_sov = iso_sov1, mrgid_ter1, mrgid_eez, name)) %>% 
-  select(mrgid_ter1, iso3, iso3_sov, mrgid_eez, everything(), -ID) %>% 
-  mutate(goal = "food") 
+              select(ID = rowid, territory_name = name, territory_iso3 = iso_ter1, mrgid_ter1, mrgid_eez, sov_iso3 = iso_sov1)) %>% 
+  mutate(goal = "food") %>% 
+  select(goal, territory_name, territory_iso3, mrgid_ter1, mrgid_eez, sov_iso3, everything(), -ID) %>% 
+  filter(n_cells > 0) %>%
+  arrange(territory_name)
+```
 
-food_contribution_to_top_10 <- delta_food_V_raster %>% 
-  mask(MPAs, inverse = T) %>% 
-  mask(food_priorities_raster >= 0.9, maskvalue = 0) %>% 
-  raster::extract(eez_shp, df = T) %>% 
-  select(ID, dV = 2) %>% 
-  group_by(ID) %>% 
-  summarize(sum_dV = sum(dV, na.rm = T)) %>% 
-  left_join(eez_info %>% 
-              rowid_to_column() %>% 
-              select(ID = rowid, iso3 =  iso_ter1, iso3_sov = iso_sov1, mrgid_ter1, mrgid_eez)) %>% 
-  select(mrgid_ter1, iso3, iso3_sov, mrgid_eez, everything(), -ID)
+```{r}
+stats_by_territory <- bind_rows(bio_stats_by_territory, 
+                                carbon_stats_by_territory,
+                                food_stats_by_territory) %>% 
+  filter(territory_iso3 != "VAT")
 
-food_stats_by_country <- food_stats_by_country %>% 
-  left_join(food_contribution_to_top_10) %>% 
-  rename(sum_delta_v_10_percent = sum_dV)
+stats_by_territory %>% 
+  write_csv(path = file.path(emLab_project_dir, "data", "03_output", "stats_by_territory_updated.csv"))
 ```
 
 # Combined goals and clean country names
 
 ```{r}
-stats_by_country <- bind_rows(bio_stats_by_country, 
-                              carbon_stats_by_country,
-                              food_stats_by_country) %>% 
-  mutate(continent = countrycode::countrycode(iso3, "iso3c", "continent")) %>% 
-  group_by(iso3, goal, continent) %>% 
-  summarize_at(vars(n_cells, n_protected_cells, n_cells_top_5, n_cells_top_10, n_cells_top_20, sum_delta_v_10_percent), sum) %>% 
-  mutate(fraction_protected = n_protected_cells/n_cells,
-         fraction_top_5 = n_cells_top_5/n_cells,
-         fraction_top_10 = n_cells_top_10/n_cells,
-         fraction_top_20 = n_cells_top_20/n_cells,
-         contribution_top_5 = n_cells_top_5/n_ocean_cells_top_5,
-         contribution_top_10 = n_cells_top_5/n_ocean_cells_top_10,
-         contribution_top_20 = n_cells_top_5/n_ocean_cells_top_20) %>% 
-  filter(iso3 != "VAT")
+stats_by_territory <- read_csv(file.path(emLab_project_dir, "data", "03_output", "stats_by_territory_updated.csv"))
+
+stats_by_territory <- stats_by_territory %>% 
+  mutate(continent = countrycode::countrycode(territory_iso3, "iso3c", "continent")) %>% 
+  group_by(territory_iso3, goal, continent) %>% 
+  summarize_at(vars(-territory_name,-mrgid_ter1, -mrgid_eez, -sov_iso3), .funs = sum, na.rm = T) %>% 
+  ungroup() %>% 
+  mutate(fraction_eez_protected = n_protected_cells/n_cells,
+         fraction_eez_top_5 = n_cells_top_5/n_cells,
+         fraction_eez_top_10 = n_cells_top_10/n_cells,
+         fraction_eez_top_20 = n_cells_top_20/n_cells,
+         fraction_eez_top_30 = n_cells_top_30/n_cells,
+         contribution_top_5_area = n_cells_top_5/round(n_ocean_cells*0.05),
+         contribution_top_10_area = n_cells_top_10/round(n_ocean_cells*0.1),
+         contribution_top_20_area = n_cells_top_20/round(n_ocean_cells*0.2),
+         contribution_top_30_area = n_cells_top_30/round(n_ocean_cells*0.3),
+         contribution_top_5_benefits = sum_dv_top_5/sum(sum_dv_top_5, na.rm = T),
+         contribution_top_10_benefits = sum_dv_top_10/sum(sum_dv_top_10, na.rm = T),
+         contribution_top_20_benefits = sum_dv_top_20/sum(sum_dv_top_20, na.rm = T),
+         contribution_top_30_benefits = sum_dv_top_30/sum(sum_dv_top_30, na.rm = T)) 
 ```
 
 ```{r}
 ## Combine goals ----
-
-stats_by_country <- stats_by_country %>% 
+stats_by_territory <- stats_by_territory %>% 
   mutate(continent = case_when(
-    iso3 == "ATF" ~ "Southern\nOcean",
-    iso3 == "SGS" ~ "Southern\nOcean",
-    iso3 == "HMD" ~ "Southern\nOcean",
-    iso3 == "ATA" ~ "Southern\nOcean",
-    iso3 == "CHG" ~ "Asia",
-    iso3 == "TAA" ~ "Europe",
-    iso3 == "ASC" ~ "Europe",
-    iso3 == "BVT" ~ "Southern\nOcean",
-    iso3 == "UMI" ~ "Oceania",
-    iso3 == "CCK" ~ "Oceania",
-    iso3 == "IOT" ~ "Europe",
-    iso3 == "MNP++" ~ "Oceania",
-    iso3 == "CW" ~ "Americas",
-    iso3 == "ANT" ~ "Americas",
-    iso3 == "CLI" ~ "Americas",
+    territory_iso3 == "ATF" ~ "Southern\nOcean",
+    territory_iso3 == "SGS" ~ "Southern\nOcean",
+    territory_iso3 == "HMD" ~ "Southern\nOcean",
+    territory_iso3 == "ATA" ~ "Southern\nOcean",
+    territory_iso3 == "CHG" ~ "Asia",
+    territory_iso3 == "TAA" ~ "Europe",
+    territory_iso3 == "ASC" ~ "Europe",
+    territory_iso3 == "BVT" ~ "Southern\nOcean",
+    territory_iso3 == "UMI" ~ "Oceania",
+    territory_iso3 == "CCK" ~ "Oceania",
+    territory_iso3 == "IOT" ~ "Europe",
+    territory_iso3 == "MNP++" ~ "Oceania",
+    territory_iso3 == "CW" ~ "Americas",
+    territory_iso3 == "ANT" ~ "Americas",
+    territory_iso3 == "CLI" ~ "Americas",
     TRUE ~ continent
   )) 
 
-stats_by_country <- stats_by_country %>% 
-  mutate(country = countrycode::countrycode(sourcevar =  iso3, origin = "iso3c", destination = "country.name")) 
+stats_by_territory <- stats_by_territory %>% 
+  mutate(country = countrycode::countrycode(sourcevar = territory_iso3, origin = "iso3c", destination = "country.name")) %>% 
+  select(territory_iso3, country, everything())
 
-stats_by_country$country[stats_by_country$iso3 == "CLI"] <- "Clipperton Isl"
-
-stats_by_country$country[stats_by_country$iso3 == "CHG"] <- "Chagos"
-
-stats_by_country <- stats_by_country %>%
+stats_by_territory <- stats_by_territory %>%
   mutate(country = gsub("Islands", "Isl", country),
          country = gsub("Island", "Isl", country),
          country = gsub("Democratic", "Dem", country),
@@ -304,47 +313,51 @@ stats_by_country <- stats_by_country %>%
          country = gsub("Northern", "N", country), 
          country = gsub("Reunion", "Reunion   ", country))
 
-stats_by_country$country[stats_by_country$iso3 == "ATF"] <- "ATF"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "ATF"] <- "ATF"
 
-stats_by_country$country[stats_by_country$iso3 == "UMI"] <- "U.S Minor Outlying Isl"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "UMI"] <- "U.S Minor Outlying Isl"
 
-stats_by_country$country[stats_by_country$iso3 == "MNP++"] <- "MNP++"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "MNP++"] <- "MNP++"
 
-stats_by_country$country[stats_by_country$iso3 == "SGS"] <- "SGS"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "SGS"] <- "SGS"
 
-stats_by_country$country[stats_by_country$iso3 == "VIR"] <- "U.S Virgin Isl"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "VIR"] <- "U.S Virgin Isl"
 
-stats_by_country$country[stats_by_country$iso3 == "SHN"] <- "SHN"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "SHN"] <- "SHN"
 
-stats_by_country$country[stats_by_country$iso3 == "GBR"] <- "GBR"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "GBR"] <- "GBR"
 
-stats_by_country$country[stats_by_country$iso3 == "UMI"] <- "UMI"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "UMI"] <- "UMI"
 
-stats_by_country$country[stats_by_country$iso3 == "PNG"] <- "PNG"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "PNG"] <- "PNG"
 
-stats_by_country$country[stats_by_country$iso3 == "DOM"] <- "DOM"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "DOM"] <- "DOM"
 
-stats_by_country$country[stats_by_country$iso3 == "HMD"] <- "HMD"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "HMD"] <- "HMD"
 
-stats_by_country$country[stats_by_country$iso3 == "FSM"] <- "FSM"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "FSM"] <- "FSM"
 
-stats_by_country$country[stats_by_country$iso3 == "SJM"] <- "SJM"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "SJM"] <- "SJM"
 
-stats_by_country$country[stats_by_country$iso3 == "MMR"] <- "Myanmar"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "MMR"] <- "Myanmar"
 
-stats_by_country$country[stats_by_country$iso3 == "GNQ"] <- "Eq. Guinea"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "GNQ"] <- "Eq. Guinea"
 
-stats_by_country$country[stats_by_country$iso3 == "ARE"] <- "UAE"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "ARE"] <- "UAE"
 
-stats_by_country$country[stats_by_country$iso3 == "CCK"] <- "Keeling Isl"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "CCK"] <- "Keeling Isl"
 
-stats_by_country$country[stats_by_country$iso3 == "PYF"] <- "PYF"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "PYF"] <- "PYF"
 
-stats_by_country$country[stats_by_country$iso3 == "CPV"] <- "CPV"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "CPV"] <- "CPV"
 
-stats_by_country$country[stats_by_country$iso3 == "GNB"] <- "GNB"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "GNB"] <- "GNB"
 
-stats_by_country$country[stats_by_country$iso3 == "GLP"] <- "GLP"
+stats_by_territory$country[stats_by_territory$territory_iso3 == "GLP"] <- "GLP"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "CLI"] <- "Clipperton Isl"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "CHG"] <- "Chagos"
 ```
 
 # Make propeller plots
@@ -355,14 +368,14 @@ make_propeller_plot <- function(stats_by_country, objective, top_n_countries){
   top_countries <- stats_by_country %>% 
     filter(goal == objective) %>% 
     ungroup() %>% 
-    top_n(top_n_countries, sum_delta_v_10_percent) %>% 
+    top_n(top_n_countries, sum_dv_top_10) %>% 
     pull(country)
   
   plotting_data <- stats_by_country %>% 
     filter(country %in% top_countries, goal == objective) %>% 
     ungroup() %>% 
     mutate(continent = factor(continent),
-           value = fraction_top_10 - fraction_protected) %>% 
+           value = fraction_eez_top_10) %>% 
     select(country, continent, goal, value) %>% 
     arrange(continent, value) %>% 
     add_row(continent = rep(unique(stats_by_country$continent), 4)) %>% ## add a couple of empty rows to separate continents
@@ -429,17 +442,17 @@ make_propeller_plot <- function(stats_by_country, objective, top_n_countries){
   
 }
 
-propeller_bio_plot <- make_propeller_plot(stats_by_country = stats_by_country, objective = "biodiversity", top_n_countries = 100)
+propeller_bio_plot <- make_propeller_plot(stats_by_country = stats_by_territory, objective = "biodiversity", top_n_countries = 100)
 
 ggsave(propeller_bio_plot, 
        filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_bio.png"), 
        dpi = 300,  height = 13, width = 13)
 
-make_propeller_plot(stats_by_country = stats_by_country, objective = "carbon", top_n_countries = 100) %>% 
+make_propeller_plot(stats_by_country = stats_by_territory, objective = "carbon", top_n_countries = 100) %>% 
   ggsave(filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_carbon.png"), 
          dpi = 300,  height = 13, width = 13)
 
-make_propeller_plot(stats_by_country = stats_by_country, objective = "food", top_n_countries = 100) %>% 
+make_propeller_plot(stats_by_country = stats_by_territory, objective = "food", top_n_countries = 100) %>% 
   ggsave(filename = file.path(emLab_project_dir, "figures", "supplement" ,"propeller_food.png"), 
          dpi = 300,  height = 13, width = 13)
 ```

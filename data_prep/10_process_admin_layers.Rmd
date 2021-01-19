@@ -44,6 +44,9 @@ fc_list <- ogrListLayers(MPAtlas_gdb_path)
 # Read the feature class
 
 all_MPAs <- sf::st_read(dsn = MPAtlas_gdb_path, layer = "mpatlas_20190910_poly")
+
+mpas_info <- all_MPAs %>% 
+  st_drop_geometry()
 ```
 
 ## implememted and highly protected
@@ -147,7 +150,7 @@ MPAs_to_add <- designated_fully_highly_protected_MPAs %>%
 ```{r}
 reviewed_fully_highly_protected_MPAs_moll <- all_MPAs %>% 
   filter((is_mpa == TRUE & status != "Proposed" & implemented == TRUE & protection_level %in% c("Full, High", "Full, High (Partially Zoned)")) | 
-           mpa_id %in% MPAs_to_add$mpa_id | country == "GAB") %>% 
+           mpa_id %in% MPAs_to_add$mpa_id | country == "GAB" ) %>% 
   filter(mpa_id != 68808627) %>% # remove Pacifico mexicano profundo
   st_transform("+proj=moll") 
 
@@ -173,6 +176,10 @@ tmap::tmap_save(reviewed_fully_highly_protected_MPAs_map,
 writeRaster(reviewed_fully_highly_protected_MPAs_raster_moll, 
             filename = file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"),
             overwrite = T)
+
+sf::st_write(reviewed_fully_highly_protected_MPAs_moll,
+             file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.gpkg"),
+             append = FALSE)
 ```
 
 ```{r}

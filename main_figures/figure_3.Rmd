@@ -27,8 +27,10 @@ source(here::here("common.R"))
 ## Efficiency curve
 
 ```{r}
-efficiency_curve_data <- read_rds(file.path(emLab_project_dir, "data","03_output", "13_efficiency_curve", "efficiency_curves.rds")) %>% 
-  filter(effort_assumption == 2)
+efficiency_curve_data <- read_rds(file.path(emLab_project_dir, "data","03_output",
+                                            "13_efficiency_curve", "efficiency_curves_updated_ray.rds")) %>% 
+  filter(effort_assumption == 2) %>% 
+  filter(bio_x_factor != -0.4) 
 
 pts_of_interest <- bind_rows(efficiency_curve_data %>% 
                                slice(which.min(abs(bio_x_factor - 0))),
@@ -91,7 +93,7 @@ radar_plot_b <- pts_of_interest %>%
   filter(label == "b") %>% 
   ggradar::ggradar(group.point.size = 2, 
                    gridline.mid.colour	= "grey",
-                   grid.label.size	= 3, 
+                   grid.label.size	= 4, 
                    group.line.width	= 1,
                    axis.label.size = 4,
                    group.colours = "#046C99") +
@@ -104,7 +106,7 @@ radar_plot_c <- pts_of_interest %>%
   filter(label == "c") %>% 
   ggradar::ggradar(group.point.size = 2, 
                    gridline.mid.colour	= "grey",
-                   grid.label.size	= 3,
+                   grid.label.size	= 4,
                    group.line.width	= 1,
                    axis.label.size = 4,
                    group.colours = "#046C99") +
@@ -117,7 +119,7 @@ radar_plot_d <- pts_of_interest %>%
   filter(label == "d") %>% 
   ggradar::ggradar(group.point.size = 2, 
                    gridline.mid.colour	= "grey",
-                   grid.label.size	= 3,
+                   grid.label.size	= 4,
                    group.line.width	= 1,
                    axis.label.size = 4,
                    group.colours = "#046C99")
@@ -149,10 +151,10 @@ bottom_row <- plot_grid(radar_plot_b + theme_radar,
                         ncol = 3)
 
 plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2,1),label_fontface = "plain" )+
-  ggsave(file.path(emLab_project_dir, "figures", "main", "figure_3.pdf"),  dpi = 300,  height = 6, width = 8)
+  ggsave(file.path(emLab_project_dir, "figures", "main", "figure_3_updated.pdf"),  dpi = 300,  height = 6, width = 8)
 
 plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2,1),label_fontface = "plain" )+
-  ggsave(file.path(emLab_project_dir, "figures", "main", "figure_3.png"),  dpi = 300,  height = 6, width = 9)
+  ggsave(file.path(emLab_project_dir, "figures", "main", "figure_3_updated.png"),  dpi = 300,  height = 6, width = 9)
 ```
 
 
@@ -161,8 +163,9 @@ plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, nc
 ## Efficiency curve
 
 ```{r}
-efficiency_curve_data <- read_rds(file.path(emLab_project_dir, "data","03_output", "13_efficiency_curve", "efficiency_curves.rds")) %>% 
-  filter(effort_assumption == 1)
+efficiency_curve_data <- read_rds(file.path(emLab_project_dir, "data","03_output", "13_efficiency_curve", "efficiency_curves_updated_ray.rds")) %>% 
+  filter(effort_assumption == 1) %>% 
+  filter(bio_x_factor != -0.4)
 
 pts_of_interest <- bind_rows(efficiency_curve_data %>% 
                                slice(which.min(abs(bio_x_factor - 0))),
@@ -282,10 +285,10 @@ bottom_row <- plot_grid(radar_plot_b + theme_radar,
                         ncol = 3)
 
 plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2,1),label_fontface = "plain" )+
-  ggsave(file.path(emLab_project_dir, "figures", "supplement", "efficiency_curve_a1.png"),  dpi = 300,  height = 6, width = 8)
+  ggsave(file.path(emLab_project_dir, "figures", "supplement", "efficiency_curve_a1_updated.png"),  dpi = 300,  height = 6, width = 8)
 
 plot_grid(efficiency_curve, bottom_row, labels = c('a', ''), label_size = 12, ncol = 1, rel_heights = c(2,1),label_fontface = "plain" )+
-  ggsave(file.path(emLab_project_dir, "figures", "supplement", "efficiency_curve_a1.pdf"),  dpi = 300,  height = 6, width = 8)
+  ggsave(file.path(emLab_project_dir, "figures", "supplement", "efficiency_curve_a1_updated.pdf"),  dpi = 300,  height = 6, width = 8)
 ```
 
 

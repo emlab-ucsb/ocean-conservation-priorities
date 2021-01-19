@@ -351,6 +351,10 @@ ggsave(bio_today_vs_2050_map_approach_1,
 
 ggsave(bio_today_vs_2050_map_approach_1, filename = file.path(emLab_project_dir, "figures", "supplement", "bio_today_vs_2050_approach_1.png"), 
        dpi = 300,  height = 4, width = 8)
+
+n_ocean_cells <- ocean_low_res_moll %>% cellStats(function(x, ...) sum(!is.na(x))) 
+
+100*comparison_raster_approach_1 %>% cellStats(function(x, ...) sum(x == 1, na.rm = T))/n_ocean_cells
 ```
 
 # Approach 2: Isolate the effect of Climate change

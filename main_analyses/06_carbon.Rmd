@@ -31,7 +31,8 @@ dir.create(variant_dir)
 # Load features data 
 
 ```{r}
-carbon_features_info <- tibble(filepath = file.path(emLab_project_dir, "data", "02_processed", "carbon", "carbon_lr_mean_moll.tif"),
+carbon_features_info <- tibble(filepath = file.path(emLab_project_dir, 
+                                                    "data", "02_processed", "carbon", "carbon_lr_mean_moll.tif"),
                                w = 1)
 ```
 
@@ -176,8 +177,38 @@ write_rds(ranking,
 ### Apply Impacts 
 
 ```{r}
-abatable_impacts_df <- raster(file.path(emLab_project_dir, 
-                                            "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr_log.tif")) %>% 
+# abatable_impacts_df <- raster(file.path(emLab_project_dir, 
+#                                             "data", "02_processed", "impacts", "bottom_trawling", "abatable_impact_carbon_svr_log.tif")) %>% 
+#   raster::as.data.frame(xy = T) %>% 
+#   set_names(c("x", "y", "Ia")) %>% 
+#   inner_join(ocean_matrix) %>% 
+#   as_tibble() %>% 
+#   replace_na(list(Ia = 0)) %>% 
+#   filter(cell_id %in% rownames(Norm_features_matrix))
+# 
+# abatable_impacts_df <- abatable_impacts_df %>% 
+#   mutate(Ia = if_else(Ia == 0, 10^-6, Ia))
+# 
+# Norm_features_matrix_BAU <- Norm_features_matrix %>% 
+#   sweep(1, (1 - abatable_impacts_df$Ia), FUN = "*") 
+# 
+# remains_BAU <- colSums(Norm_features_matrix_BAU, na.rm = T)
+# 
+# 1- remains_BAU
+# 
+# Norm_features_matrix_MPAs <- Norm_features_matrix %>% 
+#   sweep(1, 1, FUN = "*")
+# 
+# remains_MPA <- colSums(Norm_features_matrix_MPAs, na.rm = T)
+# 
+# Norm_features_matrix_diff <- Norm_features_matrix %>% 
+#   sweep(1, (abatable_impacts_df$Ia), FUN = "*")
+```
+
+```{r}
+Ia <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "Ia.tif"))
+
+abatable_impacts_df <- Ia %>% 
   raster::as.data.frame(xy = T) %>% 
   set_names(c("x", "y", "Ia")) %>% 
   inner_join(ocean_matrix) %>% 
@@ -186,14 +217,14 @@ abatable_impacts_df <- raster(file.path(emLab_project_dir,
   filter(cell_id %in% rownames(Norm_features_matrix))
 
 abatable_impacts_df <- abatable_impacts_df %>% 
-  mutate(Ia = if_else(Ia == 0, 10^-6, Ia))
+  mutate(Ia = if_else(Ia == 0, 10^-30, Ia))
 
 Norm_features_matrix_BAU <- Norm_features_matrix %>% 
   sweep(1, (1 - abatable_impacts_df$Ia), FUN = "*") 
 
 remains_BAU <- colSums(Norm_features_matrix_BAU, na.rm = T)
 
-1- remains_BAU
+1 - remains_BAU
 
 Norm_features_matrix_MPAs <- Norm_features_matrix %>% 
   sweep(1, 1, FUN = "*")
@@ -263,13 +294,7 @@ end_time <- Sys.time()
 end_time - start_time
 
 write_rds(ranking, 
-          file.path(variant_dir, "ranking_results.rds"))
-
-ranking %>% 
-  mutate(f = 1/n(),
-         f = cumsum(f)) %>% 
-  ggplot()+
-  geom_line(aes(x = f, y = cumsum(delta)))
+          file.path(variant_dir, "ranking_results_updated.rds"))
 ```
 
 # Results
@@ -356,7 +381,9 @@ rep_curves_se %>%
 ### With Impacts 
 
 ```{r}
-ranking<- read_rds(file.path(variant_dir, "ranking_results.rds"))
+ranking <- read_rds(file.path(variant_dir, "ranking_results_updated.rds"))
+
+total_remineralized_co2 <- 1.47*10^9
 
 benefit_curve <- MPAs_df %>% 
   filter(!is.na(mpa)) %>% 
@@ -369,38 +396,82 @@ benefit_curve <- MPAs_df %>%
               rownames_to_column("cell_id")) %>% 
   replace(is.na(.), 0) %>% 
   select(-x, -y, -delta, -pick_order, -is_mpa) %>% 
-  mutate(cell_id = as.numeric(cell_id)) %>% 
-  mutate_at(vars(-cell_id),.funs = cumsum) %>% 
-  sweep(MARGIN = 2, c(0, remains_BAU), `+`) %>%
-  mutate_at(vars(-cell_id), .funs = ~(.)^z) 
-
-write_rds(benefit_curve, 
-          file.path(variant_dir, "carbon_benefit.rds"))
+  replace(is.na(.), 0) %>% 
+  mutate(cell_id = as.numeric(cell_id),
+         carbon = cumsum(carbon),
+         carbon = scales::rescale(carbon)*total_remineralized_co2)
 
 benefit_curve %>% 
-  select(-cell_id) %>% 
-  rowSums() %>% 
-  as_tibble() %>% 
-  set_names("V") %>% 
   mutate(fraction_protected = 1/n(),
          fraction_protected = cumsum(fraction_protected)) %>% 
   filter(fraction_protected > fraction_in_MPA) %>% 
   ggplot()+
-  geom_line(aes(x = fraction_protected, y = V)) +
+  geom_line(aes(x = fraction_protected, y = carbon/10^9))+
   geom_vline(xintercept = c(0.1, 0.2, 0.3),
              linetype = c("dashed","dotted","dotdash"))+
   labs(x = "Fraction Ocean Protected",
-       y = "Carbon Benefit",
+       y = "Carbon Benefit (x10^9 Mg CO2)",
        caption = "Carbon, with impacts")+
   theme_classic()+
   scale_x_continuous(limits = c(0,1), expand = c(0,0))+
   geom_rect(aes(xmin = 0, 
                 xmax = fraction_in_MPA, 
-                ymin = min(benefit_curve$V), 
-                ymax = max(benefit_curve$V)),
-                fill = "#69B578", alpha = 0.01)+
-  ggsave(file.path(variant_dir, "benefit_curve.png"),
+                ymin = 0, 
+                ymax = max(carbon/10^9)),
+            fill = "#69B578", alpha = 0.01)+
+  ggsave(file.path(variant_dir, "benefit_curve_updated.png"),
          width = 7, height = 4)
+
+write_rds(benefit_curve, 
+          file.path(variant_dir, "carbon_benefit_updated.rds"))
+```
+
+```{r}
+# ranking <- read_rds(file.path(variant_dir, "ranking_results.rds"))
+# 
+# benefit_curve <- MPAs_df %>%
+#   filter(!is.na(mpa)) %>%
+#   select(cell_id) %>%
+#   bind_rows(ranking) %>%
+#   mutate(is_mpa = is.na(delta))  %>%
+#   full_join(ocean_matrix) %>%
+#   left_join(Norm_features_matrix_diff %>%
+#               as_tibble(rownames = NA) %>%
+#               rownames_to_column("cell_id")) %>%
+#   replace(is.na(.), 0) %>%
+#   select(-x, -y, -delta, -pick_order, -is_mpa) %>%
+#   mutate(cell_id = as.numeric(cell_id)) %>%
+#   mutate_at(vars(-cell_id),.funs = cumsum) %>%
+#   sweep(MARGIN = 2, c(0, remains_BAU), `+`) %>%
+#   mutate_at(vars(-cell_id), .funs = ~(.)^z)
+# 
+# write_rds(benefit_curve, 
+#           file.path(variant_dir, "carbon_benefit.rds"))
+# 
+# benefit_curve %>% 
+#   select(-cell_id) %>% 
+#   rowSums() %>% 
+#   as_tibble() %>% 
+#   set_names("V") %>% 
+#   mutate(fraction_protected = 1/n(),
+#          fraction_protected = cumsum(fraction_protected)) %>% 
+#   filter(fraction_protected > fraction_in_MPA) %>% 
+#   ggplot()+
+#   geom_line(aes(x = fraction_protected, y = V)) +
+#   geom_vline(xintercept = c(0.1, 0.2, 0.3),
+#              linetype = c("dashed","dotted","dotdash"))+
+#   labs(x = "Fraction Ocean Protected",
+#        y = "Carbon Benefit",
+#        caption = "Carbon, with impacts")+
+#   theme_classic()+
+#   scale_x_continuous(limits = c(0,1), expand = c(0,0))+
+#   geom_rect(aes(xmin = 0, 
+#                 xmax = fraction_in_MPA, 
+#                 ymin = min(benefit_curve$V), 
+#                 ymax = max(benefit_curve$V)),
+#                 fill = "#69B578", alpha = 0.01)
+#   ggsave(file.path(variant_dir, "benefit_curve.png"),
+#          width = 7, height = 4)
 ```
 
 ```{r}
@@ -439,10 +510,9 @@ rep_curves %>%
                 ymin = 0,
                 ymax = 1),
             fill = "#69B578", alpha = 0.01)+
-  ggsave(file.path(variant_dir, "rep_curve.png"),
+  ggsave(file.path(variant_dir, "rep_curve_updated.png"),
          width = 7, height = 4)
 ```
-
 
 ## Priority Maps
 
@@ -478,27 +548,29 @@ ranking_raster <- MPAs_df %>%
   mask(ocean_low_res_moll) 
 
 writeRaster(ranking_raster, 
-            file.path(variant_dir, "ranking_raster.tif"), 
+            file.path(variant_dir, "ranking_raster_updated.tif"), 
             overwrite = T)
 ```
 
 ```{r}
-dv_raster <- benefit_curve %>% 
-  select(-cell_id) %>% 
-  as_tibble() %>% 
-  set_names("V") %>% 
-  bind_cols(benefit_curve %>% 
-              transmute(cell_id = as.character(cell_id))) %>% 
-  left_join(ocean_matrix) %>% 
-  mutate(dV = V - lag(V)) %>% 
-  replace_na(list(dV = 0)) %>% 
-  select(x,y,dV) %>% 
-  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
-  projectRaster(ocean_low_res_moll) %>% 
-  mask(ocean_low_res_moll) 
+dv_raster <- benefit_curve %>%
+  select(carbon) %>%
+  as_tibble() %>%
+  set_names("V") %>%
+  bind_cols(benefit_curve %>%
+              transmute(cell_id = as.character(cell_id))) %>%
+  left_join(ocean_matrix) %>%
+  mutate(dV = V - lag(V)) %>%
+  replace_na(list(dV = 0)) %>%
+  select(x,y,dV) %>%
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>%
+  projectRaster(ocean_low_res_moll) %>%
+  mask(ocean_low_res_moll)
+
+plot(dv_raster)
 
 writeRaster(dv_raster, 
-            file.path(variant_dir, "delta_v_raster.tif"), 
+            file.path(variant_dir, "delta_v_raster_updated.tif"), 
             overwrite = T)
 ```
 
@@ -511,8 +583,10 @@ map_priorities(ranking_raster_se, discrete = T, mpas_raster = MPAs, caption = "C
 
 ranking_raster <- raster(file.path(variant_dir, "ranking_raster.tif"))
 
+plot(ranking_raster)
+
 map_priorities(ranking_raster, discrete = T, mpas_raster = MPAs, caption = "Carbon, with impacts", ocean_df = ocean_matrix) +
-  ggsave(file.path(variant_dir, "priority_map.png"),
+  ggsave(file.path(variant_dir, "priority_map_updated.png"),
          dpi = 300,  height = 4, width = 8)
 ```
 
@@ -528,7 +602,7 @@ ranking_diff %>%
   geom_raster(data = MPAs_df %>% 
                 filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
   geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
-  scale_fill_continuous_diverging(rev = T,
+  colorspace::scale_fill_continuous_diverging(rev = T,
                                   guide = guide_colorbar(title = "ranking difference",
                                                          title.position = 'bottom',
                                                          direction = "horizontal",
@@ -550,14 +624,14 @@ ranking_diff %>%
         panel.background = element_rect(fill = NA, color = NA), 
         legend.background = element_rect(fill = NA, color = NA),
         panel.border = element_blank())+
-  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "carbon_priorities_diff_scorched_earth.png"), 
+  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "carbon_priorities_diff_scorched_earth_updated.png"), 
          dpi = 300,  height = 9, width = 8)
 ```
 
 # What does it take to get 90% of the benefits?
 
 ```{r}
-benefit_curve <- read_rds(file.path(variant_dir, "carbon_benefit.rds"))
+benefit_curve <- read_rds(file.path(variant_dir, "carbon_benefit_updated.rds"))
 
 carbon_benefit_bau <- benefit_curve %>% 
   mutate(fraction_protected = 1/n(),
@@ -573,14 +647,15 @@ ninety_percent_delta_carbon <- carbon_benefit_bau + 0.9*(1 - carbon_benefit_bau)
          fraction_protected = cumsum(fraction_protected),
          V_rescaled = scales::rescale(carbon)) %>% 
   slice(which.min(abs(V_rescaled - ninety_percent_delta_carbon))) %>% 
-  pull(fraction_protected)) # 8.7 %
+  pull(fraction_protected)) 
 
-# additional protection 6.2%
+# additional protection 1.18%
 f_to_90 - fraction_in_MPA
 ```
+
 #  EEZ vs HS
 
-How much of the area neede to reach 90% beneftis is in EEZ vs HS
+How much of the area needed to reach 90% beneftis is in EEZ vs HS
 
 ```{r}
 territories_mask <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories.tif")) # 1 equals high seas

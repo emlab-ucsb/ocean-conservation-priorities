@@ -902,9 +902,11 @@ tmap::tmap_save(seabird_richness_map,
 # Map patterns of species richness
 
 ```{r}
-aquamaps_spp_dist_expert <- read_csv(file.path(emLab_shrd_data_dir, "aquamaps-species-distributions","all_hcaf_species_native_expert.csv"))
+aquamaps_spp_dist_expert <- read_csv(file.path(emLab_shrd_data_dir,
+                                               "aquamaps-species-distributions","all_hcaf_species_native_expert.csv"))
   
-aquamaps_spp_dist_model <- read_csv(file.path(emLab_shrd_data_dir, "aquamaps-species-distributions","all_hcaf_species_native.csv"))
+aquamaps_spp_dist_model <- read_csv(file.path(emLab_shrd_data_dir,
+                                              "aquamaps-species-distributions","all_hcaf_species_native.csv"))
 
 aquamaps_spp_dist <- bind_rows(aquamaps_spp_dist_expert %>% 
                                  select(SpeciesID, CenterLong, CenterLat, probability) %>% 
@@ -914,8 +916,11 @@ aquamaps_spp_dist <- bind_rows(aquamaps_spp_dist_expert %>%
                                  mutate(reviewed = F))
 
 aquamaps_spp_list <- read_csv(file.path(emLab_project_dir, "data", "02_processed","species_list", "aquamaps_spp_list.csv"))
+```
 
-included_aquamaps_spp_list <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "species_list","included_aquamaps_spp_list.csv"))
+```{r}
+included_aquamaps_spp_list <- read_csv(file.path(emLab_project_dir, 
+                                                 "data", "02_processed", "species_list","included_aquamaps_spp_list.csv"))
 
 aquamaps_spp_dist <- aquamaps_spp_dist %>% 
   inner_join(aquamaps_spp_list %>% 

@@ -1,0 +1,206 @@
+---
+title: "Timing of trawling impacts"
+author: '*Compiled on `r date()` by `r Sys.info()[''user'']`*'
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '1'
+  html_document:
+    code_folding: show
+    highlight: haddock
+    number_sections: no
+    theme: cerulean
+    toc: yes
+    toc_depth: 1
+    toc_float: yes
+  word_document:
+    toc: yes
+    toc_depth: '1'
+---
+
+```{r, include = F, }
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo=FALSE, fig.align = 'center')
+
+library(raster)
+library(sf)
+library(tidyverse)
+library(patchwork)
+library(purrr)
+
+source(here::here("common.R"))
+```
+
+
+# Methods
+
+Let $C_t$ be the total labile carbon in the first meter of sediments impacted by bottom trawling. Assuming that the area and intensity of bottom trawling remains constant every year, we model the timeframe to depletion as:
+
+$$C_{t + 1} = C_{t} + C_{A,t} - C_{L,t}$$
+
+where $C_t$ is the labile carbon stock in time t, $C_{A,t}$ is the annual addition of labile carbon from external sources, and $C_{L,t}$ is the labile carbon lost each year. The labile carbon stock in year zero ($C_0$) is 38.4x10^9 Mg C and the annual addition of carbon from external sources amounts to 67.2x10^6 Mg C.
+
+The annual carbon lost each year as a result of trawling is comprised of carbon that is lost by transport ($C_T$) and by remineralization ($C_R$), thus:
+
+$$C_{L,t} = C_{T,t} + C_{R, t}$$
+
+where
+
+$$ C_{T,t} = C_{d}(1-p_{crd})$$
+
+and 
+
+$$ C_{R,t} = C_{d}*\epsilon$$
+
+where $p_{crd}$ is the fraction of disturbed sediment that resettles ($p_{crd} = 0.87$), and $\epsilon$ is the remineraliztion efficiency of disturbed sediments ($\epsilon = 0.35$). $C_{d}$ corresponds to the carbon that is disturbed each year by trawling which is defined as: 
+
+$$ C_{d, t} = C_{d,t-1} - C_{T, t-1} - C_{R, t-1} + C_{n} + C_{A,t}$$
+where $C_n$ is the newly available carbon from deeper sediment layers and the disturbed carbon in the first year. This is estimated as the difference between the trawl penetration depth (2.44cm)
+and the depth of sediment resettled after previous trawling, accounting for natural sediment accumulation rates (0.07cm yr-1):
+
+$$C_n = C_o*(p_d - p_d*p_{crd} - r_s)$$
+
+where $C_0$ is the total labile carbon in year 0. This yields an annual deepening of the disturbed carbon layer of 0.0024 m yr^-1.
+
+# Implementation
+
+```{r echo = T}
+n_steps <- 400
+
+C_total_init <- 54.89*10^9
+
+C_add <- 4900000*19.6
+
+e_rem <- 0.3
+
+p_d <- 0.024
+
+p_crd <- 0.87
+
+sediment_recharge <- 0.0007
+x
+C_disturbed_init <- C_total_init*0.0244
+```
+
+```{r echo = T}
+C_total <- list()
+
+C_total[[1]] <- C_total_init
+
+C_disturbed <- list()
+
+C_disturbed[[1]] <- C_disturbed_init
+
+C_remin <- list()
+
+C_remin[[1]] <- C_disturbed_init*e_rem
+
+C_trans <- list()
+
+C_trans[[1]] <- C_disturbed_init*(1-p_crd)
+
+d_new <- p_d - p_d*p_crd - sediment_recharge
+
+for (i in 2:n_steps) {
+  
+  C_disturbed[[i]] <- C_disturbed[[i-1]] - C_remin[[i-1]] - C_trans[[i-1]] + C_add + C_total[[1]]*d_new
+  
+  C_remin[[i]] <- C_disturbed[[i]]*e_rem
+  
+  C_trans[[i]] <- C_disturbed[[i]]*(1-p_crd)
+  
+  C_total[[i]] <- C_total[[i-1]] + C_add - C_remin[[i-1]] - C_trans[[i-1]] 
+  
+}
+```
+
+# Results
+
+```{r}
+results <- do.call(rbind, Map(data_frame,
+                   C_total =C_total,
+                   C_remin = C_remin)) %>% 
+  mutate(time = 1:n_steps)
+
+results %>% 
+  mutate(C_remin/results$C_remin[[1]])
+
+results %>%   
+  head(17) %>% 
+  ggplot()+
+  geom_line(aes(x = time, y = 3.67*C_remin/10^9))+
+  scale_y_continuous(limits = 4*c(0, 0.45), breaks = 4*c(0,0.05,0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45))+ 
+  scale_x_continuous(limits = c(1, 18), breaks = c(1:18))+ 
+    theme_minimal()+
+  labs( x = "Time (years)", y = bquote(CO[2]~"efflux" ~ ("Pg" ~ CO[2])))+
+  ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "timing_of_carbon_remineralization.png"), 
+       width = 7, 
+       height = 4)
+```
+
+```{r}
+results %>%   
+  ggplot()+
+  geom_line(aes(x = time, y = C_total/10^9))+
+  theme_minimal()+
+  labs(y = 'Carbon Stocks (10^9 Mg C)', x = "Time (years)")
+```
+
+
+```{r include = F}
+carbon_model = function(.x, .y, c_a, f_e) {
+  
+  c_stock = .x[["c_stock"]] #gets the population parameter from the last time step (.x)
+  
+  time = .y[["time"]] #need to get the time of the current step (.y)
+  
+  #Note that the new_pop calculation uses the parameters indexed at the current time
+  
+  new_c_stock = c_stock + c_a[time] + c_stock*f_e[time] - (c_stock + c_a[time] + c_stock*f_e[time])*0.35
+  
+  return(c(time = time, 
+           c_stock = new_c_stock))
+}
+
+
+# Starting parameters: the number of time steps to simulate, intial population size,
+# growth rate and intraspecific competition rate
+n_steps  = 100
+c_init = 9100
+c_a = 19.6*0.7
+f_e = 0.0025
+
+#First test: fixed growth rates
+test1 = data_frame(time = 1:n_steps,
+                   c_init = c_init, 
+                   c_a =c_a,
+                   f_e =f_e)
+
+
+# note where sim_data is specified here: this takes the columns of your raw data
+# and converts them into a list column where each item in the list is a named 
+# list with time and initial population added. Then the accumulate function
+# takes the arguments sim_data (the set of state vectors) and whatever other
+# parameters you specified
+out1 = test1 %>%
+  mutate(
+    sim_data = simplify_all(transpose(list(time=time,c_stock=c_init))), 
+    sims = accumulate(sim_data,
+                      carbon_model, 
+                      c_a=c_a,
+                      f_e=f_e)) %>% 
+  bind_cols(simplify_all(transpose(.$sims)))
+
+
+out1 %>% 
+  ggplot()+
+  geom_line(aes(x = time, y = c_stock))
+```
+
+```{r, include = F}
+data.frame(time = 1:n_steps, 
+           c_stock = c_init) %>% 
+    mutate(c_stock = accumulate(c_stock, 
+                                .f = ~.x + c_a + f_e - (.x + c_a + f_e)*0.35)) %>% 
+  ggplot()+
+  geom_line(aes(x = time, y = c_stock))
+```

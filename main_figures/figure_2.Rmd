@@ -37,8 +37,8 @@ fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
 
 ```{r}
 bio_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "ranking_raster.tif"))
-carbon_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster.tif"))
-food_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster_a2.tif"))
+carbon_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster_updated.tif"))
+food_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ray","ranking_raster_a2.tif"))
 
 find_overlap <- function(top_p_bio, top_p_carbon, top_p_food){
   
@@ -55,12 +55,12 @@ find_overlap <- function(top_p_bio, top_p_carbon, top_p_food){
 ## Needed to reach 90% benefits
 
 ```{r}
-summary_of_food_results <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "summary_of_food_results.rds"))
+summary_of_food_results <- read_rds(file.path(emLab_project_dir, "data", "03_output", "07_food", "ray","summary_of_food_results.rds"))
 ```
 
 ```{r}
 bio_90_percent <- 0.2149893
-carbon_90_percent <- 0.08714317
+carbon_90_percent <- 0.03585495 #0.08714317
 food_90_percent <- summary_of_food_results$protection_to_90_percent[summary_of_food_results$model == "a2"]
 
 overlap_raster_90_percent <- find_overlap(top_p_bio = 1 - bio_90_percent, top_p_carbon = 1 - carbon_90_percent, top_p_food = 1 - food_90_percent) 
@@ -225,13 +225,14 @@ b <- (multi_objective_curves_biodiversity_priority | multi_objective_curves_food
 
 fig2 <- a /(b) + plot_layout(ncol = 1, heights = c(2.5,1)) + plot_annotation(tag_levels = "a")
 
-ggsave(fig2, filename = file.path(emLab_project_dir, "figures", "main", "figure_2.pdf"), dpi = 300,  height = 8, width = 8)
-ggsave(fig2, filename = file.path(emLab_project_dir, "figures", "main", "figure_2.png"), dpi = 300,  height = 8, width = 8)
+ggsave(fig2, filename = file.path(emLab_project_dir, "figures", "main", "figure_2_updated.pdf"), dpi = 300,  height = 8, width = 8)
+ggsave(fig2, filename = file.path(emLab_project_dir, "figures", "main", "figure_2_updated.png"), dpi = 300,  height = 8, width = 8)
 ```
 
 ```{r}
 co_benefits_food %>% 
   slice(which.max(co_benefits_food$food))
 ```
+
 
 

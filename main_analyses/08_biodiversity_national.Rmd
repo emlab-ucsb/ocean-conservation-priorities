@@ -390,3 +390,78 @@ benefit_curve %>%
   pull(fraction_protected))
 ```
 
+# What if each country protects 30% of their EEZ?
+
+```{r}
+top_30_per_eez <- national_results %>% 
+  group_by(iso_ter1) %>% 
+  mutate(fraction_eez_protected = 1/n(),
+         fraction_eez_protected = cumsum(fraction_eez_protected)) %>% 
+  filter(fraction_eez_protected <= 0.3, iso_ter1 != "ABNJ")
+
+nrow(top_30_per_eez)/nrow(ocean_matrix) # 30% of each EEZ represents ~13% of the ocean
+
+representation_curves_top_30s <- MPAs_df %>% 
+  filter(!is.na(mpa)) %>% 
+  select(cell_id) %>% 
+  bind_rows(top_30_per_eez %>% 
+              mutate(cell_id = as.character(as.integer(cell_id))) %>% 
+              arrange(desc(delta))) %>% 
+  mutate(is_mpa = is.na(delta)) %>% 
+  #full_join(ocean_matrix) %>% 
+  left_join(Norm_features_matrix_diff %>% 
+              as_tibble(rownames = NA) %>% 
+              rownames_to_column("cell_id")) %>% 
+  replace(is.na(.), 0) 
+
+benefit_curve_national_top_30s <- representation_curves_top_30s %>% 
+  select(-cell_id, -delta, -pick_order, -is_mpa, -iso_ter1, -fraction_eez_protected) %>% 
+  mutate_all(.funs = cumsum) %>%
+  sweep(MARGIN = 2, remains_BAU, `+`) %>%
+  mutate_all(.funs = ~(.)^0.25) %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/nrow(ocean_matrix),
+         fraction_protected = cumsum(fraction_protected))
+
+max(benefit_curve_national_top_30s$fraction_protected)
+max(benefit_curve_national_top_30s$V)
+```
+
+```{r}
+global_benefit_curve <- read_rds(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "benefit_curves.rds"))
+
+global_bio_curve <- global_benefit_curve %>% 
+  select(-cell_id) %>% 
+  as.matrix() %*% as.matrix(feature_wts) %>% 
+  as_tibble() %>% 
+  set_names("V") %>% 
+  mutate(fraction_protected = 1/n(),
+         cell_id = global_benefit_curve$cell_id,
+         fraction_protected = cumsum(fraction_protected)) 
+
+global_bio_curve %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  mutate(V_rescaled = scales::rescale(V)) %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, V_rescaled))
+```
+
+```{r}
+max(benefit_curve_national_top_30s$V)/max(global_bio_curve$V)
+
+global_bio_curve %>% 
+  left_join(benefit_curve_national_top_30s %>% 
+                                 rename(V_national = V)) %>% 
+  filter(fraction_protected > fraction_in_MPA) %>% 
+  mutate(V_rescaled = scales::rescale(V),
+         V_rescaled_national = (V_national - min(V_national, na.rm = T))/(max(V) - min(V))) %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, V_rescaled, col = "globally optimized"))+
+  geom_line(aes(fraction_protected, V_rescaled_national, col = "top 30% of each EEZ"))+
+  theme_minimal()+
+  labs(y = "Biodiversity benefit")+
+  scale_color_viridis_d(name = "")
+```
+

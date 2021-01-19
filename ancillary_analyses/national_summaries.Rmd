@@ -1,0 +1,358 @@
+---
+title: "High Ambition Coalition"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+library(patchwork)
+
+source(here::here("common.R"))
+```
+
+# Masks
+
+```{r}
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+
+n_ocean_cells <- cellStats(ocean_low_res_moll, function(x, ...) sum(!is.na(x)))
+
+(n_cells_MPAs <- MPAs %>% cellStats(function(x, ...) sum(!is.na(x))))
+  
+(global_percent_protected <- 100*n_cells_MPAs/n_ocean_cells)
+
+eez_shp <- sf::st_read(file.path(emLab_shrd_data_dir, "marine-regions-EEZ-land-union-v3-202003", "EEZ_Land_v3_202030.shp")) %>% 
+  sf::st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  sf::st_transform(crs(ocean_low_res_moll)) %>% 
+  sf::st_simplify(dTolerance = 0) %>% 
+  janitor::clean_names()
+
+eez_shp <- eez_shp %>% 
+  filter(iso_ter1 != "ATA")
+
+eez_info <- eez_shp %>% 
+  st_drop_geometry() 
+  
+eez_info <- eez_info %>% 
+  mutate_if(is.factor, as.character) %>% 
+  rename(name = union) %>% 
+  mutate(iso_ter1 = case_when(
+  name %in% c("Alaska", "Hawaii") ~ "USA",
+  name %in% c("Kuril Islands") ~ "RUS",
+  name %in% c("Azores", "Madeira") ~ "PRT",
+  name %in% c("Canary Islands", "Chafarinas Islands", "Ceuta", "Melilla", "Peñón de Vélez de la Gomera","Perejil Island", "Alhucemas Islands") ~ "ESP",
+  name %in% c("Senkaku Islands", "Overlapping claim Liancourt Rocks: Japan / South Korea") ~ "JPN",
+  name %in% c("Navassa Island") ~ "JAM",
+  name %in% c("Serranilla Bank", "Colombian Exclusive Economic Zone (Quitasueño)", "Bajo Nuevo Bank", "Serrana Bank") ~ "COL",
+  name %in% c("Andaman and Nicobar") ~ "IND",
+  name %in% c("Clipperton Island") ~ "CLI",
+  name %in% c("Galapagos") ~ "ECU",
+  name %in% c("Chagos Archipelago") ~ "CHG",
+  name %in% c("Oecusse") ~ "TLS",
+  name %in% c("Glorioso Islands", "Tromelin Island") ~ "ATF",
+  name %in% c("Trinidade") ~ "BRA",
+  name %in% c("Matthew and Hunter Islands") ~ "NCL",
+  name %in% c("Easter Island") ~ "CHL",
+  name %in% c("Prince Edward Islands") ~ "ZAF",
+  name %in% c("Macquarie Island") ~ "AUS", 
+  name %in% c("Doumeira Islands") ~ "ERI", 
+  TRUE ~ iso_ter1
+  )) 
+
+territories_mask <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories.tif")) # 1 equals high seas
+
+territories_df <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "masks", "territories_lookup.csv"))
+
+eez_mask <- ocean_low_res_moll %>% 
+  mask(territories_mask) %>% 
+  mask(territories_mask == 1926, maskvalue = 1) # remove Antartica
+
+hs_mask <- ocean_low_res_moll %>% 
+  mask(eez_mask, inverse = T)
+```
+
+# Summaries
+
+## GOCP
+
+```{r}
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+biodiversity_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "ranking_raster.tif"))
+
+delta_bio_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "delta_v_raster.tif"))
+
+carbon_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster_updated.tif"))
+
+delta_carbon_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "delta_v_raster_updated.tif"))
+
+food_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster_a2.tif"))
+
+delta_food_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "delta_v_raster_a2.tif"))
+
+gocp_stack <- stack(MPAs, 
+                    biodiversity_priorities_raster, 
+                    delta_bio_V_raster, 
+                    carbon_priorities_raster, 
+                    delta_carbon_V_raster,
+                    food_priorities_raster,
+                    delta_food_V_raster)
+
+results_by_territory <- gocp_stack %>% 
+  raster::extract(eez_shp, df = T) %>% 
+  set_names(c("ID", "is_mpa", "bio_rank", "bio_dv", "carbon_rank", "carbon_dv", "food_rank", "food_dv"))
+
+country_info <- results_by_territory %>% 
+  group_by(ID) %>% 
+  summarize(n_cells = sum(bio_rank >= 0, na.rm = T),
+            n_protected_cells = sum(is_mpa, na.rm = T)) %>% 
+  left_join(eez_info %>% 
+              rowid_to_column() %>% 
+              select(ID = rowid, territory_name = name, territory_iso3 = iso_ter1, mrgid_ter1, mrgid_eez, sov_iso3 = iso_sov1)) 
+
+results_by_territory <- results_by_territory %>% 
+  pivot_longer(cols = c(-ID, -is_mpa), 
+               names_to = c("goal", ".value"),
+               names_pattern = "(.+)_(.+)") %>% 
+  group_by(ID, goal) %>% 
+  summarize(n_cells_top_30 = sum(rank >= .70 & is.na(is_mpa), na.rm = T),
+            n_cells_top_20 = sum(rank >= .80 & is.na(is_mpa), na.rm = T),
+            n_cells_top_10 = sum(rank >= .90 & is.na(is_mpa), na.rm = T),
+            n_cells_top_5 = sum(rank >= .95 & is.na(is_mpa), na.rm = T),
+            sum_dv_top_30 = sum(dv[rank >= .70 & is.na(is_mpa)], na.rm = T),
+            sum_dv_top_20 = sum(dv[rank >= .80 & is.na(is_mpa)], na.rm = T),
+            sum_dv_top_10 = sum(dv[rank >= .90 & is.na(is_mpa)], na.rm = T),
+            sum_dv_top_5 = sum(dv[rank >= .95 & is.na(is_mpa)], na.rm = T)) %>% 
+  left_join(country_info) %>% 
+  filter(n_cells > 0) %>% 
+  arrange(territory_name) %>% 
+  select(ID, territory_name, territory_iso3, mrgid_ter1, mrgid_eez, sov_iso3, n_cells, n_protected_cells, everything())
+
+results_by_territory %>% 
+  select(goal, everything()) %>% 
+  write_csv(path = file.path(emLab_project_dir, "data", "03_output", "summary_by_territory.csv"))
+```
+
+## Carbon and CO2
+
+```{r}
+carbon_hr <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "carbon_hr.tif")) # Mg C km^2
+
+co2_efflux <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "co2_efflux.tif")) # Mg C km^2
+
+carbon_by_territory <-  carbon_hr %>% 
+  trim() %>% 
+  raster::extract(eez_shp, df = T) %>% 
+  set_names(c("ID", "carbon"))
+
+write_rds(carbon_by_territory, "carbon_by_territory.rds")
+
+co2_by_territory <-  co2_efflux %>% 
+  trim() %>% 
+  raster::extract(eez_shp, df = T, na.rm = T) %>% 
+  set_names(c("ID", "co2"))
+```
+
+### Russia
+
+```{r}
+carbon_by_territory %>% 
+  filter(ID == 205) %>% #results_by_territory$ID[results_by_territory$territory_iso3 == "RUS"]
+  summarize(total_carbon = sum(carbon, na.rm = T))
+
+russia_eez <- eez_shp %>% 
+  filter(iso_ter1 == "RUS")
+
+co2_russia <-  co2_efflux %>% 
+  raster::extract(russia_eez, df = T) %>% 
+  set_names(c("ID", "co2"))
+
+co2_russia %>% 
+    summarize(total_co2 = sum(co2, na.rm = T)/10^6) # 96992858 Mg CO2 = 97 million metric tons of CO2
+```
+
+### Costa Rica
+
+```{r}
+carbon_hr <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "carbon_hr.tif")) # Mg C km^2
+
+hr_cell_area <- 934.4789^2/1000000
+
+cr_eez <- eez_shp %>% 
+  filter(mrgid_eez == 8424)
+
+cr_carbon <- carbon_hr %>% 
+  mask(cr_eez)
+
+cellStats(cr_carbon*hr_cell_area, sum, na.rm = T)/10^6 # 6680 million metric tons of C
+
+cr_depths <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "depth_hr.tif")) %>% 
+  mask(cr_eez %>% 
+         st_transform(crs = crs(ocean_low_res_wgs84))) %>% 
+  projectRaster(cr_carbon, method = "bilinear")
+
+cr_depths[cr_depths < -200] <-NA
+
+cr_carbon_200m <- cr_carbon %>% 
+  mask(cr_depths)
+
+cr_carbon_200m %>% 
+  crop(cr_eez) %>% 
+  plot()
+
+cr_c_200m <- cellStats(cr_carbon_200m*hr_cell_area, sum, na.rm = T)/10^6 # 163 million metric tons of C in sediments shallower than 200m. 
+```
+
+```{r}
+cr_c_200m*0.87*0.7*0.024*(1 - exp(-1.67))
+``` 
+
+```{r}
+plot(cr_carbon)
+
+cr_carbon_df <- stack(cr_carbon, 
+                      cr_carbon_200m) %>% 
+  projectRaster(crs = crs(ocean_low_res_wgs84), method = "bilinear") %>% 
+  as.data.frame(xy = T) %>% 
+  set_names(c("lon", "lat", "carbon", "carbon_200m")) %>% 
+  filter(!is.na(carbon)) 
+
+cr_land <- rnaturalearth::ne_countries(scale = 50, country = "Costa Rica", returnclass = "sf")
+
+ggplot()+
+  geom_raster(data = cr_carbon_df, 
+              aes(x = lon, y = lat, fill = carbon))+
+  geom_sf(data = cr_land, inherit.aes = F)+
+  scale_fill_viridis_c(trans = "log10")+
+  theme(plot.background = element_blank(),
+        panel.background = element_blank(), 
+        panel.spacing = unit(0, "lines"), 
+        panel.grid = element_line(color = "transparent"),
+        plot.title.position = "plot")+
+  labs(x = "Longitud", y = "Latitud", fill = "Carbón (Mg C)", 
+       title = "Contenido de Carbón en los Sedimentos Marinos de Costa Rica")+
+  ggsave(filename = "crc_carbon.png", width = 7, height = 7)
+```
+
+
+## Group by iso3
+
+```{r}
+results_by_territory %>% 
+  filter(goal == "food") %>% 
+  arrange(desc(sum_dv_top_30))
+```
+
+
+## Name cleaning
+
+```{r}
+## Combine goals ----
+stats_by_territory <- stats_by_territory %>% 
+  mutate(continent = case_when(
+    territory_iso3 == "ATF" ~ "Southern\nOcean",
+    territory_iso3 == "SGS" ~ "Southern\nOcean",
+    territory_iso3 == "HMD" ~ "Southern\nOcean",
+    territory_iso3 == "ATA" ~ "Southern\nOcean",
+    territory_iso3 == "CHG" ~ "Asia",
+    territory_iso3 == "TAA" ~ "Europe",
+    territory_iso3 == "ASC" ~ "Europe",
+    territory_iso3 == "BVT" ~ "Southern\nOcean",
+    territory_iso3 == "UMI" ~ "Oceania",
+    territory_iso3 == "CCK" ~ "Oceania",
+    territory_iso3 == "IOT" ~ "Europe",
+    territory_iso3 == "MNP++" ~ "Oceania",
+    territory_iso3 == "CW" ~ "Americas",
+    territory_iso3 == "ANT" ~ "Americas",
+    territory_iso3 == "CLI" ~ "Americas",
+    TRUE ~ continent
+  )) 
+
+stats_by_territory <- stats_by_territory %>% 
+  mutate(country = countrycode::countrycode(sourcevar = territory_iso3, origin = "iso3c", destination = "country.name")) %>% 
+  select(territory_iso3, country, everything())
+
+stats_by_territory <- stats_by_territory %>%
+  mutate(country = gsub("Islands", "Isl", country),
+         country = gsub("Island", "Isl", country),
+         country = gsub("Democratic", "Dem", country),
+         country = gsub("Republic", "Rep", country),
+         country = gsub("South", "S", country),
+         country = gsub("American", "Am", country),
+         country = gsub("the United States", "US", country),
+         country = gsub("country", "Terr", country),
+         country = gsub("Saint", "St", country),
+         country = gsub(" and ", " & ", country),
+         country = gsub("Republique", "Rep", country),
+         country = gsub("Dem Rep of the", "Dem Rep of", country),
+         country = gsub("Georgia and the", "Georgia and", country),
+         country = gsub("St Vincent and the", "St Vincent and", country),
+         country = gsub("Howland Isl & Baker Isl", "Howland & Baker Isl", country),
+         country = gsub("Northern", "N", country), 
+         country = gsub("Reunion", "Reunion   ", country))
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "ATF"] <- "ATF"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "UMI"] <- "U.S Minor Outlying Isl"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "MNP++"] <- "MNP++"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "SGS"] <- "SGS"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "VIR"] <- "U.S Virgin Isl"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "SHN"] <- "SHN"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "GBR"] <- "GBR"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "UMI"] <- "UMI"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "PNG"] <- "PNG"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "DOM"] <- "DOM"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "HMD"] <- "HMD"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "FSM"] <- "FSM"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "SJM"] <- "SJM"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "MMR"] <- "Myanmar"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "GNQ"] <- "Eq. Guinea"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "ARE"] <- "UAE"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "CCK"] <- "Keeling Isl"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "PYF"] <- "PYF"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "CPV"] <- "CPV"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "GNB"] <- "GNB"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "GLP"] <- "GLP"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "CLI"] <- "Clipperton Isl"
+
+stats_by_territory$country[stats_by_territory$territory_iso3 == "CHG"] <- "Chagos"
+```

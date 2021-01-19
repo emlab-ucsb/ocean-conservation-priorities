@@ -1,0 +1,326 @@
+---
+title: "High Ambition Coalition"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r}
+library(raster)
+library(sf)
+library(tidyverse)
+library(patchwork)
+
+source(here::here("common.R"))
+```
+
+```{r}
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+n_cells_MPAs <- MPAs %>% cellStats(function(x, ...) sum(!is.na(x)))
+
+n_ocean_cells <- cellStats(ocean_low_res_moll, function(x, ...) sum(!is.na(x)))
+
+stats_by_territory <- read_csv(file.path(emLab_project_dir, "data", "03_output", "stats_by_territory.csv"))
+
+stats_by_sovereign <- stats_by_territory %>% 
+  mutate(continent = countrycode::countrycode(sov_iso3, "iso3c", "continent"),
+         country = countrycode::countrycode(sourcevar = sov_iso3, origin = "iso3c", destination = "country.name")) %>%
+  group_by(sov_iso3, country, goal, continent) %>% 
+  summarize_at(vars(-territory_name,-mrgid_ter1, -mrgid_eez, -territory_iso3), .funs = sum, na.rm = T) %>%
+  ungroup() %>% 
+  group_by(goal) %>% 
+  mutate(fraction_eez_protected = n_protected_cells/n_cells,
+         fraction_eez_top_5 = n_cells_top_5/n_cells,
+         fraction_eez_top_10 = n_cells_top_10/n_cells,
+         fraction_eez_top_20 = n_cells_top_20/n_cells,
+         fraction_eez_top_30 = n_cells_top_30/n_cells,
+         contribution_top_5_area = n_cells_top_5/sum(n_cells_top_5, na.rm = T),
+         contribution_top_10_area = n_cells_top_10/sum(n_cells_top_10, na.rm = T),
+         contribution_top_20_area = n_cells_top_20/sum(n_cells_top_20, na.rm = T), #(0.20*n_ocean_cells - n_cells_MPAs),
+         contribution_top_30_area = n_cells_top_30/sum(n_cells_top_30, na.rm = T),
+         contribution_top_5_benefits = sum_dv_top_5/sum(sum_dv_top_5, na.rm = T),
+         contribution_top_10_benefits = sum_dv_top_10/sum(sum_dv_top_10, na.rm = T),
+         contribution_top_20_benefits = sum_dv_top_20/sum(sum_dv_top_20, na.rm = T),
+         contribution_top_30_benefits = sum_dv_top_30/sum(sum_dv_top_30, na.rm = T))
+
+hac_countries <- c("Costa Rica", "France", "United Arab Emirates", "Monaco", "Rwanda", "Cameroon", "Gabon", "Seychelles", "Senegal", "Botswana", 
+                   "Uganda", "Colombia", "Finland", "Spain", "Switzerland", "Mongolia", "Armenia", "Luxemburg", "Grenada", "Marshall Islands", "Mozambique",
+                   "Belgium", "Canada")
+
+hac_iso3s <- countrycode::countrycode(hac_countries, origin = "country.name", destination = "iso3c")
+```
+
+# Biodiversity
+
+```{r}
+stats_by_sovereign %>% 
+  filter(goal == "biodiversity") %>% 
+  top_n(n = 100, contribution_top_30_benefits) %>%
+  ggplot()+
+  geom_col(aes(x = fct_reorder(country, contribution_top_30_benefits), y = 100*contribution_top_30_benefits, fill = continent))+
+  coord_flip()+
+  labs(x = "", y = "", 
+       title = "Contribution to protect the most important 30% of the Ocean for biodiversity", 
+       subtitle = "% of total area needed",
+       fill = "")+
+  theme_minimal()+
+  paletteer::scale_fill_paletteer_d(palette = "rcartocolor::Bold")+
+  scale_y_continuous(expand = c(0, 0), breaks = c(0, 2, 4, 6,8, 10))+
+  theme(plot.title.position = "plot")+
+  ggsave(file.path(emLab_project_dir, "other-project-materials", "high-ambition-coalition", "biodiversity_area_contributions_by_sovereign_nation.png"),
+         height = 10, width = 10, dpi = 300)
+```
+
+
+```{r}
+stats_by_sovereign %>% 
+  filter(goal == "biodiversity") %>% 
+  top_n(n = 100, contribution_top_30_area) %>%
+  ggplot()+
+  geom_col(aes(x = fct_reorder(country, contribution_top_30_area), y = 100*contribution_top_30_area, fill = continent))+
+  coord_flip()+
+  labs(x = "", y = "", 
+       title = "Contributions to protect the most important 30% of the Ocean for biodiversity", 
+       subtitle = "% of biodiversity benefits",
+       fill = "")+
+  theme_minimal()+
+  paletteer::scale_fill_paletteer_d(palette = "rcartocolor::Bold")+
+  scale_y_continuous(expand = c(0, 0), breaks = c(0, 2, 4, 6,8, 10))+
+  theme(plot.title.position = "plot")+
+  ggsave(file.path(emLab_project_dir, "other-project-materials", "high-ambition-coalition","biodiversity_benefits_contributions_by_sovereign_nation.png"),
+         height = 10, width = 10, dpi = 300)
+```
+
+```{r}
+stats_by_sovereign %>% 
+  ungroup() %>% 
+  filter(goal == "biodiversity") %>% 
+  mutate(percent_eez_protected = fraction_eez_protected*100,
+         percent_eez_in_top_30 = fraction_eez_top_30*100,
+         percent_of_top_30_area = contribution_top_30_area*100,
+         percent_of_top_30_benefits = contribution_top_30_benefits*100) %>% 
+  select(country, percent_eez_protected, percent_eez_in_top_30, percent_of_top_30_area, percent_of_top_30_benefits) %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  arrange(desc(percent_of_top_30_benefits)) %>% 
+  write_csv(file.path(emLab_project_dir, "other-project-materials", "high-ambition-coalition","biodiversity_contributions_by_sovereign_nation.csv"))
+```
+
+```{r}
+stats_by_sovereign %>% 
+  filter(sov_iso3 %in% hac_iso3s) %>% 
+  filter(goal == "biodiversity") %>% 
+  summarize(sum(contribution_top_30_area),
+            sum(contribution_top_30_benefits))
+```
+
+# Carbon
+
+```{r}
+stats_by_sovereign %>% 
+  filter(goal == "carbon") %>% 
+  top_n(n = 100, contribution_top_30_benefits) %>%
+  ggplot()+
+  geom_col(aes(x = fct_reorder(country, contribution_top_30_benefits), y = 100*contribution_top_30_benefits, fill = continent))+
+  coord_flip()+
+  labs(x = "", y = "", 
+       title = "Contributions to protect the most important 30% of the Ocean for carbon", 
+       subtitle = "% of total area needed", fill = "")+
+  theme_minimal()+
+  paletteer::scale_fill_paletteer_d(palette = "rcartocolor::Bold")+
+  scale_y_continuous(expand = c(0, 0), breaks = c(0, 2, 4, 6,8, 10, 12, 14, 16))+
+  theme(plot.title.position = "plot")+
+  ggsave(file.path(emLab_project_dir, "other-project-materials", "high-ambition-coalition","carbon_area_contributions_by_sovereign_nation.png"),
+         height = 10, width = 10, dpi = 300)
+```
+
+
+```{r}
+stats_by_sovereign %>% 
+  filter(goal == "carbon") %>% 
+  top_n(n = 100, contribution_top_30_area) %>%
+  ggplot()+
+  geom_col(aes(x = fct_reorder(country, contribution_top_30_area), y = 100*contribution_top_30_area, fill = continent))+
+  coord_flip()+
+  labs(x = "", y = "", title = "Contributions to protect the most important 30% of the Ocean for carbon", 
+       subtitle = "% of carbon benefits", fill = "")+
+  theme_minimal()+
+  theme(plot.title.position = "plot")+
+  paletteer::scale_fill_paletteer_d(palette = "rcartocolor::Bold")+
+  scale_y_continuous(expand = c(0, 0), breaks = c(0, 2, 4, 6,8, 10))+
+  ggsave(file.path(emLab_project_dir, "other-project-materials", "high-ambition-coalition","carbon_benefits_contributions_by_sovereign_nation.png"),
+         height = 10, width = 10, dpi = 300)
+```
+
+```{r}
+stats_by_sovereign %>% 
+  ungroup() %>% 
+  filter(goal == "carbon") %>% 
+  mutate(percent_eez_protected = fraction_eez_protected*100,
+         percent_eez_in_top_30 = fraction_eez_top_30*100,
+         percent_of_top_30_area = contribution_top_30_area*100,
+         percent_of_top_30_benefits = contribution_top_30_benefits*100) %>% 
+  select(country, percent_eez_protected, percent_eez_in_top_30, percent_of_top_30_area, percent_of_top_30_benefits) %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  arrange(desc(percent_of_top_30_benefits)) %>% 
+  write_csv(file.path(emLab_project_dir, "other-project-materials", "high-ambition-coalition","carbon_contributions_by_sovereign_nation.csv"))
+```
+
+```{r}
+stats_by_sovereign %>% 
+  filter(sov_iso3 %in% hac_iso3s) %>% 
+  filter(goal == "carbon") %>% 
+  summarize(sum(contribution_top_30_area),
+            sum(contribution_top_30_benefits))
+```
+
+## Adding total carbon, at risk carbon, and mangroves
+
+```{r}
+carbon_raster <- raster(file.path(emLab_shrd_data_dir, "global-marine-sedimentary-carbon", "Mean carbon_stock.tif"))
+
+global_total_carbon <- cellStats(carbon_raster*raster::area(carbon_raster), sum)/10^6
+
+disturbed_carbon <- raster("../../../Google Drive File Stream/Shared drives/emlab/projects/current-projects/carbon-trawl/data/03_output/carbon_disturbed_001_svr_v2.tif")
+
+global_total_disturbed_carbon <- cellStats(disturbed_carbon, sum)/10^6
+
+disturbed_carbon[disturbed_carbon < 0 ] <- NA
+
+eez_shp <- sf::st_read(file.path(emLab_shrd_data_dir, "marine-regions-EEZ-land-union-v3-202003", "EEZ_Land_v3_202030.shp")) %>% 
+  sf::st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  sf::st_transform(crs(carbon_raster)) %>% 
+  sf::st_simplify(dTolerance = 0) %>% 
+  janitor::clean_names()
+
+eez_shp <- eez_shp %>% 
+  filter(iso_ter1 != "ATA")
+
+eez_info <- eez_shp %>% 
+  st_drop_geometry() 
+  
+eez_info <- eez_info %>% 
+  mutate_if(is.factor, as.character) %>% 
+  rename(name = union) %>% 
+  mutate(iso_ter1 = case_when(
+  name %in% c("Alaska", "Hawaii") ~ "USA",
+  name %in% c("Kuril Islands") ~ "RUS",
+  name %in% c("Azores", "Madeira") ~ "PRT",
+  name %in% c("Canary Islands", "Chafarinas Islands", "Ceuta", "Melilla", "Peñón de Vélez de la Gomera","Perejil Island", "Alhucemas Islands") ~ "ESP",
+  name %in% c("Senkaku Islands", "Overlapping claim Liancourt Rocks: Japan / South Korea") ~ "JPN",
+  name %in% c("Navassa Island") ~ "JAM",
+  name %in% c("Serranilla Bank", "Colombian Exclusive Economic Zone (Quitasueño)", "Bajo Nuevo Bank", "Serrana Bank") ~ "COL",
+  name %in% c("Andaman and Nicobar") ~ "IND",
+  name %in% c("Clipperton Island") ~ "CLI",
+  name %in% c("Galapagos") ~ "ECU",
+  name %in% c("Chagos Archipelago") ~ "CHG",
+  name %in% c("Oecusse") ~ "TLS",
+  name %in% c("Glorioso Islands", "Tromelin Island") ~ "ATF",
+  name %in% c("Trinidade") ~ "BRA",
+  name %in% c("Matthew and Hunter Islands") ~ "NCL",
+  name %in% c("Easter Island") ~ "CHL",
+  name %in% c("Prince Edward Islands") ~ "ZAF",
+  name %in% c("Macquarie Island") ~ "AUS", 
+  name %in% c("Doumeira Islands") ~ "ERI", 
+  TRUE ~ iso_ter1
+  )) 
+```
+
+```{r, eval = F}
+carbon_content_by_territory <- stack(carbon_raster, 
+                                     disturbed_carbon) %>% 
+  raster::extract(eez_shp, df = T) %>% 
+  rename(total_carbon = Mean_carbon_stock,
+         disturbed_carbon = layer) 
+
+write_rds(carbon_content_by_territory, file.path(emLab_project_dir, "other-project-materials", "high-ambition-coalition","carbon_content_by_territory.rds"))
+
+```
+
+```{r}
+carbon_content_by_territory <- read_rds(file.path(emLab_project_dir, "other-project-materials", "high-ambition-coalition","carbon_content_by_territory.rds"))
+
+carbon_stats_by_territory <- carbon_content_by_territory %>% 
+  group_by(ID) %>%
+  summarise(total_carbon = sum(total_carbon, na.rm = T),
+            disturbed_carbon = sum(disturbed_carbon, na.rm = T))
+
+carbon_stats_by_sov <- carbon_stats_by_territory %>% 
+  left_join(eez_info %>% 
+              rowid_to_column() %>% 
+              select(ID = rowid, territory_name = name, territory_iso3 = iso_ter1, mrgid_ter1, mrgid_eez, sov_iso3 = iso_sov1)) %>% 
+  select(territory_name, territory_iso3, mrgid_ter1, mrgid_eez, sov_iso3, everything(), -ID) %>% 
+  filter(total_carbon > 0) %>%
+  mutate(country = countrycode::countrycode(sourcevar = sov_iso3, origin = "iso3c", destination = "country.name"),
+         continent = countrycode::countrycode(sov_iso3, "iso3c", "continent")) %>%
+  group_by(sov_iso3, country, continent) %>% 
+  summarize_at(vars(-territory_name,-mrgid_ter1, -mrgid_eez, -territory_iso3), .funs = sum, na.rm = T) %>%
+  ungroup() %>% 
+  arrange(desc(disturbed_carbon))
+```
+  
+```{r}
+mangroves <- readxl::read_xlsx("../../../Desktop/mangrove_carbon.xlsx") %>% 
+    janitor::clean_names() %>% 
+  mutate(sov_iso3 = countrycode::countrycode(country_name, "country.name", "iso3c"))
+
+mangrove_carbon <- mangroves %>% 
+  mutate(sov_iso3 = case_when(
+    country_name %in%  c("France (Martinique, Guiana, Guadeloupe, Mayotte)", "Saint Martin") ~ "FRA",
+    country_name == "Micronesia, FS" ~ "FSM",
+    country_name == "Somaliland" ~ "SOM",
+    sov_iso3 %in% c("ABW", "CUW") ~ "NLD",
+    sov_iso3 %in% c("AIA", "BMU", "TCA", "CYM", "VGB") ~ "GBR",
+    sov_iso3 %in% c("BLM","NCL") ~ "FRA",
+    sov_iso3 %in% c("HKG", "MAC") ~ "CHN",
+    sov_iso3 %in% c("PRI", "VIR") ~ "USA",
+    TRUE ~ sov_iso3
+  )) %>% 
+  filter(!is.na(sov_iso3)) %>% 
+  group_by(sov_iso3) %>% 
+  summarize(mangrove_carbon = sum(tonnes_of_carbon, na.rm = T))
+
+carbon_stats_by_sov <- carbon_stats_by_sov %>% 
+  left_join(mangrove_carbon) %>% 
+  replace_na(list(mangrove_carbon = 0)) %>% 
+  select(sov_iso3, country, continent, sediment_carbon = total_carbon, disturbed_sediment_carbon = disturbed_carbon, mangrove_carbon) %>% 
+  mutate(total_carbon = sediment_carbon + mangrove_carbon,
+         total_carbon_at_risk = disturbed_sediment_carbon + mangrove_carbon) %>% 
+  mutate_if(is.numeric, ~round(./10^6, 2)) %>% 
+  mutate(percent_of_global_carbon = round(100*total_carbon/sum(total_carbon), 2),
+         percent_of_global_carbon_at_risk = round(100*total_carbon_at_risk/sum(total_carbon_at_risk), 2)) %>% 
+  arrange(desc(percent_of_global_carbon_at_risk))
+
+write_csv(carbon_stats_by_sov,
+          file.path(emLab_project_dir, "other-project-materials", "high-ambition-coalition","carbon_stats_by_sovereign_nation.csv"))
+
+carbon_stats_by_sov %>% 
+  filter(sov_iso3 %in% hac_iso3s) %>% 
+  summarise(sum(percent_of_global_carbon),
+            sum(percent_of_global_carbon_at_risk))
+```
+
+```{r}
+carbon_stats_by_sov %>% 
+  head(100) %>% 
+  ggplot()+
+  geom_col(aes(x = fct_reorder(country, percent_of_global_carbon_at_risk), y = percent_of_global_carbon_at_risk, fill = continent))+
+  coord_flip()+
+  labs(x = "", y = "", 
+       title = "Blue Carbon at Risk (% of total)", 
+       subtitle = "Sediments and mangroves",  fill = "")+
+  theme_minimal()+
+  theme(plot.title.position = "plot")+
+  paletteer::scale_fill_paletteer_d(palette = "rcartocolor::Bold")+
+  scale_y_continuous(expand = c(0, 0))+
+  ggsave(file.path(emLab_project_dir, "other-project-materials", "high-ambition-coalition","carbon_at_risk_by_sovereign_nation.png"),
+         height = 10, width = 10, dpi = 300)
+```
+

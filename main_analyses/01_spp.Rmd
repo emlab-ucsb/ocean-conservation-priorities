@@ -45,7 +45,7 @@ bio_features_df <- stack(spp_files$filepath) %>%
   as_tibble()
 
 data.table::fwrite(bio_features_df, 
-                   file.path(emLab_project_dir, "data", "02_processed", "species_distributions", "all_spp_distributions_df.csv"))
+                   file.path(emLab_project_dir, "data", "02_processed", "features_df", "all_spp_distributions_df.csv"))
 ```
 
 ```{r}
