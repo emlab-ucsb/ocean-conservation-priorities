@@ -23,7 +23,7 @@ source(here::here("functions", "map_priorities.R"))
 
 variant_name <- "07_food"
 
-variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name, "ray")
+variant_dir <- file.path(emLab_project_dir, "data", "03_output", variant_name, "ray")
 
 dir.create(variant_dir)
 ```
@@ -227,7 +227,7 @@ while(nrow(unprotected_matrix) > 0){
   
   delta <- unprotected_matrix%*%as.matrix(t(slopes))
   
-  best_cell_indeces <- doBy::which.maxn(delta, n = 10)
+  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
   
   best_cells <- delta[best_cell_indeces,] %>% 
     enframe() %>% 
@@ -248,8 +248,8 @@ end_time <- Sys.time()
 
 end_time - start_time
 
-write_rds(ranking,
-          file.path(variant_dir, "ranking_results_a2.rds"))
+#write_rds(ranking,
+ #         file.path(variant_dir, "ranking_results_a2.rds"))
 ```
 
 # Results
@@ -332,6 +332,7 @@ network_delta_catch_per_stock_a1 %>%
 ### a2
 
 ```{r}
+ranking_a2 <- ranking %>% select(-pick_order)
 ranking_a2 <- read_rds(file.path(variant_dir, "ranking_results_a2.rds")) %>% 
   select(-pick_order)
 
@@ -390,7 +391,7 @@ results_per_pixel_a2 %>%
                 ymax = max(results_per_pixel_a2$delta_catch_a2)),
                 fill = "#69B578", alpha = 0.01)+
   scale_x_continuous(limits = c(0,1), expand = c(0, 0))+
-  scale_y_continuous(expand = c(0, 100))+
+  scale_y_continuous(expand = c(0, 100))
   ggsave(file.path(variant_dir, "delta_catch_curve_a2.png"),
          width = 7, 
          height = 4)
@@ -400,6 +401,8 @@ network_delta_catch_per_stock_a2 %>%
   mutate(cell_id = ranked_rep_levels_a2$cell_id) %>%
   select(cell_id, everything()) %>% 
   write_rds(file.path(variant_dir, "network_delta_catch_per_stock_a2.rds"))
+
+max(results_per_pixel_a2$delta_catch_a2)/10^6
 ```
 
 ```{r}

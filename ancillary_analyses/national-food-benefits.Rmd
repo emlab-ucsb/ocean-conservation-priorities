@@ -87,7 +87,6 @@ china_eez <- eez %>%
   filter(mrgid_sov1 != 0, iso_ter1 == "CHN") %>% 
   sf::st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
     sf::st_simplify(dTolerance = 10000, preserveTopology = TRUE)
-
 ```
 
 

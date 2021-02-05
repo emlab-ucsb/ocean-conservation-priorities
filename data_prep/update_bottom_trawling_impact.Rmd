@@ -861,8 +861,11 @@ remineralized_carbon <- Ia*carbon
 ```{r}
 carbon_hr <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "carbon_hr.tif"))
 
-carbon_hr
 hr_cell_area <- 934.4789^2/1000000
+
+total_carbon_hr <- cellStats(carbon_hr*hr_cell_area, "sum", na.rm = T) # convert to total carbon in each pixel by multiplying times the area
+
+total_carbon_hr/10^12
 
 Ia_hr <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "Ia_hr.tif"))
 

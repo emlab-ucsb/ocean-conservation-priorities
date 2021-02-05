@@ -105,9 +105,9 @@ carbon_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_outp
 
 delta_carbon_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "delta_v_raster_updated.tif"))
 
-food_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster_a2.tif"))
+food_priorities_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ray","ranking_raster_a2.tif"))
 
-delta_food_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "delta_v_raster_a2.tif"))
+delta_food_V_raster <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food","ray", "delta_v_raster_a2.tif"))
 
 gocp_stack <- stack(MPAs, 
                     biodiversity_priorities_raster, 
@@ -170,6 +170,13 @@ co2_by_territory <-  co2_efflux %>%
   trim() %>% 
   raster::extract(eez_shp, df = T, na.rm = T) %>% 
   set_names(c("ID", "co2"))
+
+write_rds(co2_by_territory, "co2_by_territory.rds")
+
+co2_by_territory %>% 
+  filter(ID %in% results_by_territory$ID[results_by_territory$territory_iso3 == "USA"]) %>%
+  summarize(total_co2 = sum(co2, na.rm = T))
+
 ```
 
 ### Russia

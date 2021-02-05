@@ -22,6 +22,8 @@ source(here::here("common.R"))
 source(here::here("functions", "map_priorities.R"))
 ```
 
+# Mapping resrouces
+
 ```{r mapping_resources}
 theme_maps <- theme(axis.text.x = element_text(size = 6),
                     axis.text.y = element_text(size = 6),
@@ -62,41 +64,23 @@ mpas_raster <- raster(file.path(emLab_project_dir,
 mpas_polys <- sf::st_read(file.path(emLab_project_dir, 
                                     "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.gpkg")) %>% 
       st_set_crs(st_crs(eez))
-
-# russia_mpas <- sf::st_read("../ancillary_analyses/russias_mpas.gpkg")
-# 
-# russia_wdpa_0 <- sf::st_read("../../../Desktop/WDPA_WDOECM_RUS-shapefile/WDPA_WDOECM_RUS-shapefile0/WDPA_WDOECM_RUS-shapefile-polygons.shp") %>% 
-#   filter(MARINE == 1)
-# 
-# russia_wdpa_1 <- sf::st_read("../../../Desktop/WDPA_WDOECM_RUS-shapefile/WDPA_WDOECM_RUS-shapefile1/WDPA_WDOECM_RUS-shapefile-polygons.shp") %>% 
-#     filter(MARINE == 1)
-# 
-# russia_wdpa_2 <- sf::st_read("../../../Desktop/WDPA_WDOECM_RUS-shapefile/WDPA_WDOECM_RUS-shapefile2/WDPA_WDOECM_RUS-shapefile-polygons.shp") %>% 
-#     filter(MARINE == 1)
-# 
-# russia_wdpa <- russia_wdpa_2 %>% 
-#   st_drop_geometry() %>% 
-#   janitor::clean_names() 
-# 
-# ostrova_shp <- sf::st_read("../../../Desktop/WDPA_WDOECM_RUS-shapefile/WDPA_WDOECM_RUS-shapefile1/WDPA_WDOECM_RUS-shapefile-polygons.shp") %>% 
-#   filter(WDPAID == "201377") #ostrova
 ```
 
 # Load global results
 
 ```{r}
 bio_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "ranking_raster.tif"))
-food_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ranking_raster_a2.tif"))
-carbon_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster.tif"))
+food_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ray", "ranking_raster_a2.tif"))
+carbon_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster_updated.tif"))
 ```
 
-# Subsetting, reprojecting and rescaling
+# 
 
 ```{r subset_raster}
 subset_priorities_raster <- function(priorities_raster, iso3s, eez_file){
   
   roi_polygon <- eez_file %>% 
-    filter(iso_ter1 %in% iso3s)
+    filter(iso_sov1 %in% iso3s)
   
   roi_ranking <- priorities_raster %>% 
     crop(as(roi_polygon, "Spatial"), snap = "out") %>% 
@@ -139,41 +123,14 @@ reproject_local_raster <- function(local_raster, method){
 
   } else {
 
-    roi_ranking_projected <- roi_ranking_wgs84
+    roi_ranking_projected <- local_raster %>%
+      projectRaster(crs = crs('+proj=eqearth +lon_0=0 +wktext'),
+                    method = method, over = F) 
 
   }
   return(roi_ranking_projected)
 }
 
-```
-
-# Mapping
-
-```{r}
-eez_with_land <- eez_with_land %>% 
-  mutate_if(is.factor, as.character) %>% 
-  mutate(iso_ter1 = case_when(
-    union %in% c("Alaska", "Hawaii") ~ "USA",
-    union %in% c("Kuril Islands") ~ "RUS",
-    union %in% c("Azores", "Madeira") ~ "PRT",
-    union %in% c("Canary Islands", "Chafarinas Islands", "Ceuta", "Melilla", "Peñón de Vélez de la Gomera","Perejil Island", "Alhucemas Islands") ~ "ESP",
-    union %in% c("Senkaku Islands", "Overlapping claim Liancourt Rocks: Japan / South Korea") ~ "JPN",
-    union %in% c("Navassa Island") ~ "JAM",
-    union %in% c("Serranilla Bank", "Colombian Exclusive Economic Zone (Quitasueño)", "Bajo Nuevo Bank", "Serrana Bank") ~ "COL",
-    union %in% c("Andaman and Nicobar") ~ "IND",
-    union %in% c("Clipperton Island") ~ "CLI",
-    union %in% c("Galapagos") ~ "ECU",
-    union %in% c("Chagos Archipelago") ~ "CHG",
-    union %in% c("Oecusse") ~ "TLS",
-    union %in% c("Glorioso Islands", "Tromelin Island") ~ "ATF",
-    union %in% c("Trinidade") ~ "BRA",
-    union %in% c("Matthew and Hunter Islands") ~ "NCL",
-    union %in% c("Easter Island") ~ "CHL",
-    union %in% c("Prince Edward Islands") ~ "ZAF",
-    union %in% c("Macquarie Island") ~ "AUS", 
-    union %in% c("Doumeira Islands") ~ "ERI", 
-    TRUE ~ iso_ter1
-  )) 
 ```
 
 ```{r}
@@ -186,7 +143,7 @@ make_national_maps <- function(global_ranking_raster,
                                global_eez_polys,
                                global_eez_polys_with_land,
                                goal){
-  
+
   local_ranking <- global_ranking_raster %>% 
     subset_priorities_raster(iso_codes, eez_file = global_eez_polys_with_land)
   
@@ -198,10 +155,11 @@ make_national_maps <- function(global_ranking_raster,
   local_ranking <- local_ranking %>% 
     reproject_local_raster(method = "bilinear")
   
-  country_name <- countrycode::countrycode(sourcevar = iso_codes, origin =  "iso3c", destination = "country.name")
+  world_data <- rnaturalearth::ne_countries(scale = 50, returnclass = "sf")
   
-  local_land <- rnaturalearth::ne_countries(scale = 50, country = country_name, returnclass = "sf") %>% 
-    st_transform(crs(local_ranking)) 
+  local_land <- world_data %>%
+      filter_all(., any_vars(str_detect(., iso_codes))) %>% 
+      st_transform(crs(local_ranking)) 
   
   local_land_raster <- local_land %>% 
     rasterize(local_ranking, getCover = T)
@@ -218,7 +176,8 @@ make_national_maps <- function(global_ranking_raster,
   extent(local_mpas) <- alignExtent(extent = extent(local_mpas), 
                                     local_ranking, snap = "near")
   
-  if(fraction_in_MPAs > 0){
+  if(fraction_in_MPAs > 0 & !is.na(fraction_in_MPAs)){
+    
     local_ranking <- overlay(local_ranking, 
                              local_mpas,
                              fun = function(x, y){ifelse(!is.na(y), 1, x)}) %>% 
@@ -243,14 +202,18 @@ make_national_maps <- function(global_ranking_raster,
   local_eez <- global_eez_polys %>% 
     filter(iso_ter1 %in% iso_codes) %>% 
     st_union() %>% 
-    st_set_crs(st_crs(global_eez_polys))
+    st_set_crs(st_crs(global_eez_polys)) %>% 
+    st_transform(crs = crs(local_ranking))
   
-  local_mpas_sf <- global_mpas_polys %>% 
-    filter(country %in% iso_codes) %>% 
-    lwgeom::st_make_valid() %>% 
-    st_transform(st_crs(local_eez)) %>% 
-    st_crop(local_eez) %>% 
-    st_simplify(preserveTopology = T, dTolerance = 0.01)
+  if(fraction_in_MPAs > 0 & !is.na(fraction_in_MPAs)){
+    
+    local_mpas_sf <- global_mpas_polys %>% 
+      filter(country %in% iso_codes) %>% 
+      lwgeom::st_make_valid() %>% 
+      st_transform(st_crs(local_eez)) %>% 
+      st_crop(local_eez) %>% 
+      st_simplify(preserveTopology = T, dTolerance = 0.01)
+    }
   
   min_local_rank_in_mpa <- min(1, min(local_ranking_df$national_rank[local_ranking_df$global_rank == 1]))
   
@@ -282,12 +245,161 @@ make_national_maps <- function(global_ranking_raster,
     ggplot(aes(x = lon, y = lat))+
     geom_raster(aes(fill = rank_cut), alpha = 1)+
     geom_sf(data = local_land, inherit.aes = F, size = 0.5)+
-    geom_sf(data = local_mpas_sf, inherit.aes = F, fill = "#47A025", col = "transparent") +
-    # geom_sf(data = russia_mpas, inherit.aes = F, fill = "#47A025", col = "transparent") +
-    # geom_sf(data = russia_wdpa_0, inherit.aes = F, fill = "#47A025", col = "transparent") +
-    # geom_sf(data = russia_wdpa_1, inherit.aes = F, fill = "#47A025", col = "transparent") +
-    # geom_sf(data = russia_wdpa_2, inherit.aes = F, fill = "#47A025", col = "transparent") +
-    geom_sf(data = local_eez, inherit.aes = F, fill = "transparent", linetype = 2, size = 0.5)+
+    #geom_sf(data = local_eez, inherit.aes = F, fill = "transparent", linetype = 2, size = 0.5)+
+    scale_fill_manual(na.value="black", 
+                      values  = local_colors,
+                      labels = local_labels,
+                      guide = guide_legend(title = "Top % of EEZ",
+                                           direction = "horizontal",
+                                           keyheight = unit(0.01, "npc"),
+                                           keywidth = unit(rev(local_legend_key_widths$w2), "npc"),
+                                           title.position = 'top',
+                                           title.hjust = 0.5,
+                                           label.hjust = -.02,
+                                           nrow = 1,
+                                           byrow = T,
+                                           reverse = T,
+                                           label.position = "bottom"))+
+    labs(title = "National Conservation Priorities",
+         subtitle = goal,
+         caption = "Existing highly protected areas shown in green.")+
+    theme_maps
+  
+  if(fraction_in_MPAs > 0 & !is.na(fraction_in_MPAs)){
+    
+    local_map <- local_map + 
+      geom_sf(data = local_mpas_sf, inherit.aes = F, fill = "#47A025", col = "transparent")}
+
+    ggsave(plot = local_map, 
+           filename = file.path(emLab_project_dir, "figures", "national_maps", "commonwealth_no_eez", paste0(paste(iso_codes, goal, sep = "_"), ".png")))
+}
+```
+
+```{r}
+commowealth_countries <- c("Botswana","Cameroon","Gambia","Ghana","Kenya","Lesotho","Malawi","Mauritius","Mozambique","Namibia","Nigeria","Rwanda","Seychelles","Sierra Leone","South Africa","Uganda","United Republic of Tanzania","Zambia","Bangladesh","Brunei Darussalam","India","Malaysia","Maldives","Pakistan","Singapore","Sri Lanka","Antigua and Barbuda","Bahamas","Barbados","Belize","Canada","Dominica","Grenada","Guyana","Jamaica","Saint Lucia","St Kitts and Nevis","St Vincent and The Grenadines","Trinidad and Tobago","Cyprus","Malta","United Kingdom","Australia","Fiji","Kiribati","Nauru","New Zealand","Papua New Guinea","Samoa","Solomon Islands","Tonga","Tuvalu","Vanuatu")
+
+commonealth_isos <- countrycode::countrycode(commowealth_countries, origin = "country.name", destination = "iso3c")
+
+tmp_isos <- commonealth_isos[!commonealth_isos %in% sub("_[^_]+$", "", list.files(file.path(emLab_project_dir, "figures", "national_maps", "commonwealth_no_eez")))]
+```
+
+```{r}
+results <- expand_grid(iso_codes = "TUV",
+                       ranking = c(food_ranking, carbon_ranking, bio_ranking)) %>% 
+  mutate(goal = rep(c("Food", "Carbon", "Biodiversity"), 1),
+         map = purrr::pwalk(.l = list(iso_codes = iso_codes, goal = goal, global_ranking_raster = ranking),
+                            .f = make_national_maps,
+                            global_mpas_raster = mpas_raster, 
+                            global_mpas_polys = mpas_polys, 
+                            land_polys = land_50, 
+                            global_breaks = global_breaks,
+                            global_eez_polys  = eez,
+                            global_eez_polys_with_land = eez_with_land))
+```
+
+# Exceptions to the norm
+
+## TUV
+
+```{r}
+TUV_make_national_maps <- function(global_ranking_raster, 
+                               global_mpas_raster, 
+                               global_mpas_polys, 
+                               iso_codes, 
+                               land_polys, 
+                               global_breaks,
+                               global_eez_polys,
+                               global_eez_polys_with_land,
+                               goal){
+
+  local_ranking <- global_ranking_raster %>% 
+    subset_priorities_raster(iso_codes, eez_file = global_eez_polys_with_land)
+  
+  local_mpas <- mpas_raster %>%  
+    subset_priorities_raster(iso_codes, eez_file = global_eez_polys_with_land)
+
+  fraction_in_MPAs <- cellStats(local_mpas, function(x, ...) sum(!is.na(x)))/cellStats(local_ranking, function(x, ...) sum(!is.na(x)))
+  
+  local_ranking <- local_ranking %>% 
+    reproject_local_raster(method = "bilinear")
+  
+
+  local_mpas <- local_mpas %>% 
+    projectRaster(local_ranking, method = "ngb") %>% 
+    extend(local_ranking)
+
+  extent(local_mpas) <- alignExtent(extent = extent(local_mpas), 
+                                    local_ranking, snap = "near")
+  
+  if(fraction_in_MPAs > 0 & !is.na(fraction_in_MPAs)){
+    
+    local_ranking <- overlay(local_ranking, 
+                             local_mpas,
+                             fun = function(x, y){ifelse(!is.na(y), 1, x)}) %>% 
+      mask(local_ranking)
+    }
+  
+  
+  local_ranking_df <- local_ranking %>% 
+    as.data.frame(xy = T) %>% 
+    set_names(c("lon", "lat", "global_rank")) %>% 
+    arrange(desc(global_rank)) %>% 
+    filter(!is.na(global_rank)) %>% 
+    mutate(is_mpa = if_else(global_rank == 1, 1, 0),
+           national_rank = rank(global_rank, ties.method = "last"),
+           f = 1/n(), 
+           national_rank = 1 - cumsum(f)) %>%
+    select(-f) 
+
+  # local_land <- local_land %>% 
+  #   st_crop(trim(local_ranking))
+
+  local_eez <- global_eez_polys %>% 
+    filter(iso_ter1 %in% iso_codes) %>% 
+    st_union() %>% 
+    st_set_crs(st_crs(global_eez_polys)) %>% 
+    st_transform(crs = crs(local_ranking))
+  
+  if(fraction_in_MPAs > 0 & !is.na(fraction_in_MPAs)){
+    
+    local_mpas_sf <- global_mpas_polys %>% 
+      filter(country %in% iso_codes) %>% 
+      lwgeom::st_make_valid() %>% 
+      st_transform(st_crs(local_eez)) %>% 
+      st_crop(local_eez) %>% 
+      st_simplify(preserveTopology = T, dTolerance = 0.01)
+    }
+  
+  min_local_rank_in_mpa <- min(1, min(local_ranking_df$national_rank[local_ranking_df$global_rank == 1]))
+  
+  local_breaks <- sort(unique(c(global_breaks, min_local_rank_in_mpa)))
+  
+  local_labels <- local_breaks[-1]
+  
+  local_colors <- global_cols
+  
+  local_colors[local_labels > min_local_rank_in_mpa] <- "#47A025"
+  
+  local_labels <- 100 - 100*local_labels
+  
+  local_labels[local_labels ==  (100-100*min_local_rank_in_mpa)] <- " "
+  
+  local_legend_key_widths <- tibble(to = as.numeric(as.character(local_breaks[-1])),
+                                    from = lag(to)) %>% 
+    replace_na(list(from = 0)) %>%
+    mutate(range = to - from) %>% 
+    mutate(w = range*0.6) %>% 
+    mutate(w2 = if_else(to <= 0.8, w/1.5, w))
+  
+  local_map <- local_ranking_df %>% 
+    mutate(rank_cut = cut(national_rank, 
+                          breaks = local_breaks,
+                          labels = local_breaks[-1],
+                          include.lowest = T)) %>% 
+    replace_na(list(rank_cut = 1)) %>%
+    ggplot(aes(x = lon, y = lat))+
+    geom_raster(aes(fill = rank_cut), alpha = 1)+
+    #geom_sf(data = local_eez, inherit.aes = F, fill = "transparent", linetype = 2, size = 0.5)+
     scale_fill_manual(na.value="black", 
                       values  = local_colors,
                       labels = local_labels,
@@ -305,18 +417,22 @@ make_national_maps <- function(global_ranking_raster,
     labs(title = "National Conservation Priorities",
          subtitle = goal,
          caption = "Existing highly protected areas shown in green. Dashed line corresponds to EEZ limits.")+
-    theme_maps+
-    ggsave(file.path(emLab_project_dir, "figures", "national_maps", paste0(paste(iso_codes, goal, sep = "_"), ".png")))
+    theme_maps
+  
+  if(fraction_in_MPAs > 0 & !is.na(fraction_in_MPAs)){
+    
+    local_map <- local_map + 
+      geom_sf(data = local_mpas_sf, inherit.aes = F, fill = "#47A025", col = "transparent")}
+
+    ggsave(plot = local_map, 
+           filename = file.path(emLab_project_dir, "figures", "national_maps", "commonwealth_no_eez", paste0(paste(iso_codes, goal, sep = "_"), ".png")))
 }
-```
 
-
-```{r}
-results <- expand_grid(iso_codes = c("CHN"),
+results <- expand_grid(iso_codes = "TUV",
                        ranking = c(food_ranking, carbon_ranking, bio_ranking)) %>% 
   mutate(goal = rep(c("Food", "Carbon", "Biodiversity"), 1),
          map = purrr::pwalk(.l = list(iso_codes = iso_codes, goal = goal, global_ranking_raster = ranking),
-                            .f = make_national_maps,
+                            .f = TUV_make_national_maps,
                             global_mpas_raster = mpas_raster, 
                             global_mpas_polys = mpas_polys, 
                             land_polys = land_50, 
@@ -324,3 +440,4 @@ results <- expand_grid(iso_codes = c("CHN"),
                             global_eez_polys  = eez,
                             global_eez_polys_with_land = eez_with_land))
 ```
+

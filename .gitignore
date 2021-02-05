@@ -8,4 +8,5 @@ main_analyses/13_efficiency_curve/ranking_inputs.RData
 main_analyses/16_food_uncertainty/
 main_analyses/16_food_uncertainty.RData
 ancillary_analyses/carbon_by_territory.rds
+ancillary_analyses/co2_by_territory.rds
 

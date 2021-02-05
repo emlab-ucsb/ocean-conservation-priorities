@@ -1,7 +1,7 @@
 ---
 title: "13_efficiency_curve"
 author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
-output: 
+output:
   html_document:
     code_folding: show
     toc: true
@@ -35,7 +35,7 @@ options(scipen = 999)
 
 # Define preferences
 
-This represent how important is biodiversity relative to fisheries. A value of 2 means biodiversity is 2x more important than food. A value of 0.1 means food is 10 times as valuable as biodiversity. A negative value of -1 means that biodiversity is a valuable as provision but is negatively weighted. 
+This represent how important is biodiversity relative to fisheries. A value of 2 means biodiversity is 2x more important than food. A value of 0.1 means food is 10 times as valuable as biodiversity. A negative value of -1 means that biodiversity is a valuable as provision but is negatively weighted.
 
 ```{r}
 x_bios <- c(seq(-100, -10, by = 10),
@@ -46,102 +46,102 @@ x_bios <- c(seq(-100, -10, by = 10),
             seq(2, 10, by = 1), seq(20, 100, by = 10), seq(200, 1000, by = 100), 10000)
 ```
 
-# Load features data 
+# Load features data
 
 ```{r}
 # source(here::here("functions", "food_provision_foos.R"))
-# 
+#
 # load(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives", "ranking_inputs.RData"))
-# 
+#
 # save(bio_feature_names, bio_weights, carbon_weights, food_weights, max_bio_delta, max_carbon_delta,
-#      Norm_features_matrix, protected_cells, stocks_info, stock_names, estimate_multiobjective_slopes, 
+#      Norm_features_matrix, protected_cells, stocks_info, stock_names, estimate_multiobjective_slopes,
 #      calculate_multiobjective_weights, max_food_delta_a1, max_food_delta_a2, MPAs_df,
 #      carbon_remains_BAU, bio_remains_BAU, group_ids, fraction_in_MPA, MPAs,
 #      file = file.path("13_efficiency_curve/ranking_inputs.RData"))
 ```
 
-# Ranking 
+# Ranking
 
 ```{r, eval = F}
 #registerDoParallel(38)
 
 run_efficiency_curve <- function(effort_assumption, bio_preferences){
-  
+
   foreach(i = bio_preferences)%dopar%{
-    
+
     source(here::here("functions", "food_provision_foos.R"))
-    
+
     load(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives", "ranking_inputs.RData"))
-    
+
     unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
-    
+
     protected_matrix <- Norm_features_matrix[protected_cells, ]
-    
+
     baseline_state <- protected_cells%*%Norm_features_matrix
-    
+
     baseline_state[,"carbon"] <- baseline_state[, "carbon"] + carbon_remains_BAU
-    
+
     baseline_state[, bio_feature_names] <- baseline_state[, bio_feature_names] + bio_remains_BAU
-    
+
     max_slopes_bio <- 0.25*baseline_state[, bio_feature_names]^(0.25 - 1)
-    
+
     max_slope_carbon <- 1
-    
+
     names(max_slope_carbon) <- "carbon"
-    
+
     if(i > 0){
-      
+
       w_bio = 1/(1/i + 1)
       w_carbon = 0
       w_food =  1 - w_bio
-      
+
     } else if (i <= 0){
-      
+
       w_food = 1
       w_carbon = 0
       w_bio = i
-      
+
     }
-    
+
     multiobjective_feature_weigths <- calculate_multiobjective_weights(alpha_b = w_bio, alpha_c = w_carbon, alpha_f = w_food,
-                                                                       b_wts = bio_weights, c_wts = carbon_weights, f_wts = food_weights, 
+                                                                       b_wts = bio_weights, c_wts = carbon_weights, f_wts = food_weights,
                                                                        max_b = max_bio_delta, max_c = max_carbon_delta, max_f_a1  = max_food_delta_a1,
                                                                        max_f_a2  = max_food_delta_a2, effort_assumption = effort_assumption)
-    
+
     ranking <- list()
-    
+
     current_pick <- 0
-    
-    current_state <- baseline_state 
-    
+
+    current_state <- baseline_state
+
     while(nrow(unprotected_matrix) > 0){
-      
+
       current_pick <- sum(current_pick, 1)
-      
+
       slopes <- estimate_multiobjective_slopes(x = current_state, feature_group = group_ids, feature_wts  = multiobjective_feature_weigths,
                                                max_slopes_b = max_slopes_bio, max_slopes_c = max_slope_carbon, e = stocks_info$ex_rate,
                                                m = stocks_info$m, k = stocks_info$k, r = stocks_info$r, effort_assumption = effort_assumption)
-      
+
       delta <- unprotected_matrix%*%as.matrix(slopes)
-      
+
       best_cell_indeces <- doBy::which.maxn(delta, n = 100)
-      
-      best_cells <- delta[best_cell_indeces,] %>% 
-        enframe() %>% 
-        set_names(c('cell_id', "delta")) %>% 
+
+      best_cells <- delta[best_cell_indeces,] %>%
+        enframe() %>%
+        set_names(c('cell_id', "delta")) %>%
         mutate(pick_order = current_pick)
-      
+
       ranking <- bind_rows(ranking, best_cells)
-      
-      current_state <- unprotected_matrix[best_cell_indeces, ] %>% 
+
+      current_state <- unprotected_matrix[best_cell_indeces, ] %>%
         colSums() +
         current_state
-      
+
       unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ]
-      
+
     }
-    
-    write_rds(ranking, 
+
+    write_rds(ranking,
               file.path(variant_dir, "runs",  paste0("ranking_a", as.character(effort_assumption), "_", as.character(i), ".rds")))
   }
 }
@@ -158,26 +158,26 @@ source(here::here("functions", "food_provision_foos.R"))
 
 ```{r, eval = F}
 get_full_ranking <- function(ranking_df, mpas_df, ocean_df){
-  
-  full_ranking <- mpas_df %>% 
-    filter(!is.na(mpa)) %>% 
-    select(cell_id) %>% 
-    bind_rows(ranking_df) %>% 
-    mutate(is_mpa = is.na(delta))  %>% 
-    full_join(ocean_matrix) %>% 
-    replace(is.na(.), 0) 
-  
+
+  full_ranking <- mpas_df %>%
+    filter(!is.na(mpa)) %>%
+    select(cell_id) %>%
+    bind_rows(ranking_df) %>%
+    mutate(is_mpa = is.na(delta))  %>%
+    full_join(ocean_matrix) %>%
+    replace(is.na(.), 0)
+
   return(full_ranking)
 }
 
 get_ranked_features_df <- function(ranking_df, features_df){
-  
-  ranked_features_df <- ranking_df %>% 
-    left_join(features_df %>% 
-                as_tibble(rownames = NA) %>% 
-                rownames_to_column("cell_id")) %>% 
-    replace(is.na(.), 0) 
-  
+
+  ranked_features_df <- ranking_df %>%
+    left_join(features_df %>%
+                as_tibble(rownames = NA) %>%
+                rownames_to_column("cell_id")) %>%
+    replace(is.na(.), 0)
+
     return(ranked_features_df)
 
 }
@@ -189,71 +189,71 @@ files <- list.files(file.path(variant_dir, "runs"), pattern = "ranking_a", full.
 registerDoParallel()
 
 get_efficiency_curve <- function(files){
-  
+
   foreach(i = files, .combine = rbind)%dopar%{
-  
+
   file <- i
-  
+
   load(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives", "ranking_inputs_updated.RData"))
-  
+
   effort_assumption <- as.numeric(str_extract(str_split(tools::file_path_sans_ext(basename(file)), pattern = "_", simplify = T)[,2], '[0-9]+'))
-  
+
   run_bio_factor <- as.numeric(str_split(tools::file_path_sans_ext(basename(file)), pattern = "_", simplify = T)[,3])
 
   ranking <- read_rds(file)
-  
-  ranked_features_df <- ranking %>% 
-    get_full_ranking(mpas_df = MPAs_df, ocean_df = ocean_matrix) %>% 
+
+  ranked_features_df <- ranking %>%
+    get_full_ranking(mpas_df = MPAs_df, ocean_df = ocean_matrix) %>%
     get_ranked_features_df(features_df = Norm_features_matrix)
-  
-  optimal_protection <-  ranked_features_df %>% 
-    select(delta) %>% 
+
+  optimal_protection <-  ranked_features_df %>%
+    select(delta) %>%
     mutate(fraction_protected = 1/n(),
            fraction_protected = cumsum(fraction_protected),
-           V = cumsum(delta)) %>% 
+           V = cumsum(delta)) %>%
     slice(which.max(V)) %>%  
     pull(fraction_protected)
-  
-  food_benefit_curve <- ranked_features_df %>% 
-    select(all_of(stock_names)) %>% 
-    mutate_all(.funs = cumsum) %>% 
+
+  food_benefit_curve <- ranked_features_df %>%
+    select(all_of(stock_names)) %>%
+    mutate_all(.funs = cumsum) %>%
     apply(MARGIN = 1, FUN = estimate_delta_catch, e = stocks_info$ex_rate, m = stocks_info$m,
-          r = stocks_info$r, k = stocks_info$k, effort_assumption = effort_assumption) %>% 
-    t() %>% 
-    rowSums() %>% 
-    enframe(name = NULL, value = "delta_catch") %>% 
+          r = stocks_info$r, k = stocks_info$k, effort_assumption = effort_assumption) %>%
+    t() %>%
+    rowSums() %>%
+    enframe(name = NULL, value = "delta_catch") %>%
     mutate(fraction_protected = 1/n(),
            fraction_protected =  cumsum(fraction_protected))
-  
-  carbon_benefit_curve <- ranked_features_df %>% 
-    select(carbon) %>% 
-    mutate_all(.funs = cumsum) %>% 
+
+  carbon_benefit_curve <- ranked_features_df %>%
+    select(carbon) %>%
+    mutate_all(.funs = cumsum) %>%
     sweep(MARGIN = 2, carbon_remains_BAU, `+`) %>%
-    rowSums() %>% 
-    enframe(name = NULL, value = "carbon_benefit") %>% 
+    rowSums() %>%
+    enframe(name = NULL, value = "carbon_benefit") %>%
     mutate(carbon_benefit = scales::rescale(carbon_benefit, c(0,1)),
            fraction_protected = 1/n(),
            fraction_protected = cumsum(fraction_protected))
-  
-  bio_benefit_curve <-  ranked_features_df %>% 
-    select(all_of(bio_feature_names)) %>% 
-    mutate_all(.funs = cumsum) %>% 
+
+  bio_benefit_curve <-  ranked_features_df %>%
+    select(all_of(bio_feature_names)) %>%
+    mutate_all(.funs = cumsum) %>%
     sweep(MARGIN = 2, bio_remains_BAU, `+`) %>%
-    mutate_all(.funs = ~(.)^0.25) %>% 
-    as.matrix() %*% as.matrix(bio_weights) %>% 
-    as_tibble() %>% 
-    set_names("bio_benefit") %>% 
+    mutate_all(.funs = ~(.)^0.25) %>%
+    as.matrix() %*% as.matrix(bio_weights) %>%
+    as_tibble() %>%
+    set_names("bio_benefit") %>%
     mutate(bio_benefit = scales::rescale(bio_benefit, c(0,1)),
            fraction_protected = 1/n(),
-           fraction_protected = cumsum(fraction_protected)) 
-  
-  summary <- bio_benefit_curve %>% 
-    left_join(carbon_benefit_curve) %>% 
-    left_join(food_benefit_curve) %>% 
-    filter(fraction_protected == optimal_protection) %>% 
+           fraction_protected = cumsum(fraction_protected))
+
+  summary <- bio_benefit_curve %>%
+    left_join(carbon_benefit_curve) %>%
+    left_join(food_benefit_curve) %>%
+    filter(fraction_protected == optimal_protection) %>%
     mutate(bio_x_factor = run_bio_factor,
            effort_assumption = effort_assumption)
-  
+
   return(summary)
   }
   }
@@ -273,13 +273,13 @@ load(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives",
 
 efficiency_curve <- read_rds(file.path(variant_dir, "efficiency_curves_updated_ray.rds"))
 
-efficiency_curve <- efficiency_curve %>% 
-  filter(!(bio_x_factor == -0.4 & effort_assumption == 2)) 
+efficiency_curve <- efficiency_curve %>%
+  filter(!(bio_x_factor == -0.4 & effort_assumption == 2))
 ```
 
 ```{r}
-efficiency_curve %>% 
-  filter(bio_x_factor <= 100) %>% 
+efficiency_curve %>%
+  filter(bio_x_factor <= 100) %>%
   ggplot()+
   geom_point(aes(x = bio_x_factor, y = bio_benefit, col = factor(effort_assumption)))+
   paletteer::scale_color_paletteer_d("wesanderson::Darjeeling2")+
@@ -289,19 +289,19 @@ efficiency_curve %>%
 ```
 
 ```{r}
-efficiency_curve %>% 
+efficiency_curve %>%
   mutate(delta_catch = delta_catch/10^6,
-         effort_assumption = factor(effort_assumption)) %>% 
-  filter(!(bio_x_factor == -0.4 & effort_assumption == 2)) %>% 
-  arrange(fraction_protected) %>% 
-  select(delta_catch, effort_assumption, fraction_protected, bio_benefit) %>% 
-  pivot_longer(-c(delta_catch, effort_assumption), names_to = "x_var", values_to = "value") %>% 
+         effort_assumption = factor(effort_assumption)) %>%
+  filter(!(bio_x_factor == -0.4 & effort_assumption == 2)) %>%
+  arrange(fraction_protected) %>%
+  select(delta_catch, effort_assumption, fraction_protected, bio_benefit) %>%
+  pivot_longer(-c(delta_catch, effort_assumption), names_to = "x_var", values_to = "value") %>%
   ggplot()+
   geom_point(aes(value, delta_catch, col = effort_assumption))+
-  facet_wrap("x_var", ncol = 1, strip.position = "bottom", labeller = labeller(x_var = c("bio_benefit" = "Biodiversity Benefits", 
+  facet_wrap("x_var", ncol = 1, strip.position = "bottom", labeller = labeller(x_var = c("bio_benefit" = "Biodiversity Benefits",
                                                                             "fraction_protected" = "Fraction Ocean Protected" )))+
   theme(strip.background = element_blank(), strip.placement = "outside")+
-  labs(x = "", y = "Change in catch (MMT)") + 
+  labs(x = "", y = "Change in catch (MMT)") +
   paletteer::scale_color_paletteer_d("wesanderson::Darjeeling2")+
   theme_minimal()+
   ggsave(file.path(emLab_project_dir, "figures", "exploratory", "efficiency_curves_comparison.png"), width = 7, height = 5)
@@ -309,33 +309,33 @@ efficiency_curve %>%
 
 ```{r}
 read_ranking_file <- function(run_pattern){
-  
+
   ranking_df <- read_rds(list.files(file.path(variant_dir, "runs_2"), pattern = paste0(run_pattern, ".rds"), full.names = "T"))
-  
+
   return(ranking_df)
 }
-  
+
 create_ranking_raster <- function(ranking_df, MPAs_df, ocean_df, ocean_raster){
-  
-  ranking_raster <- MPAs_df %>% 
-    filter(!is.na(mpa)) %>% 
-    select(cell_id) %>% 
-    bind_rows(ranking_df) %>% 
-    mutate(is_mpa = is.na(delta)) %>% 
-    left_join(ocean_matrix) %>% 
-    tibble::rowid_to_column("ID") %>% 
-    mutate(rank = 1- scales::rescale(ID)) %>% 
-    select(x, y, rank) %>% 
-    rasterFromXYZ(crs = crs(ocean_raster)) %>% 
-    projectRaster(ocean_raster) %>% 
-    mask(ocean_raster) 
-  
+
+  ranking_raster <- MPAs_df %>%
+    filter(!is.na(mpa)) %>%
+    select(cell_id) %>%
+    bind_rows(ranking_df) %>%
+    mutate(is_mpa = is.na(delta)) %>%
+    left_join(ocean_matrix) %>%
+    tibble::rowid_to_column("ID") %>%
+    mutate(rank = 1- scales::rescale(ID)) %>%
+    select(x, y, rank) %>%
+    rasterFromXYZ(crs = crs(ocean_raster)) %>%
+    projectRaster(ocean_raster) %>%
+    mask(ocean_raster)
+
   return(ranking_raster)
-  
+
 }
 
 get_optimal_raster <- function(ranking_raster, optimal_protection){
-  
+
   optimal_raster <- raster::mask(ranking_raster, mask = ranking_raster >= (1 - optimal_protection), maskvalue = 0)
 
   return(optimal_raster)
@@ -345,23 +345,23 @@ get_optimal_raster <- function(ranking_raster, optimal_protection){
 ## Cheapest way to 90% of biodviersity benefits
 
 ```{r}
-cheapest_90_percent_bio_benefits <- efficiency_curve %>% 
-  group_by(effort_assumption) %>% 
-  slice(which.min(abs(bio_benefit - 0.9))) %>% 
+cheapest_90_percent_bio_benefits <- efficiency_curve %>%
+  group_by(effort_assumption) %>%
+  slice(which.min(abs(bio_benefit - 0.9))) %>%
   mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
          ranking_df = map(run_pattern, .f = read_ranking_file),
-         ranking_raster = map(ranking_df, 
-                              create_ranking_raster, 
-                              MPAs_df = MPAs_df, 
-                              ocean_df = ocean_matrix, 
+         ranking_raster = map(ranking_df,
+                              create_ranking_raster,
+                              MPAs_df = MPAs_df,
+                              ocean_df = ocean_matrix,
                               ocean_raster = ocean_low_res_moll),
-         optim_raster = map2(ranking_raster, 
-                             fraction_protected, 
+         optim_raster = map2(ranking_raster,
+                             fraction_protected,
                              .f = get_optimal_raster),
-         optim_map = map(optim_raster, 
+         optim_map = map(optim_raster,
                          .f = map_priorities,  
-                         mpas_raster = MPAs, 
-                         ocean_df = ocean_matrix, 
+                         mpas_raster = MPAs,
+                         ocean_df = ocean_matrix,
                          discrete = T))
 
 cowplot::plot_grid(cheapest_90_percent_bio_benefits$optim_map[[1]],
@@ -374,23 +374,23 @@ cowplot::plot_grid(cheapest_90_percent_bio_benefits$optim_map[[1]],
 ## Max bio benefit at "zero costs"
 
 ```{r}
-max_bio_at_zero_cost <- efficiency_curve %>% 
-  group_by(effort_assumption) %>% 
-  slice(which.min(abs(delta_catch - 0))) %>% 
+max_bio_at_zero_cost <- efficiency_curve %>%
+  group_by(effort_assumption) %>%
+  slice(which.min(abs(delta_catch - 0))) %>%
   mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
          ranking_df = map(run_pattern, read_ranking_file),
-         ranking_raster = map(ranking_df, 
+         ranking_raster = map(ranking_df,
                               create_ranking_raster,
-                              MPAs_df = MPAs_df, 
-                              ocean_df = ocean_matrix, 
+                              MPAs_df = MPAs_df,
+                              ocean_df = ocean_matrix,
                               ocean_raster = ocean_low_res_moll),
-         optim_raster = map2(ranking_raster, 
-                             fraction_protected, 
+         optim_raster = map2(ranking_raster,
+                             fraction_protected,
                              .f = get_optimal_raster),
-         optim_map = map(optim_raster, 
+         optim_map = map(optim_raster,
                          .f = map_priorities,  
-                         mpas_raster = MPAs, 
-                         ocean_df = ocean_matrix, 
+                         mpas_raster = MPAs,
+                         ocean_df = ocean_matrix,
                          discrete = T))
 
 cowplot::plot_grid(max_bio_at_zero_cost$optim_map[[1]],
@@ -403,23 +403,23 @@ cowplot::plot_grid(max_bio_at_zero_cost$optim_map[[1]],
 ## Cheapest 30% of the ocean
 
 ```{r}
-cheapest_30_percent_protection <- efficiency_curve %>% 
-  group_by(effort_assumption) %>% 
-  slice(which.min(abs(fraction_protected - 0.3))) %>% 
+cheapest_30_percent_protection <- efficiency_curve %>%
+  group_by(effort_assumption) %>%
+  slice(which.min(abs(fraction_protected - 0.3))) %>%
   mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
          ranking_df = map(run_pattern, read_ranking_file),
-         ranking_raster = map(ranking_df, 
+         ranking_raster = map(ranking_df,
                               create_ranking_raster,
-                              MPAs_df = MPAs_df, 
-                              ocean_df = ocean_matrix, 
+                              MPAs_df = MPAs_df,
+                              ocean_df = ocean_matrix,
                               ocean_raster = ocean_low_res_moll),
          optim_raster = map2(ranking_raster,
-                             fraction_protected, 
+                             fraction_protected,
                              .f = get_optimal_raster),
-         optim_map = map(optim_raster, 
-                         .f = map_priorities, 
-                         mpas_raster = MPAs, 
-                         ocean_df = ocean_matrix, 
+         optim_map = map(optim_raster,
+                         .f = map_priorities,
+                         mpas_raster = MPAs,
+                         ocean_df = ocean_matrix,
                          discrete = T))
 
 cowplot::plot_grid(cheapest_30_percent_protection$optim_map[[1]],
@@ -432,9 +432,9 @@ cowplot::plot_grid(cheapest_30_percent_protection$optim_map[[1]],
 ## Indiferent to biodiversity
 
 ```{r}
-bio_indifferent <- efficiency_curve %>% 
-  group_by(effort_assumption) %>% 
-  slice(which.min(abs(bio_x_factor - 0))) %>% 
+bio_indifferent <- efficiency_curve %>%
+  group_by(effort_assumption) %>%
+  slice(which.min(abs(bio_x_factor - 0))) %>%
       mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
          ranking_df = map(run_pattern, read_ranking_file),
          ranking_raster = map(ranking_df, create_ranking_raster,MPAs_df = MPAs_df, ocean_df = ocean_matrix, ocean_raster = ocean_low_res_moll),
@@ -444,8 +444,8 @@ bio_indifferent <- efficiency_curve %>%
 cowplot::plot_grid(bio_indifferent$optim_map[[1]],
                    bio_indifferent$optim_map[[2]],
                    ncol = 1, labels = "auto", label_fontface = "plain")+
-    ggsave(filename = file.path(emLab_project_dir, 
-                                "figures", 
+    ggsave(filename = file.path(emLab_project_dir,
+                                "figures",
                                 "supplement", "multiobjective_optim_map_biodiversity_indiferent.png"),
                   dpi = 300,  height = 7, width = 6)
 ```
@@ -456,12 +456,12 @@ cowplot::plot_grid(bio_indifferent$optim_map[[1]],
 ## biodiversity = food
 
 ```{r}
-bio_equals_food <- efficiency_curve %>% 
-  group_by(effort_assumption) %>% 
-  slice(which.min(abs(bio_x_factor - 1))) %>% 
+bio_equals_food <- efficiency_curve %>%
+  group_by(effort_assumption) %>%
+  slice(which.min(abs(bio_x_factor - 1))) %>%
   mutate(run_pattern = paste(effort_assumption, bio_x_factor, sep = "_"),
          ranking_df = map(run_pattern, read_ranking_file),
-         ranking_raster = map(ranking_df, create_ranking_raster, 
+         ranking_raster = map(ranking_df, create_ranking_raster,
                               MPAs_df = MPAs_df, ocean_df = ocean_matrix, ocean_raster = ocean_low_res_moll),
          optim_raster = map2(ranking_raster, fraction_protected, .f = get_optimal_raster),
          optim_map = map(optim_raster, .f = map_priorities,  mpas_raster = MPAs, ocean_df = ocean_matrix, discrete = T))
@@ -472,7 +472,7 @@ cowplot::plot_grid(bio_equals_food$optim_map[[1]],
                    ncol = 1, labels = "auto", label_fontface = "plain")+
     ggsave(filename = file.path(emLab_project_dir, "figures", "supplement", "multiobjective_optim_map_bio_equals_food.png"),
                   dpi = 300,  height = 7, width = 6)
-    
+
 (5.24-0.69)/5.25
 (5.94-0.51)/5.89
 ```
@@ -483,28 +483,28 @@ For MacArthur
 mpa_atlas <- sf::st_read(dsn = file.path(emLab_shrd_data_dir, "mpa-atlas", "MPAtlas_20190910.gdb/"),
                          layer = "mpatlas_20190910_poly")
 
-tristan_mpa <- mpa_atlas %>% 
-  filter(mpa_id == "68808197") 
+tristan_mpa <- mpa_atlas %>%
+  filter(mpa_id == "68808197")
 
-mpas_df <- MPAs %>% 
+mpas_df <- MPAs %>%
       as.data.frame(xy = TRUE, centroids = T) %>%
-      set_names(c("lon", "lat", "mpa")) %>% 
-      inner_join(ocean_matrix, by = c("lon" = "x", "lat" = "y")) %>% 
-      as_tibble() %>% 
+      set_names(c("lon", "lat", "mpa")) %>%
+      inner_join(ocean_matrix, by = c("lon" = "x", "lat" = "y")) %>%
+      as_tibble() %>%
       filter(!is.na(mpa))
 
-bio_equals_food$optim_raster[[1]] %>% 
-  as.data.frame(xy = TRUE, centroids = T) %>% 
-  set_names(c("lon", "lat", "rank")) %>% 
-  left_join(mpas_df) %>% 
+bio_equals_food$optim_raster[[1]] %>%
+  as.data.frame(xy = TRUE, centroids = T) %>%
+  set_names(c("lon", "lat", "rank")) %>%
+  left_join(mpas_df) %>%
   mutate(rank = ifelse(!is.na(mpa), "mpa",
                        ifelse(rank < 0.7, NA,
-                              ifelse(rank < 0.9, "top 30%", "top 10%")))) %>% 
-  filter(!is.na(rank)) %>% 
+                              ifelse(rank < 0.9, "top 30%", "top 10%")))) %>%
+  filter(!is.na(rank)) %>%
   ggplot()+
   geom_raster(aes(x = lon, y = lat, fill = rank))+
-  geom_sf(data = tristan_mpa %>% 
-            st_transform(crs(ocean_low_res_moll)), 
+  geom_sf(data = tristan_mpa %>%
+            st_transform(crs(ocean_low_res_moll)),
           col = "transparent", fill= "lightblue", inherit.aes = F)+
   labs(title = "Global Conservation Priorities for biodiversity and food provision")+
   scale_fill_manual(values = c("lightblue", "#FBD87F", "#F98AB3"))+
@@ -520,7 +520,7 @@ bio_equals_food$optim_raster[[1]] %>%
   my_theme_map()+
   theme(legend.spacing.x = unit(10, "cm")) +
   geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
-  ggsave(filename = file.path(emLab_project_dir, "figures","mcarthur_top30_mixed.png"), 
+  ggsave(filename = file.path(emLab_project_dir, "figures","mcarthur_top30_mixed.png"),
          dpi = 300, width = 8)
 
 bio_equals_food$optim_raster[[1]] %>%
@@ -528,7 +528,7 @@ bio_equals_food$optim_raster[[1]] %>%
   map_priorities(mpas_raster = MPAs, ocean_df = ocean_matrix, discrete = T)+
   geom_sf(data = tristan_mpa, col = "transparent", fill= "lightblue")+
   labs(title = "Global Conservation Priorities for biodiversity and food provision",
-       subtitle = "Top 30% of the Ocean ", 
+       subtitle = "Top 30% of the Ocean ",
        caption = "existing highly protected areas shown in blue")+
   theme(legend.position = "none") +
   scale_fill_manual(values = c("#FBD87F", "#F98AB3"))+
@@ -539,7 +539,7 @@ bio_equals_food$optim_raster[[1]] %>%
   map_priorities(mpas_raster = MPAs, ocean_df = ocean_matrix, discrete = T)+
   geom_sf(data = tristan_mpa, col = "transparent", fill= "lightblue")+
   labs(title = "Global Conservation Priorities for biodiversity and food provision",
-       subtitle = "Top 10% of the Ocean ", 
+       subtitle = "Top 10% of the Ocean ",
        caption = "existing highly protected areas shown in blue")+
   theme(legend.position = "none") +
   scale_fill_manual(values = c("#FBD87F", "#F98AB3"))+
@@ -549,17 +549,14 @@ bio_equals_food$optim_raster[[1]] %>%
 For NG Magazine
 
 ```{r}
-bio_equals_food$optim_raster[bio_equals_food$effort_assumption == 1][[1]] %>% 
+bio_equals_food$optim_raster[bio_equals_food$effort_assumption == 1][[1]] %>%
   mask(MPAs, inverse = T) %>%
-  writeRaster(file.path(emLab_project_dir, 
-                        "other-project-materials", "natgeo-magazine", "equal_weights_bio_and_food_a1.tif"), 
+  writeRaster(file.path(emLab_project_dir,
+                        "other-project-materials", "natgeo-magazine", "equal_weights_bio_and_food_a1.tif"),
                overwrite = TRUE)
 
-bio_equals_food$optim_raster[bio_equals_food$effort_assumption == 2][[1]] %>% 
-  mask(MPAs, inverse = T) %>% 
+bio_equals_food$optim_raster[bio_equals_food$effort_assumption == 2][[1]] %>%
+  mask(MPAs, inverse = T) %>%
   writeRaster(file.path(emLab_project_dir, "other-project-materials", "natgeo-magazine", "equal_weights_bio_and_food_a2.tif"),
                overwrite = TRUE)
 ```
-
-
-
