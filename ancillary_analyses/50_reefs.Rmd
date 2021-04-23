@@ -1,0 +1,258 @@
+---
+title: "50 reefs"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r, include = F}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo=FALSE, fig.align = 'center')
+
+library(raster)
+library(tidyverse)
+library(sf)
+
+source(here::here("common.R"))
+
+theme_map <- function(...) {
+  theme_minimal() +
+    theme(
+      axis.line = element_blank(),
+      axis.text.x = element_blank(),
+      axis.text.y = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+      panel.grid.minor = element_blank(),
+      plot.background = element_rect(fill = NA, color = NA), 
+      panel.background = element_rect(fill = NA, color = NA), 
+      legend.background = element_rect(fill = NA, color = NA),
+      panel.border = element_blank(),
+      ...
+    )
+}
+```
+
+```{r}
+bio_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "ranking_raster.tif"))
+
+food_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ray", "ranking_raster_a2.tif"))
+
+carbon_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster_updated.tif"))
+
+reefs <- read_sf("../../../Desktop/Reefs70_min_attribute/Reef70_min_attribute.shp")
+```
+
+```{r}
+reefs_moll <- reefs %>% 
+  sf::st_transform(crs(ocean_low_res_wgs84)) %>% 
+  sf::st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  sf::st_transform(crs(ocean_low_res_moll))
+
+ranking_stack <- stack(bio_ranking, food_ranking, carbon_ranking)
+
+ranking_df <- ranking_stack %>% 
+  raster::extract(reefs_moll, df = T) %>% 
+  set_names(c("ID", "bio", "food", "carbon"))
+
+ranking_df <- ranking_df %>% 
+  pivot_longer(cols = -ID, 
+               names_to = "objective") %>% 
+  group_by(ID, objective) %>%  
+  summarise_at(.vars = "value", 
+               .funs = list(max = max, 
+                            mean = mean, 
+                            n = n_distinct), 
+               na.rm = T)
+
+reefs_moll <- reefs_moll %>% 
+  rowid_to_column("ID") %>% 
+  left_join(ranking_df) 
+```
+
+# Biodiversity
+
+```{r}
+reefs_moll %>% 
+  st_drop_geometry() %>% 
+  filter(objective == "bio") %>% 
+  ggplot()+
+  geom_point(aes(x = fct_reorder(ReefName, 
+                                 mean), 
+                 y = mean, 
+                 size = n,
+                 col = mean))+
+  coord_flip()+
+  labs(y = "Average ranking", 
+       x = "", 
+       size = "n pixels",
+       title = "Global Conservation Priority",
+       subtitle = "Biodiversity")+
+  guides(color = NULL)+
+  scale_color_viridis_c(guide = NULL)+
+  theme(plot.title.position = "plot")+
+  ggsave(file.path(emLab_project_dir, "figures", "misc", "50_reefs_bio_barplot.png"),
+         height = 10)
+
+```
+
+```{r}
+reefs_moll %>% 
+  filter(objective == "bio") %>% 
+  ggplot()+
+  geom_sf(data = land_50_moll, inherit.aes = F, col = "transparent")+
+  geom_sf(aes(col = mean))+
+  theme_map()+
+  scale_color_viridis_c(guide = guide_colorbar(
+    title = "Average ranking",
+    direction = "horizontal",
+    keyheight = unit(0.01, "npc"),
+    title.position = 'top',
+    title.hjust = 0.5,
+    label.hjust = -.02,
+    nrow = 1,
+    byrow = T,
+    reverse = F,
+    label.position = "bottom"))+
+  labs(title = "Global Conservation Priority",
+       subtitle = "Biodiversity")+
+  theme(legend.position = "bottom")+
+  ggsave(file.path(emLab_project_dir, "figures", "misc", "50_reefs_bio_map.png"),
+         width = 7, height = 5)
+```
+
+
+```{r}
+reefs_moll %>% 
+  st_drop_geometry() %>% 
+  filter(objective == "bio") %>% 
+  ungroup() %>% 
+  summarize(n_top_10 = n_distinct(mean[mean >= 0.9]),
+            n_top_15 = n_distinct(mean[mean >= 0.85]))
+```
+
+# Carbon
+
+```{r}
+reefs_moll %>% 
+  st_drop_geometry() %>% 
+  filter(objective == "carbon") %>% 
+  ggplot()+
+  geom_point(aes(x = fct_reorder(ReefName, 
+                                 mean), 
+                 y = mean, 
+                 size = n,
+                 col = mean))+
+  coord_flip()+
+  labs(y = "Average ranking", 
+       x = "", 
+       size = "n pixels",
+       title = "Global Conservation Priority",
+       subtitle = "Carbon")+
+  guides(color = NULL)+
+  scale_color_viridis_c(guide = NULL)+
+  theme(plot.title.position = "plot")+
+  ggsave(file.path(emLab_project_dir, "figures", "misc", "50_reefs_carbon_barplot.png"),
+         height = 10)
+```
+
+
+```{r}
+reefs_moll %>% 
+  filter(objective == "carbon") %>% 
+  ggplot()+
+  geom_sf(data = land_50_moll, inherit.aes = F, col = "transparent")+
+  geom_sf(aes(col = mean))+
+  theme_map()+
+  scale_color_viridis_c(guide = guide_colorbar(
+    title = "Average ranking",
+    direction = "horizontal",
+    keyheight = unit(0.01, "npc"),
+    title.position = 'top',
+    title.hjust = 0.5,
+    label.hjust = -.02,
+    nrow = 1,
+    byrow = T,
+    reverse = F,
+    label.position = "bottom"))+
+  labs(title = "Global Conservation Priority",
+       subtitle = "Carbon")+
+  theme(legend.position = "bottom")+
+  ggsave(file.path(emLab_project_dir, "figures", "misc", "50_reefs_carbon_map.png"),
+         width = 7, height = 5)
+```
+
+```{r}
+reefs_moll %>% 
+  st_drop_geometry() %>% 
+  filter(objective == "carbon") %>% 
+  ungroup() %>% 
+  summarize(n_top_10 = n_distinct(mean[mean >= 0.9]),
+            n_top_30 = n_distinct(mean[mean >= 0.7]))
+```
+
+# Food
+```{r}
+reefs_moll %>% 
+  st_drop_geometry() %>% 
+  filter(objective == "food") %>% 
+  ggplot()+
+  geom_point(aes(x = fct_reorder(ReefName, 
+                                 mean), 
+                 y = mean, 
+                 size = n,
+                 col = mean))+
+  coord_flip()+
+  labs(y = "Average ranking", 
+       x = "", 
+       size = "n pixels",
+       title = "Global Conservation Priority",
+       subtitle = "Food provision")+
+  guides(color = NULL)+
+  scale_color_viridis_c(guide = NULL)+
+  theme(plot.title.position = "plot")+
+  ggsave(file.path(emLab_project_dir, "figures", "misc", "50_reefs_food_barplot.png"),
+         height = 10)
+```
+
+```{r}
+reefs_moll %>% 
+  filter(objective == "food") %>% 
+  ggplot()+
+  geom_sf(data = land_50_moll, inherit.aes = F, col = "transparent")+
+  geom_sf(aes(col = mean))+
+  theme_map()+
+  scale_color_viridis_c(guide = guide_colorbar(
+    title = "Average ranking",
+    direction = "horizontal",
+    keyheight = unit(0.01, "npc"),
+    title.position = 'top',
+    title.hjust = 0.5,
+    label.hjust = -.02,
+    nrow = 1,
+    byrow = T,
+    reverse = F,
+    label.position = "bottom"))+
+  labs(title = "Global Conservation Priority",
+       subtitle = "Food")+
+  theme(legend.position = "bottom")+
+  ggsave(file.path(emLab_project_dir, "figures", "misc", "50_reefs_food_map.png"),
+         width = 7, height = 5)
+```
+
+```{r}
+reefs_moll %>% 
+  st_drop_geometry() %>% 
+  filter(objective == "food") %>% 
+  ungroup() %>% 
+  summarize(n_top_10 = n_distinct(mean[mean >= 0.9]),
+            n_top_30 = n_distinct(mean[mean >= 0.7]))
+```
