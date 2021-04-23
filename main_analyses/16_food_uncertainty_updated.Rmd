@@ -1,0 +1,342 @@
+---
+title: "Food provision in Juanation"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r, message = FALSE}
+library(raster)
+library(sf)
+library(tidyverse)
+library(patchwork)
+library(parallel)
+library(foreach)
+library(doParallel)
+library(furrr)
+
+source(here::here("common.R"))
+
+source(here::here("functions", "map_priorities.R"))
+
+variant_name <- "16_food_uncertainty_ray"
+
+variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name)
+
+dir.create(variant_dir)
+dir.create("tmp_food_uncertainty_files")
+```
+
+# Ranking inputs
+
+## Stock info
+
+```{r, eval = F}
+stocks <- tibble(filename = list.files(file.path(emLab_project_dir, "data", "02_processed", "stock_distributions"),
+                                       full.names = T),
+                 stockid = str_remove(basename(filename), "\\.tif"))
+
+stocks_info <- read_rds(file.path(emLab_project_dir, "other-project-materials",
+                                  "ray-and-dan-comments",
+                                  "MegaData_UncertaintyAnalysis_Ray.rds"))
+
+stocks_info <- stocks_info%>%
+  select(stockid,
+         k = Kfin,
+         m = m_fin,
+         r = r_fin,
+         ex_rate_bau1 = ExploitationRate_BAU1_Ray,
+         ex_rate_oa_cons = ExploitationRate_OAcons_Ray,
+         ex_rate_all_msy = ExploitationRate_AllMSY_Ray,
+         ex_rate_worm_oa = ExploitationRate_WormOA_Ray,
+         ln_r_mu,
+         r_thorson,
+         ln_r_sd,
+         r_fishbase,
+         stdev,
+         is_included = INCLUDE,
+         is_managed = Manage,
+         f_status = Fstatus,
+         b_status = Bstatus,
+         e_manage = Emanage,
+         er = ER,
+         bvk_fin,
+         bk_2012 = BK2012
+         )
+
+stocks_info <- stocks %>%
+  left_join(stocks_info)
+
+stocks_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "stocks_df.csv")) %>%
+  as_tibble()
+```
+
+## Normalize and trim
+
+```{r,  eval = F}
+features_matrix <- stocks_df %>%
+  select(-x,-y,-cell_id) %>% 
+  as.matrix()
+
+stopifnot(
+  sum(map_lgl(stocks_df %>%
+                select(-x,-y,-cell_id), is.numeric)) == ncol(features_matrix)
+  ) # ALL numeric?
+
+Norm_features_matrix <- sweep(features_matrix, 2, colSums(features_matrix, na.rm = T), FUN = "/")
+
+rownames(Norm_features_matrix) <- stocks_df$cell_id
+
+stopifnot(
+  sum(colSums(Norm_features_matrix, na.rm = T)) == ncol(features_matrix)
+  )  # Normalized OK?
+
+Norm_features_matrix <- Norm_features_matrix[rowSums(is.na(Norm_features_matrix)) != ncol(Norm_features_matrix), ]
+
+stopifnot(
+  identical(colnames(Norm_features_matrix), 
+          stocks_df %>% 
+            select(-x,-y,-cell_id) %>% 
+            colnames())
+  )  # Is the order of the features mantained?
+```
+
+# Current MPAs
+
+```{r,  eval = F}
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+MPAs_df <- MPAs %>% 
+  raster::as.data.frame(xy = T) %>%
+  inner_join(ocean_matrix) %>% 
+  select(x, y, cell_id, mpa = fully_highly_protected_reviewed_MPAs) %>%
+  as_tibble() 
+
+fraction_in_MPA <- sum(!is.na(MPAs_df$mpa))/nrow(MPAs_df)
+  
+MPA_vect <- rownames(Norm_features_matrix) %>% 
+  enframe() %>% 
+  select(cell_id = value) %>% 
+  left_join(MPAs_df) %>% 
+  mutate(mpa =  !is.na(mpa)) %>% pull(mpa)
+
+protected_cells <- matrix(MPA_vect, nrow = 1, ncol = nrow(Norm_features_matrix))
+
+colnames(protected_cells) <- rownames(Norm_features_matrix)
+
+Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
+
+mpa_cell_ids <- MPAs_df$cell_id[!is.na(MPAs_df$mpa)]
+
+effective_cells <- ocean_matrix %>% 
+  filter(cell_id %in% mpa_cell_ids |
+           cell_id %in% rownames(Norm_features_matrix)) %>% 
+  pull(cell_id)
+```
+
+# Recalculate ex rate
+
+```{r, eval = F}
+recalculate_ex_rate <- function(scenario, is_managed, f_status, b_status, e_manage, er, r_run, bvk_fin, bk_2012, is_included){
+  
+  if(scenario == "ex_rate_bau1"){
+    
+    ex_rate <- stocks_info$ex_rate_bau1
+    
+    ex_rate_run <- if_else(is_included != 1, 0,
+                           if_else(is_managed == 1 | f_status >= 1 | b_status <= 1,
+                                   if_else(is_managed == 1 & ex_rate > r_run, 
+                                           r_run,
+                                           if_else(is_managed == 1 & ex_rate <= r_run, ex_rate,
+                                                   (1 - bvk_fin)*r_run)),
+                                   (1 - bk_2012)*r_run))
+  }
+  else if(scenario == "ex_rate_oa_cons"){
+    
+    ex_rate <- stocks_info$ex_rate_oa_cons
+    
+    ex_rate_run <- if_else(is_included != 1, 0,
+                           if_else(is_managed == 1 & ex_rate > r_run, r_run, 
+                                   if_else(is_managed == 1 & ex_rate <= r_run, ex_rate,
+                                           (1 - bvk_fin)*r_run)))
+  }
+  else if(scenario == "ex_rate_all_msy"){
+    
+    ex_rate_run <- if_else(is_included == 1,0.5*r_run, 0)
+  }
+
+  else if(scenario == "ex_rate_worm_oa"){
+    
+    ex_rate <- stocks_info$ex_rate_worm_oa
+    
+    ex_rate_run <- if_else(is_included != 1, 0,
+                           if_else(is_managed == 1 & ex_rate > r_run, r_run, 
+                                   if_else(is_managed == 1 & ex_rate <= r_run, ex_rate, 
+                                           0.9*r_run)))
+    
+  }
+  
+  ex_rate_run[ex_rate_run >= 1] <- 0.99999999999999
+  
+  return(ex_rate_run)
+}
+```
+
+```{r, eval = F}
+save(Norm_features_matrix, protected_cells, stocks_info,  MPAs_df, fraction_in_MPA, MPAs, recalculate_ex_rate,effective_cells,
+       file = file.path("food_uncertainty_inputs.RData"))
+```
+
+# Ranking with uncertainty
+
+```{r}
+source(here::here("functions", "food_provision_foos.R"))
+
+load("food_uncertainty_inputs.RData")
+```
+
+```{r}
+run_food_uncertainty <- function(e_var, step_size, n_iter){
+  
+  benefit_curves <- foreach(i = 1:n_iter, 
+                           .combine = rbind) %dopar% {
+                             
+                             baseline_state <- protected_cells%*%Norm_features_matrix
+                             
+                             unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
+                             
+                             protected_matrix <- Norm_features_matrix[protected_cells, ]
+                             
+                             ranking <- list()
+                             
+                             current_pick <- 0
+                             
+                             current_state <- baseline_state 
+                             
+                             k_run <- stocks_info$k*(1 - runif(nrow(stocks_info), -0.15, 0.15))
+                             
+                             m_run <- stocks_info$m
+                             
+                             r_run <- stocks_info %>%
+                               rowwise() %>%
+                               mutate(r_run = ifelse(is.na(r_thorson),
+                                                     rnorm(1, mean = r_fishbase, sd = stdev),
+                                                     rlnorm(1, meanlog = ln_r_mu, sdlog = ln_r_sd))) %>%
+                               pull(r_run)
+                             
+                             e_run <- recalculate_ex_rate(scenario = e_var,
+                                                          is_included = stocks_info$is_included,
+                                                          is_managed = stocks_info$is_managed,
+                                                          f_status = stocks_info$f_status,
+                                                          b_status = stocks_info$b_status,
+                                                          e_manage = stocks_info$e_manage,
+                                                          er = stocks_info$er,
+                                                          r_run = r_run,
+                                                          bvk_fin = stocks_info$bvk_fin,
+                                                          bk_2012 = stocks_info$bk_2012)
+                             
+                             e_run[e_run >= 1] <- 0.99999999999999
+
+                             while(nrow(unprotected_matrix) > 0){
+                               
+                               current_pick <- sum(current_pick, 1)
+                               
+                               slopes <- estimate_catch_slopes(k_protected = current_state, 
+                                                               e = e_run, m = m_run, r = r_run, k = k_run, effort_assumption = 2)
+                               
+                               delta <- unprotected_matrix%*%as.matrix(t(slopes))
+                               
+                               best_cell_indeces <- doBy::which.maxn(delta, n = step_size)
+                               
+                               best_cells <- delta[best_cell_indeces,] %>% 
+                                 enframe() %>% 
+                                 set_names(c('cell_id', "delta")) %>% 
+                                 mutate(pick_order = current_pick)
+                               
+                               ranking <- bind_rows(ranking, best_cells)
+                               
+                               current_state <- unprotected_matrix[best_cell_indeces, ] %>% 
+                                 colSums() +
+                                 current_state
+                               
+                               unprotected_matrix <- unprotected_matrix[-best_cell_indeces, ]
+                               
+                             }
+                             
+                             full_ranking <- MPAs_df %>% 
+                               filter(!is.na(mpa)) %>% 
+                               select(cell_id) %>% 
+                               bind_rows(ranking) %>% 
+                               mutate(is_mpa = is.na(delta)) %>% 
+                               full_join(ocean_matrix) %>% 
+                               select(-pick_order, -delta) %>% 
+                               rowid_to_column(var = "pick_order") %>% 
+                               replace_na(list(delta = 0, is_mpa = FALSE)) 
+                             
+                             benefit_curve <- full_ranking %>% 
+                               left_join(Norm_features_matrix %>% 
+                                           as_tibble(rownames = NA) %>% 
+                                           rownames_to_column("cell_id")) %>% 
+                               replace(is.na(.), 0) %>% 
+                               select(-x, -y, -cell_id, -pick_order, -is_mpa) %>% 
+                               mutate_all(.funs = cumsum) %>% 
+                               apply(MARGIN = 1, 
+                                     estimate_delta_catch, 
+                                     e = e_run, 
+                                     m = m_run, 
+                                     r = r_run, 
+                                     k = k_run, 
+                                     effort_assumption = 2)  %>% 
+                               t() %>% 
+                               rowSums() %>% 
+                               enframe(name = NULL, value = "delta_catch") %>% 
+                               mutate(iter = i, 
+                                      scenario = e_var)
+                             
+                             benefit_curve <- benefit_curve %>% 
+                               bind_cols(full_ranking %>% 
+                                           transmute(x, y, cell_id, is_mpa)) %>% 
+                               filter(cell_id %in% effective_cells) %>% 
+                               mutate(fraction_protected = 1/n(),
+                                      fraction_protected =  cumsum(fraction_protected),
+                                      delta_catch_current_mpas = last(delta_catch[is_mpa == T]),
+                                      delta_catch = delta_catch - delta_catch_current_mpas) %>% 
+                               select(iter, cell_id, is_mpa, fraction_protected, delta_catch)
+                             
+                           }
+  
+  write_csv(benefit_curves,
+            file.path("tmp_food_uncertainty_files", paste0("benefit_curves_",e_var, ".csv")))
+  
+  }
+```
+
+
+```{r}
+registerDoParallel(2)
+
+run_food_uncertainty(e_var = "ex_rate_bau1", step_size = 100, n_iter = 6) 
+```
+
+```{r}
+benefit_curves_df <- read_csv(file = "tmp_food_uncertainty_files/benefit_curves_ex_rate_bau1.csv") 
+
+max(benefit_curves_df$delta_catch)
+
+ggplot(benefit_curves_df)+
+  geom_line(aes(x = fraction_protected, y = delta_catch/10^6))+
+  labs(caption = "scenario", y = "Change in catch (MMT)", x = "Fraction of the Ocean protected")
+```
+
+
+
+
+
+
