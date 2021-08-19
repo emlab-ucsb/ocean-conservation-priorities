@@ -17,6 +17,7 @@ library(raster)
 library(sf)
 library(tidyverse)
 library(patchwork)
+source(here::here("functions", "map_priorities.R"))
 
 source(here::here("common.R"))
 
@@ -312,7 +313,7 @@ food_map <- food_ranking_df %>%
   ggplot()+
   geom_raster(aes(x = lon, y = lat, fill = rank_cut))+
   geom_raster(data = MPAs_df %>% 
-  filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
+                filter(!is.na(mpa)), aes(x = x, y = y), fill = "lightblue")+
   geom_sf(data = land_50_moll, col = "transparent", fill = "grey", inherit.aes = FALSE)+
   scale_fill_manual(values  = global_colors,
                     guide = guide_legend(
@@ -551,8 +552,28 @@ ggsave(fig_1, filename = file.path(emLab_project_dir, "figures", "main", "figure
 ggsave(fig_1, filename = file.path(emLab_project_dir, "figures", "main", "figure_1_updated.png"), dpi = 300,  height = 9, width = 10)
 ```
 
+### Individual files
 
+```{r}
+bio_ranking %>% 
+  map_priorities(discrete = T,
+               mpas_raster = MPAs, caption = "",
+               ocean_df = ocean_matrix)+
+  ggsave(file.path(emLab_project_dir, "figures", "main", "figure_1a.pdf"),
+         dpi = 300,  height = 4, width = 8)
 
+food_ranking %>% 
+  map_priorities(discrete = T,
+               mpas_raster = MPAs, caption = "",
+               ocean_df = ocean_matrix)+
+  ggsave(file.path(emLab_project_dir, "figures", "main", "figure_1c.pdf"),
+         dpi = 300,  height = 4, width = 8)
 
-
+carbon_ranking %>% 
+  map_priorities(discrete = T,
+               mpas_raster = MPAs, caption = "",
+               ocean_df = ocean_matrix)+
+  ggsave(file.path(emLab_project_dir, "figures", "main", "figure_1e.pdf"),
+         dpi = 300,  height = 4, width = 8)
+```
 

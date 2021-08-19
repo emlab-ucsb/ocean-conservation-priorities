@@ -36,8 +36,8 @@ stocks <- tibble(filename = list.files(file.path(emLab_project_dir, "data", "02_
                                        full.names = T),
                  stockid = str_remove(basename(filename), "\\.tif"))
 
-stocks_info <- read_csv(file.path(emLab_project_dir, "data", "02_processed", "food_provision", "MegaData_UncertaintyAnalysis.csv")) %>%
-  select(stockid, k = Kfin, ex_rate = ExploitationRate_BAU1, m = m_fin, r = r_fin)
+stocks_info <- read_rds(file.path(emLab_project_dir, "data", "02_processed", "food_provision", "MegaData_Ray.rds")) %>%
+  select(stockid, k = Kfin, ex_rate = ExploitationRate_BAU1_Ray, m = m_fin, r = r_fin)
 
 stocks_info <- stocks %>%
   left_join(stocks_info)

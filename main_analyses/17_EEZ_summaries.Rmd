@@ -1,0 +1,220 @@
+---
+title: "EEZ summaries"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r, message = FALSE}
+library(raster)
+library(sf)
+library(tidyverse)
+
+source(here::here("common.R"))
+
+source(here::here("functions", "map_priorities.R"))
+
+variant_name <- "17_EEZ_summaries"
+
+variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name)
+
+dir.create(variant_dir)
+```
+
+```{r}
+bio_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "ranking_raster.tif"))
+
+bio_deltas <- raster(file.path(emLab_project_dir, "data", "03_output", "05_spp_wts_smts_provs_MPAs", "delta_v_raster.tif"))
+
+carbon_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "ranking_raster_updated.tif"))
+
+carbon_deltas <- raster(file.path(emLab_project_dir, "data", "03_output", "06_carbon", "delta_v_raster_updated.tif"))
+
+food_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ray","ranking_raster_a2.tif"))
+
+food_deltas <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ray","delta_v_raster_a2.tif"))
+
+equal_wts_ranking <- raster(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives", "ranking_raster_equal_weights_a2.tif"))
+
+equal_wts_deltas <- raster(file.path(emLab_project_dir, "data", "03_output", "11_multiple_objectives", "equal_wts_delta_v_raster_a2.tif"))
+
+MPAs <- raster(file.path(emLab_project_dir, "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+results_stack <- stack(MPAs, bio_ranking, bio_deltas, carbon_ranking, carbon_deltas, food_ranking, food_deltas, equal_wts_ranking, equal_wts_deltas)
+
+names(results_stack) <- c("mpas", "bio_ranking", "bio_delta", "carbon_ranking", "carbon_delta", "food_ranking", "food_delta", "equal_wts_ranking", "equal_wts_delta")
+```
+
+```{r}
+country_waters <- st_read(file.path(variant_dir, "PristineSeas_EEZ_1","Pristine_Seas_EEZ_Esri_1.shp")) 
+
+country_waters <- country_waters %>% 
+  sf::st_wrap_dateline(options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet = TRUE) %>% 
+  sf::st_transform(crs(ocean_low_res_moll))
+
+results_by_eez_df <- exactextractr::exact_extract(x = results_stack, 
+                                                  y = country_waters, 
+                                                  include_cols = c("MRGID_TER1", "EEZ", "TERRITORY1", "SOVEREIGN1")) %>% 
+  bind_rows()
+```
+
+```{r}
+eez_gocp_summaries <- results_by_eez_df %>% 
+  group_by(MRGID_TER1) %>% 
+  summarize(eez_size = sum(coverage_fraction),
+            p_mpas = sum(coverage_fraction[mpas > 0], na.rm = T)/eez_size,
+            biodiversity = sum(coverage_fraction[bio_ranking >= 0.9], na.rm = T)/eez_size,
+            carbon= sum(coverage_fraction[carbon_ranking >= 0.9], na.rm = T)/eez_size,
+            food = sum(coverage_fraction[food_ranking >= 0.9], na.rm = T)/eez_size,
+            equal_wts = sum(coverage_fraction[equal_wts_ranking >= 0.9], na.rm = T)/eez_size) %>% 
+  select(-eez_size)
+
+eez_gocp_summaries <- eez_gocp_summaries %>% 
+  pivot_longer(cols = c(-MRGID_TER1, -p_mpas), names_to = "objective", values_to = "p_eez_top_10") %>% 
+  mutate_at(.vars = c("p_mpas", "p_eez_top_10"), .funs = ~round(.x*100, 2)) %>% 
+  select(MRGID_TER1, objective, p_mpas, p_eez_top_10)
+```
+
+```{r}
+eez_summaries_bio <- results_by_eez_df %>% 
+  arrange(desc(bio_ranking)) %>% 
+  filter(!is.na(bio_ranking)) %>% 
+  group_by(MRGID_TER1) %>% 
+  mutate(cumsum_delta = cumsum(bio_delta*coverage_fraction),
+         f_protected  = coverage_fraction/sum(coverage_fraction, na.rm = T),
+         f_protected = cumsum(f_protected)) %>% 
+  summarize(objective = "biodiversity",
+            eez_size = sum(coverage_fraction, na.rm = T),
+            max_benefits = max(cumsum_delta, na.rm = T),
+            opt_protection = if_else(max_benefits <=0,
+                                         0,
+                                         f_protected[which.min(abs(cumsum_delta - max_benefits))]),
+            opt_protection_90p = ifelse(max_benefits > 0 & opt_protection > 0 & eez_size > 1,
+                                         f_protected[which.min(abs(cumsum_delta[f_protected < opt_protection] - 0.9*max_benefits))],
+                                         0))
+
+eez_summaries_carbon <- results_by_eez_df %>% 
+  arrange(desc(carbon_ranking)) %>% 
+  filter(!is.na(carbon_ranking)) %>% 
+  group_by(MRGID_TER1) %>% 
+  mutate(cumsum_delta = cumsum(carbon_delta*coverage_fraction),
+         f_protected  = coverage_fraction/sum(coverage_fraction, na.rm = T),
+         f_protected = cumsum(f_protected)) %>% 
+  summarize(objective = "carbon",
+            eez_size = sum(coverage_fraction, na.rm = T),
+            max_benefits = max(cumsum_delta, na.rm = T),
+            opt_protection = if_else(max_benefits <=0,
+                                         0,
+                                         f_protected[which.min(abs(cumsum_delta - max_benefits))]),
+            opt_protection_90p = ifelse(max_benefits > 0 & opt_protection > 0 & eez_size > 1,
+                                         f_protected[which.min(abs(cumsum_delta[f_protected < opt_protection] - 0.9*max_benefits))],
+                                         0))
+
+eez_summaries_food <- results_by_eez_df %>% 
+  arrange(desc(food_ranking)) %>% 
+  filter(!is.na(food_ranking)) %>% 
+  group_by(MRGID_TER1) %>% 
+  mutate(cumsum_delta = cumsum(food_delta),
+         f_protected  = coverage_fraction/sum(coverage_fraction, na.rm = T),
+         f_protected = cumsum(f_protected))%>% 
+  summarize(objective = "food",
+            eez_size = sum(coverage_fraction, na.rm = T),
+            max_benefits = max(cumsum_delta, na.rm = T),
+            opt_protection = if_else(max_benefits <=0,
+                                     0,
+                                     f_protected[which.min(abs(cumsum_delta - max_benefits))]),
+            opt_protection_90p = ifelse(max_benefits > 0 & opt_protection > 0 & eez_size > 1,
+                                        f_protected[which.min(abs(cumsum_delta[f_protected < opt_protection] - 0.9*max_benefits))],
+                                        0))
+
+eez_summaries_equal_wts <- results_by_eez_df %>% 
+  arrange(desc(equal_wts_ranking)) %>% 
+  filter(!is.na(equal_wts_ranking)) %>% 
+  group_by(MRGID_TER1) %>% 
+  mutate(cumsum_delta = cumsum(equal_wts_delta*coverage_fraction),
+         f_protected  = coverage_fraction/sum(coverage_fraction, na.rm = T),
+         f_protected = cumsum(f_protected))%>% 
+  summarize(objective = "equal_wts",
+            eez_size = sum(coverage_fraction, na.rm = T),
+            max_benefits = max(cumsum_delta, na.rm = T),
+            opt_protection = if_else(max_benefits <=0,
+                                     0,
+                                     f_protected[which.min(abs(cumsum_delta - max_benefits))]),
+            opt_protection_90p = ifelse(max_benefits > 0 & opt_protection > 0 & eez_size > 1,
+                                        f_protected[which.min(abs(cumsum_delta[f_protected < opt_protection] - 0.9*max_benefits))],
+                                        0))
+```
+# ```{r}
+# results_by_eez_df %>% 
+#   arrange(desc(equal_wts_ranking)) %>% 
+#   filter(!is.na(equal_wts_ranking), MRGID_TER1 == 2204) %>% 
+#   group_by(MRGID_TER1) %>% 
+#   mutate(cumsum_delta = cumsum(food_delta),
+#          f_protected  = coverage_fraction/sum(coverage_fraction, na.rm = T),
+#          f_protected = cumsum(f_protected)) %>% 
+#   slice(which.min(abs(f_protected - 0.3)))
+#   summarize(objective = "equal_wts",
+#             eez_size = sum(coverage_fraction, na.rm = T),
+#             max_benefits = max(cumsum_delta, na.rm = T),
+#             opt_protection = if_else(max_benefits <=0,
+#                                      0,
+#                                      f_protected[which.min(abs(cumsum_delta - max_benefits))]),
+#             opt_protection_90p = ifelse(max_benefits > 0 & opt_protection > 0 & eez_size > 1,
+#                                         f_protected[which.min(abs(cumsum_delta[f_protected < opt_protection] - 0.9*max_benefits))],
+#                                         0))
+# ```
+
+```{r}
+eez_summaries <- bind_rows(eez_summaries_food, 
+                           eez_summaries_bio, 
+                           eez_summaries_carbon, 
+                           eez_summaries_equal_wts) %>% 
+  arrange(MRGID_TER1) %>% 
+  select(-eez_size) %>% 
+  left_join(eez_gocp_summaries) %>% 
+  left_join(country_waters %>% 
+              st_drop_geometry() %>% 
+              select(EEZ, MRGID_TER1)) %>% 
+  select(MRGID_TER1, EEZ, p_mpas, p_eez_top_10, everything()) %>% 
+  mutate_at(.vars = c("opt_protection", "opt_protection_90p"), .funs = ~round(.x*100, 2))
+  
+eez_summaries %>% 
+  write_csv(file.path(variant_dir, "eez_summaries_updated.csv"))
+```
+
+# High Resolution Carbon
+
+```{r}
+carbon_hr <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "carbon_hr.tif")) # Mg C km^2
+
+co2_efflux <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "co2_efflux.tif")) # Mg C km^2
+
+hr_cell_area <- 934.4789^2/1000000
+
+hr_carbon_by_eez <- exactextractr::exact_extract(x = stack(co2_efflux, carbon_hr), 
+                                                 y = country_waters, fun = 'sum')
+
+hr_carbon_by_territory <- country_waters %>% 
+  st_drop_geometry() %>% 
+  bind_cols(hr_carbon_by_eez) %>% 
+  select(MRGID_TER1, TERRITORY1, SOVEREIGN1 ,sum_c = sum.carbon_hr, sum_co2_efflux = sum.co2_efflux) %>% 
+  mutate(sum_c = sum_c*hr_cell_area,
+         sum_co2_efflux = sum_co2_efflux*hr_cell_area,
+         sum_co2_efflux_lower = sum_co2_efflux*0.4) 
+
+hr_carbon_by_territory %>% 
+  write_csv(file.path(variant_dir,"hr_carbon_by_territory.csv"))
+
+hr_carbon_by_territory %>% 
+  group_by(SOVEREIGN1) %>% 
+  summarize_at(vars("sum_c", "sum_co2_efflux", "sum_co2_efflux_lower"), .funs = "sum") %>% 
+  write_csv(file.path(variant_dir,"hr_carbon_by_sovereign.csv"))
+```
+

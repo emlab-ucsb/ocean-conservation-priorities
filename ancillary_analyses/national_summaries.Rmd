@@ -176,7 +176,64 @@ write_rds(co2_by_territory, "co2_by_territory.rds")
 co2_by_territory %>% 
   filter(ID %in% results_by_territory$ID[results_by_territory$territory_iso3 == "USA"]) %>%
   summarize(total_co2 = sum(co2, na.rm = T))
+```
 
+### alll
+
+```{r}
+carbon_stats_by_territory <- stack(carbon_hr, co2_efflux) %>% 
+  raster::extract(eez_shp, df = T) %>% 
+  set_names(c("ID", "carbon" ,"co2")) %>% 
+  group_by(ID) %>% 
+  summarize(carbon = sum(carbon, na.rm = T),
+            co2 = sum(co2, na.rm = T))
+
+carbon_stats_by_territory <- carbon_stats_by_territory %>% 
+  left_join(eez_shp %>% 
+              st_drop_geometry() %>% 
+              rowid_to_column() %>% 
+              select(ID = rowid, name = union, iso_ter1, iso_sov1)) %>% 
+  select(ID, name, iso_ter1, iso_sov1, carbon, co2) %>% 
+  arrange(desc(co2))
+
+carbon_stats_by_territory <- carbon_stats_by_territory %>% 
+  mutate(carbon_mmt = round(carbon/10^6, 1),
+         co2_mmt = round(co2/10^6, 1))
+
+carbon_stats_by_territory %>% 
+  select(ID, name, iso_ter1, iso_sov1, carbon_mmt, co2_mmt) %>% 
+  write_csv(file.path(emLab_project_dir, "other-project-materials/press-materials/carbon_stats_by_territory.csv"))
+```
+
+
+### African Countries
+
+```{r}
+african_eez <- eez_shp %>% 
+  mutate(continent = countrycode::countrycode(iso_ter1, "iso3c", "continent")) %>% 
+  filter(continent == "Africa")
+
+carbon_stats_africa <- stack(carbon_hr, co2_efflux) %>% 
+  raster::extract(african_eez, df = T) %>% 
+  set_names(c("ID", "carbon" ,"co2")) %>% 
+  group_by(ID) %>% 
+  summarize(carbon = sum(carbon, na.rm = T),
+            co2 = sum(co2, na.rm = T))
+
+carbon_stats_africa <- carbon_stats_africa %>% 
+  left_join(african_eez %>% 
+              st_drop_geometry() %>% 
+              rowid_to_column() %>% 
+              select(ID = rowid, territory_name = territory1, territory_iso3 = iso_ter1, mrgid_ter1, mrgid_eez, sov_iso3 = iso_sov1))
+
+carbon_stats_africa %>% 
+  arrange(desc(co2)) %>% 
+  mutate_at(vars(carbon, co2), .funs = ~ round(.x/10^6, 1)) %>% 
+  mutate(co2_low = round(co2*0.4, 1)) %>% 
+  select(territory = territory_name, carbon, co2_low, co2_high = co2) %>% 
+  write_csv(file.path(emLab_project_dir, "other-project-materials/press-materials/African_carbon_stats.csv"))
+
+co2_by_territory <- read_rds(file.path(emLab_shrd_data_dir, "ocean-conservation-priorities", "outputs", "co2_by_territory.rds"))
 ```
 
 ### Russia

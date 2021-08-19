@@ -313,6 +313,16 @@ stats_by_territory <- stats_by_territory %>%
          country = gsub("Northern", "N", country), 
          country = gsub("Reunion", "Reunion   ", country))
 
+# stats_by_territory %>% 
+#   filter(goal == "biodiversity") %>% 
+#   select(territory_iso3c = territory_iso3,  continent) %>% 
+#   left_join(territories_df %>% 
+#               select(name, mrgid_ter1, territory_iso3c = iso_ter1, sovereign_iso3c = iso_sov1)) %>% 
+#   select(mrgid_ter1, name, territory_iso3c, sovereign_iso3c, continent) %>% 
+#   write_csv("territories_lut.csv")
+```
+
+```{r, shorten_country_names}
 stats_by_territory$country[stats_by_territory$territory_iso3 == "ATF"] <- "ATF"
 
 stats_by_territory$country[stats_by_territory$territory_iso3 == "UMI"] <- "U.S Minor Outlying Isl"
@@ -546,3 +556,4 @@ ggsave(fig_4, filename = file.path(emLab_project_dir, "figures", "main", "figure
 ggsave(fig_4, filename = file.path(emLab_project_dir, "figures", "main", "figure_4.pdf"), dpi = 300,  height = 10, width = 13)
 ```
 
+# Carbon 

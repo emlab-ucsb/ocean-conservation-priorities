@@ -31,6 +31,7 @@ variant_name <- "16_food_uncertainty_ray"
 variant_dir <- file.path(emLab_project_dir,"data", "03_output", variant_name)
 
 dir.create(variant_dir)
+
 dir.create("tmp_food_uncertainty_files")
 ```
 
@@ -43,9 +44,11 @@ stocks <- tibble(filename = list.files(file.path(emLab_project_dir, "data", "02_
                                        full.names = T),
                  stockid = str_remove(basename(filename), "\\.tif"))
 
-stocks_info <- read_rds(file.path(emLab_project_dir, "other-project-materials",
-                                  "ray-and-dan-comments",
-                                  "MegaData_UncertaintyAnalysis_Ray.rds"))
+# stocks_info <- read_rds(file.path(emLab_project_dir, "other-project-materials",
+#                                   "ray-and-dan-comments",
+#                                   "MegaData_UncertaintyAnalysis_Ray.rds"))
+
+stocks_info <- read_rds("../../../Downloads/MegaData_UncertaintyAnalysis_Ray_23Apr.rds")
 
 stocks_info <- stocks_info%>%
   select(stockid,
@@ -220,27 +223,32 @@ run_food_uncertainty <- function(e_var, step_size, n_iter){
                              
                              current_state <- baseline_state 
                              
-                             k_run <- stocks_info$k*(1 - runif(nrow(stocks_info), -0.15, 0.15))
+                             k_run <- stocks_info$k
+                             #*(1 - runif(nrow(stocks_info), -0.15, 0.15))
                              
                              m_run <- stocks_info$m
                              
-                             r_run <- stocks_info %>%
-                               rowwise() %>%
-                               mutate(r_run = ifelse(is.na(r_thorson),
-                                                     rnorm(1, mean = r_fishbase, sd = stdev),
-                                                     rlnorm(1, meanlog = ln_r_mu, sdlog = ln_r_sd))) %>%
-                               pull(r_run)
+                             # r_run <- stocks_info %>%
+                             #   rowwise() %>%
+                             #   mutate(r_run = ifelse(is.na(r_thorson),
+                             #                         rnorm(1, mean = r_fishbase, sd = stdev),
+                             #                         rlnorm(1, meanlog = ln_r_mu, sdlog = ln_r_sd))) %>%
+                             #   pull(r_run)
                              
-                             e_run <- recalculate_ex_rate(scenario = e_var,
-                                                          is_included = stocks_info$is_included,
-                                                          is_managed = stocks_info$is_managed,
-                                                          f_status = stocks_info$f_status,
-                                                          b_status = stocks_info$b_status,
-                                                          e_manage = stocks_info$e_manage,
-                                                          er = stocks_info$er,
-                                                          r_run = r_run,
-                                                          bvk_fin = stocks_info$bvk_fin,
-                                                          bk_2012 = stocks_info$bk_2012)
+                             r_run <- stocks_info$r
+                             
+                             # e_run <- recalculate_ex_rate(scenario = e_var,
+                             #                              is_included = stocks_info$is_included,
+                             #                              is_managed = stocks_info$is_managed,
+                             #                              f_status = stocks_info$f_status,
+                             #                              b_status = stocks_info$b_status,
+                             #                              e_manage = stocks_info$e_manage,
+                             #                              er = stocks_info$er,
+                             #                              r_run = r_run,
+                             #                              bvk_fin = stocks_info$bvk_fin,
+                             #                              bk_2012 = stocks_info$bk_2012)
+                             
+                             e_run <- stocks_info$ex_rate_bau1
                              
                              e_run[e_run >= 1] <- 0.99999999999999
 
@@ -253,7 +261,7 @@ run_food_uncertainty <- function(e_var, step_size, n_iter){
                                
                                delta <- unprotected_matrix%*%as.matrix(t(slopes))
                                
-                               best_cell_indeces <- doBy::which.maxn(delta, n = step_size)
+                               best_cell_indeces <- doBy::which.maxn(delta, n = 100)
                                
                                best_cells <- delta[best_cell_indeces,] %>% 
                                  enframe() %>% 
@@ -318,11 +326,10 @@ run_food_uncertainty <- function(e_var, step_size, n_iter){
   }
 ```
 
-
 ```{r}
-registerDoParallel(2)
+registerDoParallel()
 
-run_food_uncertainty(e_var = "ex_rate_bau1", step_size = 100, n_iter = 6) 
+run_food_uncertainty(e_var = "ex_rate_bau1", step_size = 100, n_iter = 3) 
 ```
 
 ```{r}

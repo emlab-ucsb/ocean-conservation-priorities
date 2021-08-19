@@ -467,6 +467,8 @@ bio_equals_food <- efficiency_curve %>%
          optim_map = map(optim_raster, .f = map_priorities,  mpas_raster = MPAs, ocean_df = ocean_matrix, discrete = T))
 
 
+
+
 cowplot::plot_grid(bio_equals_food$optim_map[[1]],
                    bio_equals_food$optim_map[[2]],
                    ncol = 1, labels = "auto", label_fontface = "plain")+
@@ -475,6 +477,16 @@ cowplot::plot_grid(bio_equals_food$optim_map[[1]],
 
 (5.24-0.69)/5.25
 (5.94-0.51)/5.89
+```
+
+For Earthshot
+
+```{r}
+bio_equals_food_raster_a2 <- bio_equals_food$ranking_raster[bio_equals_food$effort_assumption == 2][[1]]
+
+bio_equals_food_raster_a2 %>% 
+  mask(bio_equals_food_raster_a2 >= 0.7, maskvalue = 0) %>% 
+  writeRaster(filename = file.path(variant_dir, "food_bio_equal_wts_top_30.tif"))
 ```
 
 For MacArthur

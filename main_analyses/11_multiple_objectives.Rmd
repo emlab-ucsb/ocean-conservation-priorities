@@ -671,9 +671,10 @@ results_a2 <- MPAs_df %>%
   left_join(Norm_features_matrix %>%
               as_tibble(rownames = NA) %>%
               rownames_to_column("cell_id")) %>%
-  replace(is.na(.), 0) %>%
-  select(-x, -y, -delta, -pick_order, -is_mpa) %>%
+  replace(is.na(.), 0) %>% 
   mutate(cell_id = as.numeric(cell_id))
+
+#select(-x, -y, -delta, -pick_order, -is_mpa) 
 ```
 
 ### benefit curves
@@ -729,11 +730,11 @@ bio_benefit_curve_a2 %>%
   left_join(carbon_benefit_curve_a2 %>%
               select(fraction_protected, carbon = V_norm)) %>%
   left_join(food_benefit_curve_a2 %>%
-              select(fraction_protected, food = V_norm)) %>%
+              select(fraction_protected, food = V_norm)) %>% 
   gather(var, value, -fraction_protected) %>%
   ggplot()+
   geom_line(aes(fraction_protected, value, col = var))+
-  scale_color_manual(values = wesanderson::wes_palette("Darjeeling1", n = 3))+
+  #scale_color_manual(values = wesanderson::wes_palette("Darjeeling1", n = 3))+
   geom_rect(aes(xmin = 0,
                 xmax = fraction_in_MPA,
                 ymin = 0,
@@ -742,9 +743,38 @@ bio_benefit_curve_a2 %>%
   labs(x = "Fraction of the ocean protected",
        y = "Benefit",
        col = "Objective")+
-  theme_classic()+
+  theme_classic()
   ggsave(file.path(variant_dir, "benefit_curves_equal_weights_a2.png"),
          width = 7, height = 4)
+```
+
+```{r}
+combined_curve_a2 <- bio_benefit_curve_a2 %>%
+  select(fraction_protected, biodiversity = V_norm) %>%
+  left_join(carbon_benefit_curve_a2 %>%
+              select(fraction_protected, carbon = V_norm)) %>%
+  left_join(food_benefit_curve_a2 %>%
+              select(fraction_protected, food = V_norm)) %>% 
+  bind_cols(results_a2 %>% select(cell_id)) %>% 
+  left_join(ocean_matrix %>% mutate(cell_id = as.numeric(cell_id))) %>% 
+  mutate(combined_v = biodiversity + carbon + food) %>% 
+  select(x, y, cell_id, fraction_protected, combined_v) 
+
+
+combined_curve_a2 %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, combined_v))
+```
+
+```{r}
+bio_benefit_curve_a2 %>%
+  select(fraction_protected, biodiversity = V_norm) %>%
+  left_join(carbon_benefit_curve_a2 %>%
+              select(fraction_protected, carbon = V_norm)) %>%
+  left_join(food_benefit_curve_a2 %>%
+              select(fraction_protected, food = V_norm)) %>% 
+  mutate(dV = biodiversity + carbon + food) %>% 
+  slice(which.max(dV))
 ```
 
 
@@ -799,17 +829,43 @@ tmap::tmap_save(ranking_map_a2,
 ```{r}
 ranking_raster_a2 <- raster(file.path(variant_dir, "ranking_raster_equal_weights_a2.tif"))
 
-map_priorities(ranking_raster_a2, discrete = T, mpas_raster = MPAs, caption = "Multi-objective, equal weights, full effort displacement",
+map_priorities(ranking_raster_a2, 
+               discrete = T, mpas_raster = MPAs,
+               caption = "Multi-objective, equal weights, full effort displacement",
                ocean_df = ocean_matrix)+
   ggsave(file.path(variant_dir, "priority_map_equal_weights_a2.png"),
          dpi = 300,  height = 4, width = 8)
 
-map_priorities(ranking_raster_a2, discrete = T, mpas_raster = MPAs, caption = "Multi-objective, equal weights, full effort displacement",
+map_priorities(ranking_raster_a2, 
+               discrete = T,
+               mpas_raster = MPAs, caption = NULL,
                ocean_df = ocean_matrix)+
-  ggsave(file.path(emLab_project_dir, "figures", "supplement", "multiobjective_priority_map_equal_weights_a2.png"),
+  ggsave(file.path(emLab_project_dir, "figures", "supplement", "multiobjective_priority_map_equal_weights_a2.pdf"),
+         dpi = 300,  height = 4, width = 8)
+
+# top 45%
+
+ranking_raster_a2 %>% 
+  mask(ranking_raster_a2 > 0.55, maskvalue = 0) %>% 
+  map_priorities(discrete = T,
+               mpas_raster = MPAs, caption = NULL,
+               ocean_df = ocean_matrix)+
+  ggsave(file.path(emLab_project_dir, "figures", "supplement", "multiobjective_priority_map_equal_weights_a2_optimal.pdf"),
          dpi = 300,  height = 4, width = 8)
 ```
 
+```{r}
+combined_dv_a2_raster <- combined_curve_a2 %>% 
+  select(x,y, dV = combined_v) %>% 
+  rasterFromXYZ(crs = crs(ocean_low_res_moll)) %>% 
+  projectRaster(ocean_low_res_moll) %>% 
+  mask(ocean_low_res_moll) 
+
+writeRaster(combined_dv_a2_raster, 
+            file.path(variant_dir, "equal_wts_delta_v_raster_a2.tif"), 
+            overwrite = T)
+
+```
 
 # Tradeoffs
 
