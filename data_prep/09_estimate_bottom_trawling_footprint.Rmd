@@ -628,7 +628,7 @@ raster::cellStats(rem_carbon_v2, stat = sum, na.rm = T)/sum_total_carbon # 0.000
 50*raster::cellStats(rem_carbon_v2, stat = sum, na.rm = T)*3.67/10^9  # 68 billion usd at 50$ per ton of CO2
 ```
 
-### validation
+# Validation
 
 ```{r, eval = F}
 validation_df <- tibble(name = c("Westerchlede", "White Oak",  "Thermaic gulf","Sweden", "Aarhus Bay"),
@@ -645,6 +645,9 @@ validation_sf <- validation_df %>%
   st_transform(crs = crs(ocean_low_res_moll)) %>% 
   rownames_to_column("region_id")
 ```
+
+
+
 
 ```{r}
 validation_df_lr <- validation_sf %>% 
@@ -744,18 +747,20 @@ p_labile_hr <- raster(file.path(emLab_project_dir, "data", "02_processed", "impa
 
 SVR_raster_hr <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "svr_hr.tif"))
 
-SVR_raster_hr <- raster("../../../Google Drive File Stream/Shared drives/emlab/projects/current-projects/carbon-trawl/data/03_output/carbon_disturbed_svr_per_km2.tif")
+# SVR_raster_hr <- raster("../../../Google Drive File Stream/Shared drives/emlab/projects/current-projects/carbon-trawl/data/03_output/carbon_disturbed_svr_per_km2.tif")
 ```
 
 ```{r, eval = F}
 rem_carbon_hr <- (carbon_hr*SVR_raster_hr*p_crd*p_labile_hr)*(1 - exp(-k_decay_hr))
 
 rem_carbon_hr %>%
-  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "rem_carbon_hr.tif"), overwrite=TRUE)
+  raster::writeRaster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "rem_carbon_hr.tif"), 
+                      overwrite=TRUE)
 ```
 
 ```{r}
-rem_carbon_hr <- raster(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "rem_carbon_hr.tif"))
+rem_carbon_hr <- raster(file.path(emLab_project_dir,
+                                  "data", "02_processed", "impacts", "bottom_trawling", "rem_carbon_hr.tif"))
 
 validations_hr <- validation_sf %>% 
   st_transform(crs = crs(rem_carbon_hr))
@@ -801,8 +806,14 @@ validation_df_hr %>%
   mutate(model_mol_co2_km2/obs_mol_co2_km2)
 
 
-
+validation_df_hr %>% 
   ggplot()+
   geom_point(aes(x = log(model_mol_co2_km2), y = log(obs_mol_co2_km2)))+
   geom_abline(slope = 1, intercept = 0)
 ```
+```{r}
+validation_df_hr %>% 
+  select(name, obs_mol_co2_km2, model_mol_co2_km2) %>% 
+  mutate_if(is.numeric, ~.x/10^9)
+```
+

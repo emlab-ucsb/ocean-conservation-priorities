@@ -1096,6 +1096,14 @@ validation %>%
   geom_smooth(method = "lm", se = FALSE, color="black", formula = y ~ x) 
 ```
 
+
+
+```{r}
+validation %>% 
+  select(name, obs_mol_co2_km2, rem_mol_co2) %>% 
+  mutate_if(is.numeric, ~./10^9)
+```
+
 #### high res 
 
 ```{r}
@@ -1140,6 +1148,42 @@ rmse <- function(obs, pred){
 
 rmse(validation_hr$obs_mol_co2_km2, pred = validation_hr$mod_mol_co2_km2)
 ```
+
+```{r}
+validation_data <- stack(p_labile_hr, k_decay_hr, svr_hr, carbon_hr) %>% 
+  raster::extract(validation_sf, df = T)  
+
+validation_data <- validation_data %>% 
+  set_names(c("region_id", "p_labile", "k_decay", "svr", "carbon")) %>% 
+  mutate(region_id = as.character(region_id))
+
+validation_data <- validation_data %>% 
+  filter(!is.na(svr) & !is.na(carbon)) %>% 
+  left_join(validation_sf_hr %>% 
+              st_drop_geometry()) %>% 
+  select(region = name, region_id, p_labile, k_decay, svr, carbon)
+
+write_csv(validation_data, 
+          file.path(emLab_project_dir, "data", "03_output", "06_carbon", "carbon_validation_data.csv"))
+
+
+validation_data %>% 
+  filter(!is.na(svr) & !is.na(carbon)) %>% 
+  group_by(region, region_id) %>% 
+  summarize(n_pixels = n(),
+            mean_svr = mean(svr),
+            mean_carbon = mean(carbon),
+            mean_p = mean(p_labile),
+            mean_k = mean(k_decay),
+            mean_mol_co2 = 3.67*22722*mean_carbon*mean_svr*mean_p*(1-exp(-mean_k))/10^9,
+            mean_2 = mean(3.67*22722*carbon*svr*p_labile*(1-exp(-k_decay))/10^9)) %>% 
+  left_join(validation_sf %>%
+              st_drop_geometry() %>% 
+              select(region = name, obs_mol_co2_km2)) %>% 
+  mutate(obs_mol_co2_km2 = obs_mol_co2_km2/10^9)
+```
+
+
 
 ```{r}
 Ia_carbon_map <- Ia %>% 
