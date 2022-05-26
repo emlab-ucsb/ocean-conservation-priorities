@@ -48,11 +48,11 @@ data.table::fwrite(stocks_df,
 ```{r}
 stocks <- tibble(filename = list.files(file.path(emLab_project_dir, "data", "02_processed", "stock_distributions"),
                                        full.names = T),
-                 stockid = str_remove(basename(filename), "\\.tif"))
+                 stockid = str_remove(basename(filename), "\\.tif")) %>% 
+  distinct()
 
-# stocks_info <- read_csv(file.path(emLab_project_dir,
-#                                   "data", "02_processed", "food_provision", "MegaData_UncertaintyAnalysis.csv")) %>%
-#   select(stockid, k = Kfin, ex_rate = ExploitationRate_BAU1, m = m_fin, r = r_fin)
+stocks_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "stocks_df.csv")) %>% 
+  as_tibble()
 
 stocks_info <- read_rds(file.path(emLab_project_dir,
                                   "data", "02_processed", "food_provision", "MegaData_Ray.rds")) %>%
@@ -60,9 +60,6 @@ stocks_info <- read_rds(file.path(emLab_project_dir,
 
 stocks_info <- stocks %>%
   left_join(stocks_info)
-
-stocks_df <- data.table::fread(file.path(emLab_project_dir, "data", "02_processed", "features_df", "stocks_df.csv")) %>% 
-  as_tibble()
 ```
 
 ## Normalize and trim
@@ -123,6 +120,10 @@ source(here::here("functions", "food_provision_foos.R"))
 ```
 
 # Ranking 
+
+```{r}
+dim(features_matrix)
+```
 
 ```{r}
 Norm_features_matrix[is.na(Norm_features_matrix)] <- 0
@@ -194,12 +195,12 @@ end_time <- Sys.time()
 
 end_time - start_time
 
+
 write_rds(ranking,
-          file.path(variant_dir, "ranking_results_a1.rds"))
+          file.path(variant_dir, "ranking_results_a1_update_10by10.rds"))
 ```
 
 ## Assumption 2: Effort is fully displaced
-
 
 ```{r}
 unprotected_matrix <- Norm_features_matrix[!protected_cells, ]
@@ -227,7 +228,7 @@ while(nrow(unprotected_matrix) > 0){
   
   delta <- unprotected_matrix%*%as.matrix(t(slopes))
   
-  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  best_cell_indeces <- doBy::which.maxn(delta, n = 10)
   
   best_cells <- delta[best_cell_indeces,] %>% 
     enframe() %>% 
@@ -248,8 +249,8 @@ end_time <- Sys.time()
 
 end_time - start_time
 
-#write_rds(ranking,
- #         file.path(variant_dir, "ranking_results_a2.rds"))
+write_rds(ranking,
+        file.path(variant_dir, "ranking_results_a2_update_10by10.rds"))
 ```
 
 # Results
@@ -259,7 +260,7 @@ end_time - start_time
 ### a1
 
 ```{r}
-ranking_a1 <- read_rds(file.path(variant_dir, "ranking_results_a1.rds")) %>% 
+ranking_a1 <- read_rds(file.path(variant_dir, "ranking_results_a1_update_10by10.rds")) %>% 
   select(-pick_order)
 
 ranked_rep_levels_a1 <- MPAs_df %>% 
@@ -301,6 +302,15 @@ results_per_pixel_a1 <- results_per_pixel_a1 %>%
   mutate(pixel_contribution_to_network_a1 = if_else(is.na(delta_catch_a1 - lag(delta_catch_a1)), 
                                                  delta_catch_a1, 
                                                  delta_catch_a1 - lag(delta_catch_a1)))
+
+```
+
+```{r}
+max(results_per_pixel_a1$delta_catch_a1) -
+max(results_per_pixel_a1$delta_catch_a1[results_per_pixel_a1$is_mpa == T])
+```
+
+```{r}
 results_per_pixel_a1 %>% 
   mutate(fraction_protected = 1/n(),
          fraction_protected =  cumsum(fraction_protected)) %>% 
@@ -317,7 +327,7 @@ results_per_pixel_a1 %>%
                 ymax = max(results_per_pixel_a1$delta_catch_a1)),
                 fill = "#69B578", alpha = 0.01)+
   scale_x_continuous(limits = c(0,1), expand = c(0, 0))+
-  scale_y_continuous(expand = c(0, 100))+
+  scale_y_continuous(expand = c(0, 100))
   ggsave(file.path(variant_dir, "delta_catch_curve_a1.png"),
          width = 7, 
          height = 4)
@@ -332,8 +342,7 @@ network_delta_catch_per_stock_a1 %>%
 ### a2
 
 ```{r}
-ranking_a2 <- ranking %>% select(-pick_order)
-ranking_a2 <- read_rds(file.path(variant_dir, "ranking_results_a2.rds")) %>% 
+ranking_a2 <- read_rds(file.path(variant_dir, "ranking_results_a2_update.rds")) %>% 
   select(-pick_order)
 
 ranked_rep_levels_a2 <- MPAs_df %>% 
@@ -375,6 +384,12 @@ results_per_pixel_a2 <- results_per_pixel_a2 %>%
   mutate(pixel_contribution_to_network_a2 = if_else(is.na(delta_catch_a2 - lag(delta_catch_a2)), 
                                                  delta_catch_a2, 
                                                  delta_catch_a2 - lag(delta_catch_a2)))
+
+max(results_per_pixel_a2$delta_catch_a2)/10^6
+max(results_per_pixel_a2$delta_catch_a2) - max(results_per_pixel_a2$delta_catch_a2[results_per_pixel_a2$is_mpa == T])
+```
+
+```{r}
 results_per_pixel_a2 %>% 
   mutate(fraction_protected = 1/n(),
          fraction_protected =  cumsum(fraction_protected)) %>% 
@@ -401,15 +416,13 @@ network_delta_catch_per_stock_a2 %>%
   mutate(cell_id = ranked_rep_levels_a2$cell_id) %>%
   select(cell_id, everything()) %>% 
   write_rds(file.path(variant_dir, "network_delta_catch_per_stock_a2.rds"))
-
-max(results_per_pixel_a2$delta_catch_a2)/10^6
 ```
 
 ```{r}
 results_per_pixel <- results_per_pixel_a1 %>% 
   left_join(results_per_pixel_a2)
 
-write_rds(results_per_pixel, file.path(variant_dir, "results_per_pixel.rds"))
+write_rds(results_per_pixel, file.path(variant_dir, "results_per_pixel_update.rds"))
 ```
 
 ```{r}
@@ -458,7 +471,7 @@ ggsave(plot = delta_catch_curve_comparison_plot,
 results_per_pixel <- read_rds(file.path(variant_dir, "results_per_pixel.rds"))
 
 summary_of_results <- results_per_pixel %>% 
-  select(is_mpa, a1 = delta_catch_a1, a2 = delta_catch_a2) %>% 
+  select(is_mpa, a1 = delta_catch_a1, a2 = delta_catch_a2 ) %>% 
   pivot_longer(-is_mpa, names_to = "model", values_to = "delta_catch") %>% 
   group_by(model) %>% 
   summarise(catch_bau = max(delta_catch[is_mpa]),
@@ -495,8 +508,16 @@ optimal_protection_levels_a2 <- results_per_pixel %>%
   left_join(bind_rows(optimal_protection_levels_a1,
             optimal_protection_levels_a2)) %>% 
   mutate_if(is.numeric, round, 3) %>% 
-  write_rds(file.path(variant_dir, "summary_of_food_results.rds")))
+  write_rds(file.path(variant_dir, "summary_of_food_results_update.rds")))
 ```
+
+```{r}
+read_rds(file.path(variant_dir, "summary_of_food_results.rds"))
+```
+```{r}
+read_rds(file.path(variant_dir, "summary_of_food_results_update.rds"))
+```
+
 
 ## Ranking maps
 
@@ -540,7 +561,7 @@ writeRaster(ranking_raster_a2,
 ranking_raster_a1 <- raster(file.path(variant_dir, "ranking_raster_a1.tif"))
 
 map_priorities(ranking_raster_a1, discrete = T, mpas_raster = MPAs, caption = "Food provision, no effort displacement", 
-               ocean_df = ocean_matrix) +
+               ocean_df = ocean_matrix) 
   ggsave(file.path(variant_dir, "priority_map_a1.png"),
          dpi = 300,  height = 4, width = 8)
 
@@ -548,7 +569,7 @@ ranking_raster_a2 <- raster(file.path(variant_dir, "ranking_raster_a2.tif"))
 
 map_priorities(ranking_raster_a2, discrete = T, mpas_raster = MPAs, caption = "Food provision, full effort displacement", 
                ocean_df = ocean_matrix) +
-  ggsave(file.path(variant_dir, "priority_map_a2.png"),
+  ggsave(file.path(variant_dir, "priority_map_a2_updated.png"),
          dpi = 300,  height = 4, width = 8)
 ```
 

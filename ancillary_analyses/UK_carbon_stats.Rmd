@@ -1,0 +1,120 @@
+---
+title: "UK carbon stats"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup}
+
+library(tidyverse)
+library(terra)
+
+emLab_project_dir <- "~/juanmayorga@ucsb.edu - Google Drive/Shared drives/emlab/projects/current-projects/ocean-conservation-priorities"
+
+emLab_shrd_data_dir <- "~/juanmayorga@ucsb.edu - Google Drive/Shared drives/emlab/data"
+```
+
+
+```{r}
+global_params <- rast(c(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "carbon_hr.tif"), # Mg C km^2,
+                      file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "svr_hr.tif"),
+                      file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "k_decay_hr.tif"),
+                      file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "p_labile_hr.tif"),
+                      file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "co2_efflux.tif")))
+```
+
+
+```{r}
+eez_and_land <- sf::st_read(file.path(emLab_shrd_data_dir, "marine-regions-EEZ-land-union-v3-202003", "EEZ_Land_v3_202030.shp"))
+
+uk_eez <- eez_and_land %>% 
+  filter(ISO_TER1 == "GBR") %>% 
+  sf::st_transform(crs = terra::crs(global_params$carbon_hr,  proj = T))
+
+uk_extent <- ext(uk_eez)
+```
+
+```{r}
+uk_params <- terra::crop(global_params, uk_extent) %>% 
+  terra::mask(terra::vect(uk_eez))
+```
+
+# Total Carbon in the U.K
+
+```{r}
+plot(uk_params$carbon_hr)
+```
+```{r}
+uk_pixel_area <- cellSize(uk_params$carbon_hr, unit = 'km')
+
+global(uk_params$carbon_hr*uk_pixel_area, sum, na.rm = T)/10^9 # Billion Mg C 
+```
+
+Average Mg C per km2 
+
+```{r}
+global(uk_params$carbon_hr, mean, na.rm = T) #  Mg C per km2
+```
+
+in trawled sediments
+
+
+```{r}
+c_in_trawled_area <- mask(uk_params$carbon_hr, uk_params$svr_hr)
+
+global(c_in_trawled_area, mean, na.rm = T)#  Mg C per km2
+```
+
+# Carbon impacted by trawling
+
+```{r}
+uk_c_impacted <- uk_params$carbon_hr*uk_params$svr_hr 
+
+global(uk_c_impacted*uk_pixel_area, sum, na.rm = T)/10^6 # million Mg C
+```
+
+
+```{r}
+p_crd <- 0.87
+
+uk_co2_rem <- 3.65*(uk_c_impacted*p_crd*uk_params$p_labile_hr)*(1 - exp(-uk_params$k_decay_hr))
+
+global(uk_co2_rem*uk_pixel_area, sum, na.rm = T)/10^6
+```
+
+# Trawled area
+
+```{r}
+terra::expanse(uk_params$co2_efflux, unit = "km")
+```
+
+```{r}
+uk_swept_area <- rast(file.path(emLab_project_dir, "data", "02_processed", "impacts", "bottom_trawling", "swept_area_raster_hr.tif")) %>% 
+  terra::project(uk_params$carbon_hr) %>% 
+  terra::crop(uk_extent) %>% 
+  terra::mask(terra::vect(uk_eez))
+
+global(uk_swept_area, sum, na.rm = T)
+```
+
+
+# Co2 efflux
+
+```{r}
+global(uk_params$co2_efflux*uk_pixel_area, sum, na.rm = T)/10^6
+
+# Or if we think every pixelk in the U.K has been trawled for over 10 years, then we adjiusted for a depletion factor of %27.7
+
+0.277*global(uk_params$co2_efflux*uk_pixel_area, sum, na.rm = T)/10^6
+```
+ 

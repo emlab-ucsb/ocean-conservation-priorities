@@ -51,7 +51,7 @@ tmap::tmap_save(carbon_map_high_res,
 
 
 ```{r, eval = F}
-carbon_hr <- raster(file.path(emLab_shrd_data_dir, "global-marine-sedimentary-carbon", "Mean carbon_stock.tif"))
+carbon_hr <- raster(file.path(emLab_shrd_data_dir, "global-marine-sedimentary-carbon", "Mean carbon_stock.tif")) # MgC per km2
 
 area_hr <- area(carbon_hr)
 

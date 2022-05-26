@@ -2,7 +2,11 @@
 
 emLab_project_dir <- "~/Google Drive/Shared drives/emlab/projects/current-projects/ocean-conservation-priorities"
 
+emLab_project_dir <- "/Volumes/GoogleDrive/Shared\ drives/emlab/projects/current-projects/ocean-conservation-priorities/"
+
 emLab_shrd_data_dir <- "~/Google Drive/Shared drives/emlab/data"
+
+emLab_shrd_data_dir <- "/Volumes/GoogleDrive/Shared\ drives/emlab/data"
 
 # Load ocean and land mask 
 
