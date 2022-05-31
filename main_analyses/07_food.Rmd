@@ -327,7 +327,7 @@ results_per_pixel_a1 %>%
                 ymax = max(results_per_pixel_a1$delta_catch_a1)),
                 fill = "#69B578", alpha = 0.01)+
   scale_x_continuous(limits = c(0,1), expand = c(0, 0))+
-  scale_y_continuous(expand = c(0, 100))
+  scale_y_continuous(expand = c(0, 100))+
   ggsave(file.path(variant_dir, "delta_catch_curve_a1.png"),
          width = 7, 
          height = 4)
@@ -342,7 +342,7 @@ network_delta_catch_per_stock_a1 %>%
 ### a2
 
 ```{r}
-ranking_a2 <- read_rds(file.path(variant_dir, "ranking_results_a2_update.rds")) %>% 
+ranking_a2 <- read_rds(file.path(variant_dir, "ranking_results_a2_update_10by10.rds")) %>% 
   select(-pick_order)
 
 ranked_rep_levels_a2 <- MPAs_df %>% 
@@ -390,12 +390,12 @@ max(results_per_pixel_a2$delta_catch_a2) - max(results_per_pixel_a2$delta_catch_
 ```
 
 ```{r}
-results_per_pixel_a2 %>% 
+results_per_pixel %>% 
   mutate(fraction_protected = 1/n(),
          fraction_protected =  cumsum(fraction_protected)) %>% 
   filter(!is_mpa) %>% 
   ggplot()+
-  geom_line(aes(fraction_protected, delta_catch_a2))+
+  geom_line(aes(fraction_protected, delta_catch_a2))
   labs(x = "Fraction Ocean Protected",
        y = "Delta Catch",
        caption = "Full effort displacement") +

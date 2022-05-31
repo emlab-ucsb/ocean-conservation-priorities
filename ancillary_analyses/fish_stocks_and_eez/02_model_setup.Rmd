@@ -1,0 +1,170 @@
+---
+title: "Food provision with EEZ boundaries Juanation"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r, message = FALSE}
+library(raster)
+library(sf)
+library(tidyverse)
+
+source(here::here("common.R"))
+```
+
+# Ocean df 
+
+```{r}
+highly_mpas_raster <- raster(file.path(emLab_project_dir, 
+                         "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+ocean_df <- stack(ocean_low_res_moll, highly_mpas_raster) %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("lon", "lat", "ocean", "f_highly_mpa")) %>% 
+  filter(!is.na(ocean)) %>% 
+  rowid_to_column(var = "cell_id") %>% 
+  as_tibble()
+
+current_f_highly_protected <- sum(ocean_df$f_highly_mpa, na.rm = T)/nrow(ocean_df)
+```
+
+# Stocks df
+
+```{r, eval = F}
+stocks <- tibble(filename = list.files("stocks_rasters/",
+                                       full.names = T),
+                 stockid = str_remove(basename(filename), "\\.tif"))
+
+stocks_df <- stack(stocks$filename) %>%
+  raster::as.data.frame(xy = T) %>%
+  rename("lon" = "x", "lat" = "y") 
+```
+
+```{r, eval = F}
+not_in_ocean <- stocks_df %>% 
+  anti_join(ocean_df %>% 
+               select(lon, lat, cell_id)) %>%
+  as_tibble()
+
+test <- not_in_ocean %>% 
+  transmute(lon, lat, total = rowSums(dplyr::across(where(is.numeric)), 
+                                      na.rm = T))
+
+test %>% 
+  filter(!is.na(total)) %>% 
+  ggplot()+
+  geom_raster(aes(lon, lat, fill = total))
+```
+
+```{r, eval = F}
+stocks_df <- stocks_df %>% 
+  inner_join(ocean_df %>% 
+               select(lon, lat, cell_id)) %>%
+  select(lon, lat, cell_id, everything()) %>%
+  as_tibble()
+
+write_rds(stocks_df, file.path(emLab_project_dir, "data/03_output/fish_stocks_and_eez/data/stocks_df.rds"))
+```
+
+# Stocks
+
+```{r, eval = F}
+stocks_df <- read_rds(file.path(emLab_project_dir, "data/03_output/fish_stocks_and_eez/data/stocks_df.rds"))
+
+stock_names <- names(stocks_df)[-c(1, 2,  3)]
+
+foos <- list(
+  sum = ~sum(.x, na.rm = TRUE), 
+  n = ~sum(!is.na(.x) & .x > 0, na.rm = TRUE)
+)
+
+total_stock_suitability <- stocks_df %>% 
+  select(all_of(stock_names)) %>% 
+  summarise(across(where(is.numeric), foos, na.rm = T)) %>% 
+  pivot_longer(cols = everything()) 
+
+stocks_to_remove <- total_stock_suitability %>% 
+  separate(name, sep = "_", into = c("stock", "var")) %>% 
+  pivot_wider(names_from = var, values_from = value) %>% 
+  filter(n <= 1 | sum == 0) %>% 
+  mutate(stock = str_replace_all(stock, "\\.", "\\-")) %>% 
+  pull(stock)
+
+write_rds(stocks_to_remove, file = file.path(emLab_project_dir,
+                                        "data/03_output/fish_stocks_and_eez/data/stocks_to_remove.rds")) 
+```
+
+# Stocks info
+
+```{r}
+stocks_info <- read_rds(file.path(emLab_project_dir, 
+                                  "data/03_output/fish_stocks_and_eez/data/stocks_eez_info.rds"))
+
+total_k <- sum(stocks_info$k)/10^6
+
+stocks_info %>% 
+  filter(stock_id %in% stocks_to_remove) %>% 
+  summarize(sum(k)/(total_k*10^6))
+```
+
+```{r}
+stocks_info <- stocks_info %>% 
+  filter(! stock_id %in% stocks_to_remove)
+
+n_stocks <- nrow(stocks_info)
+
+stocks_df <- stocks_df %>% 
+  select(-all_of(str_replace_all(stocks_to_remove, "-", ".")))
+
+stock_names <- names(stocks_df)[-c(1, 2,  3)]
+
+write_rds(stocks_info, 
+          file.path(emLab_project_dir, 
+                                  "data/03_output/fish_stocks_and_eez/output/final_stocks_eez_info.rds"))
+```
+
+# Normalize and apply impacts
+
+```{r, eval = F}
+features_df <- stocks_df
+
+features_matrix <- features_df %>% 
+  select(-lon,-lat,-cell_id) %>% 
+  as.matrix()
+
+rownames(features_matrix) <- features_df$cell_id
+
+stopifnot(
+  sum(map_lgl(features_df %>%
+                select(-lon,-lat,-cell_id), is.numeric)) == ncol(features_matrix)
+  ) 
+
+norm_features_matrix <- sweep(features_matrix, 2, colSums(features_matrix, na.rm = T), FUN = "/")
+
+stopifnot(
+  sum(colSums(norm_features_matrix, na.rm = T)) == ncol(features_matrix)
+  ) 
+
+norm_features_matrix <- norm_features_matrix[rowSums(is.na(norm_features_matrix)) != ncol(norm_features_matrix), ]
+
+stopifnot(
+  identical(colnames(norm_features_matrix), 
+          features_df %>% 
+            select(-lon,-lat,-cell_id) %>% 
+            colnames())
+  )  # Is the order of the features mantained?
+
+norm_features_matrix[is.na(norm_features_matrix)] <- 0
+
+save(norm_features_matrix, 
+     file = file.path(emLab_project_dir, 
+                                  "data/03_output/fish_stocks_and_eez/data/norm_features_matrix.RData"))
+```

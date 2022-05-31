@@ -1,0 +1,179 @@
+---
+title: "Food provision with EEZ boundaries Juanation"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r echo=FALSE, message=FALSE, warning = F, prompt = F, comment = F}
+library(raster, quietly = T)
+library(sf, quietly = T)
+library(tidyverse, quietly = T)
+library(rasterVis, quietly = T)
+library(RColorBrewer, quietly = T)
+
+source(here::here("common.R"), echo = F, verbose = F, print.eval = F)
+
+knitr::opts_chunk$set(echo = F, warning = F, prompt = F, comment = F)
+```
+
+```{r}
+results_per_pixel <- read_rds(file.path(emLab_project_dir, 
+                                        "data", "03_output", "07_food", "ray","results_per_pixel_update.rds"))
+  
+food_curves_v1 <- results_per_pixel %>% 
+  arrange(pick_order_a1) %>% 
+  mutate(fraction_protected = 1/n(),
+         fraction_protected =  cumsum(fraction_protected)) %>% 
+  select(fraction_protected, a1 = delta_catch_a1, is_mpa) %>% 
+  left_join(results_per_pixel %>% 
+              arrange(pick_order_a2) %>% 
+              mutate(fraction_protected = 1/n(),
+                     fraction_protected =  cumsum(fraction_protected)) %>% 
+              select(fraction_protected, a2 = delta_catch_a2)) %>% 
+  pivot_longer(-c(fraction_protected, is_mpa), 
+               names_to = "assumption", 
+               values_to = "v") %>% 
+  mutate(assumption = str_to_upper(assumption)) %>% 
+  select(is_mpa, fraction_protected, assumption, v)
+
+food_curves_v1$model <- "Global"
+
+food_summary_v1 <- food_curves_v1 %>% 
+    group_by(model, assumption) %>% 
+    summarize(current_mpa_v = last(v[is_mpa]),
+              max_delta_v = max(v) - current_mpa_v,
+              optimal_f_protected = min(fraction_protected[v == max(v)]),
+              optim_to_90p_benefits = min(fraction_protected[v > 0.9*max(v)]),
+              delta_v_at_30p = v[which.min(abs(fraction_protected - 0.3))] - current_mpa_v,
+              f_delta_v_at_30p =  delta_v_at_30p/max_delta_v) %>% 
+    mutate_if(is.numeric, round, 3)
+
+food_summary_v1$n_stocks <- 1338
+```
+
+```{r}
+food_curves_v2 <- read_rds(file.path(emLab_project_dir,
+                                 "data/03_output/fish_stocks_and_eez/output/food_curves.rds"))
+
+food_rasters_v2 <- stack(file.path(emLab_project_dir,
+                                "data/03_output/fish_stocks_and_eez/output/global_food_rasters.tif"))
+
+names(food_rasters_v2) <- c("assumption_1", "assumption_2", "f_highly_mpa")
+
+food_curves_v2$model <- "Local"
+
+food_summary_v2 <- food_curves_v2 %>% 
+  group_by(model, assumption) %>% 
+  summarize(current_mpa_v = last(v[f_highly_mpa > 0.5]),
+            max_delta_v = max(v) - current_mpa_v,
+            optimal_f_protected = min(fraction_protected[v == max(v)]),
+            optim_to_90p_benefits = min(fraction_protected[v > 0.9*max(v)]),
+            delta_v_at_30p = v[which.min(abs(fraction_protected - 0.3))] - current_mpa_v,
+            f_delta_v_at_30p =  delta_v_at_30p/max_delta_v) %>% 
+  mutate_if(is.numeric, round, 3)
+
+food_summary_v2$n_stocks <- 32444
+```
+
+```{r}
+food_summaries <- bind_rows(food_summary_v1, 
+                            food_summary_v2) %>% 
+  select(model, assumption, n_stocks, max_delta_v, optimal_f_protected, optim_to_90p_benefits)
+
+food_summaries %>% 
+  write_csv(file.path(emLab_project_dir,
+                   "data/03_output/fish_stocks_and_eez/output/food_model_summaries.csv"))
+```
+
+```{r}
+food_summaries %>% 
+  ggplot()+
+  geom_col(aes(x = assumption,  y  = max_delta_v/10^6, fill = model), position = "dodge")+
+  theme_light()+
+  labs(y  =  "Maximum change in catch (MMT)", fill = "Model", x = "Effort assumption")+
+  paletteer::scale_fill_paletteer_d("awtools::spalette")+
+  ggsave(file.path(emLab_project_dir,
+                   "data/03_output/fish_stocks_and_eez/figs/max_delta_barplot.png"), width = 7, height = 5)
+```
+
+```{r}
+cols <- c("Global - A1" = "#B9E6FF", 
+          "Global - A2" = "#007EA7", 
+          "Local - A1"= "#EB6424", 
+          "Local - A2"= "#FA9500")
+
+bind_rows(food_curves_v1,
+          food_curves_v2 %>% 
+            transmute(assumption,  v, fraction_protected, is_mpa = f_highly_mpa >= 0.5, model)) %>% 
+  mutate(run = paste(model, assumption, sep =  " - "),
+         v = v/10^6) %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, v, col = run))+
+  labs(x = "Fraction Protected",
+       y = "Change in Global Catch (MMT)",
+       col = "",
+       title = "Contribution to global catch")+
+  geom_rect(aes(xmin = 0,
+                xmax = 2.6/100,
+                ymin = 0,
+                ymax = max(v)),
+            fill = "#7E6C6C", alpha = 0.5)+
+  scale_x_continuous(breaks = c(0,.2,.4,.6,.8,1))+
+  theme_light()+
+  scale_colour_manual(values = cols)+
+  ggsave(file.path(emLab_project_dir, 
+                   "data/03_output/fish_stocks_and_eez/figs/food_curves.png"), width = 7, height = 5)
+```
+
+```{r}
+food_raster_a1_v1 <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ray","ranking_raster_a1.tif"))
+
+food_raster_a2_v1 <- raster(file.path(emLab_project_dir, "data", "03_output", "07_food", "ray","ranking_raster_a2.tif"))
+```
+
+```{r}
+food_raster_a1_v2 <- food_rasters_v2$assumption_1 %>% 
+  projectRaster(food_raster_a1_v1)
+
+food_raster_a2_v2 <- food_rasters_v2$assumption_2 %>% 
+  projectRaster(food_raster_a2_v1)
+
+diff_a1 <- food_raster_a1_v1 - food_raster_a1_v2
+
+diff_a2 <- food_raster_a2_v1 - food_raster_a2_v2
+
+zeroCol <-"#B3B3B3" # (gray color, same as your figure example)
+reds <- rev(brewer.pal('YlOrRd', n = 7))
+blues <- brewer.pal('Blues', n = 7)
+myTheme <- rasterTheme(region = c(reds, zeroCol, blues))
+
+diff_map_a1 <- levelplot(diff_a1, par.settings = myTheme, margin = FALSE, xlab=NULL, ylab=NULL, scales=list(draw=FALSE), main = "Change in priorities\n Global - Local\nA1")
+
+diff_map_a2 <- levelplot(diff_a2, par.settings = myTheme, margin = FALSE, xlab=NULL, ylab=NULL, scales=list(draw=FALSE), main = "Change in priorities\n Global - Local\nA2")
+```
+
+```{r}
+bmp(file.path(emLab_project_dir, 
+                   "data/03_output/fish_stocks_and_eez/figs/diff_map_a1.png"),
+    height = 1024 * 0.707, width = 1024)  #0.707 is a convenient aspect.ratio
+diff_map_a1
+dev.off()
+```
+
+```{r}
+bmp(file.path(emLab_project_dir, 
+                   "data/03_output/fish_stocks_and_eez/figs/diff_map_a2.png"),
+    height = 1024 * 0.707, width = 1024)  #0.707 is a convenient aspect.ratio
+diff_map_a2
+dev.off()
+```
+
+

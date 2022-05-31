@@ -1,0 +1,487 @@
+---
+title: "Food provision with EEZ boundaries Juanation"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r, message = FALSE}
+library(raster)
+library(sf)
+library(tidyverse)
+
+source(here::here("common.R"))
+```
+
+# Ocean df 
+
+```{r}
+highly_mpas_raster <- raster(file.path(emLab_project_dir, 
+                         "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.tif"))
+
+highly_mpas <- st_read(file.path(emLab_project_dir, 
+                         "data", "02_processed", "masks", "fully_highly_protected_reviewed_MPAs.gpkg"), 
+                       crs = crs(highly_mpas_raster))
+
+ocean_df <- stack(ocean_low_res_moll, highly_mpas_raster) %>% 
+  raster::as.data.frame(xy = T) %>% 
+  set_names(c("lon", "lat", "ocean", "f_highly_mpa")) %>% 
+  filter(!is.na(ocean)) %>% 
+  rowid_to_column(var = "cell_id") %>% 
+  as_tibble()
+
+current_f_highly_protected <- sum(ocean_df$f_highly_mpa, na.rm = T)/nrow(ocean_df)
+```
+
+# load files
+
+```{r, eval  = F}
+stocks_df <- read_rds(file.path(emLab_project_dir, 
+                                "data/03_output/fish_stocks_and_eez/data/stocks_df.rds"))
+
+load(file = file.path(emLab_project_dir,
+                      "data/03_output/fish_stocks_and_eez/data/norm_features_matrix.RData"))
+```
+
+```{r}
+stocks_info <- read_rds(file.path(emLab_project_dir, 
+                                  "data/03_output/fish_stocks_and_eez/output/final_stocks_eez_info.rds"))
+
+stocks_info <- stocks_info %>% 
+  mutate(stock_id = str_replace_all(stock_id, "\\-", "\\.")) %>% 
+  arrange(stock_id) 
+
+stocks_to_remove <- read_rds(file.path(emLab_project_dir,
+                                       "data/03_output/fish_stocks_and_eez/data/stocks_to_remove.rds"))
+
+source("_calculate_slopes.R")
+source(here::here("functions", "food_provision_foos.R"))
+```
+
+```{r}
+stock_names <- names(stocks_df)[-c(1, 2,  3)]
+
+stock_names <- stock_names[!stock_names %in% str_replace_all(stocks_to_remove, "\\-", "\\.")] 
+
+stocks_df <- stocks_df %>% 
+  select(-all_of(str_replace_all(stocks_to_remove, "\\-", "\\.")))
+
+n_stocks <- length(stock_names)
+```
+
+```{r}
+ncol(norm_features_matrix) == n_stocks
+
+n_stocks == nrow(stocks_info)
+```
+
+```{r}
+all.equal(stock_names, stocks_info$stock_id)
+
+stocks_info <- stocks_info[match(stock_names, stocks_info$stock_id),]
+
+all.equal(stock_names, stocks_info$stock_id)
+```
+
+# Initial condition
+
+```{r}
+ocean_df <- ocean_df %>% 
+  filter(as.character(cell_id) %in% rownames(norm_features_matrix)) %>% 
+  mutate(is_mpa = if_else(!is.na(f_highly_mpa) & f_highly_mpa  > 0.5, T, F))
+
+identical(as.character(ocean_df$cell_id), 
+          rownames(norm_features_matrix))
+```
+
+```{r}
+is_mpa_vect <- pull(ocean_df, is_mpa)
+
+protected_cell_ids <- ocean_df$cell_id[is_mpa_vect]
+
+protected_cells <- matrix(is_mpa_vect, nrow = 1, ncol = nrow(norm_features_matrix))
+
+unprotected_matrix <- norm_features_matrix[!protected_cells, ]
+
+protected_matrix <- norm_features_matrix[protected_cells, ]
+
+baseline_state <- protected_cells%*%norm_features_matrix
+```
+
+# Run ranking
+
+## A1
+
+```{r}
+ranking <- list()
+
+current_pick <- 0
+
+current_state <- baseline_state
+
+while(nrow(unprotected_matrix) > 0){
+  
+  current_pick <- sum(current_pick, 1)
+  
+  slopes <- calculate_slopes(objective = "food",
+                             current_state = current_state,
+                             effort_assumption = 1)
+  
+  delta <- unprotected_matrix%*%as.matrix(t(slopes))
+  
+  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  
+  best_cells <- delta[best_cell_indeces,] %>%
+    enframe() %>%
+    set_names(c('cell_id', "delta")) %>%
+    mutate(pick_order = current_pick)
+  
+  ranking <- bind_rows(ranking, best_cells)
+  
+  current_state <- unprotected_matrix[best_cell_indeces, ,drop = F] %>%
+    colSums() +
+    current_state
+  
+  unprotected_matrix <- unprotected_matrix[-best_cell_indeces, , drop = F]
+}
+
+ranking$cell_id <- as.integer(ranking$cell_id)
+
+ranking_a1 <- ranking
+
+write_rds(ranking_a1,
+          file.path(emLab_project_dir, "data/03_output/fish_stocks_and_eez/output/ranking_food_eez_100_a1.rds"))
+```
+
+## A2
+
+```{r}
+ranking <- list()
+
+current_pick <- 0
+
+current_state <- baseline_state
+
+unprotected_matrix <- unprotected_matrix
+
+while(nrow(unprotected_matrix) > 0){
+  
+  current_pick <- sum(current_pick, 1)
+  
+  slopes <- calculate_slopes(objective = "food",
+                             current_state = current_state,
+                             effort_assumption = 2)
+  
+  delta <- unprotected_matrix%*%as.matrix(t(slopes))
+  
+  best_cell_indeces <- doBy::which.maxn(delta, n = 100)
+  
+  best_cells <- delta[best_cell_indeces,] %>%
+    enframe() %>%
+    set_names(c('cell_id', "delta")) %>%
+    mutate(pick_order = current_pick)
+  
+  ranking <- bind_rows(ranking, best_cells)
+  
+  current_state <- unprotected_matrix[best_cell_indeces, ,drop = F] %>%
+    colSums() +
+    current_state
+  
+  unprotected_matrix <- unprotected_matrix[-best_cell_indeces, , drop = F]
+}
+
+ranking$cell_id <- as.integer(ranking$cell_id)
+
+ranking_a2 <- ranking
+
+write_rds(ranking_a2,
+          file.path(emLab_project_dir, "data/03_output/fish_stocks_and_eez/output/ranking_food_eez_100_a2.rds"))
+```
+
+# Benefit curves
+
+```{r}
+norm_features_df <- norm_features_matrix %>%
+  as_tibble(rownames = NA) %>%
+  rownames_to_column("cell_id") 
+
+norm_features_df$cell_id <- as.integer(norm_features_df$cell_id)
+
+ranking_a1 <- read_rds(file.path(emLab_project_dir,
+                                 "data/03_output/fish_stocks_and_eez/output/ranking_food_eez_100_a1.rds"))
+
+ranking_a2 <- read_rds(file.path(emLab_project_dir,
+                                 "data/03_output/fish_stocks_and_eez/output/ranking_food_eez_100_a2.rds"))
+
+```
+
+## A1
+
+```{r}
+rank_complete_a1 <- ocean_df %>%
+  left_join(ranking_a1) %>%
+  replace(is.na(.), 0) %>%
+  arrange(pick_order) %>%
+  left_join(norm_features_df) %>%
+  replace(is.na(.), 0) 
+
+protection_accumulation_a1 <- rank_complete_a1 %>%
+  transmute(lon,lat, cell_id, f_highly_mpa,
+            fraction_protected = 1/n(),
+            fraction_protected =  cumsum(fraction_protected))
+
+benefit_accumulation_a1 <- rank_complete_a1 %>%
+  select(all_of(stock_names)) %>%
+  mutate_all(.funs = cumsum) %>%
+  apply(MARGIN = 1,
+        FUN = estimate_delta_catch,
+        e = stocks_info$ex_rate, m = stocks_info$m, r = stocks_info$r, k = stocks_info$k, 
+        effort_assumption = 2) %>%
+  t() %>%
+  as_tibble() %>%
+  rowSums(na.rm = T) %>%
+  enframe(name = NULL) %>%
+  set_names("v")
+
+benefit_curve_a1 <- bind_cols(protection_accumulation_a1, benefit_accumulation_a1)
+```
+
+## A2
+
+```{r}
+rank_complete_a2 <- ocean_df %>%
+  left_join(ranking_a2) %>%
+  replace(is.na(.), 0) %>%
+  arrange(pick_order) %>%
+  left_join(norm_features_df) %>%
+  replace(is.na(.), 0)
+
+protection_accumulation_a2 <- rank_complete_a2 %>%
+  transmute(lon,lat, cell_id, f_highly_mpa,
+            fraction_protected = 1/n(),
+            fraction_protected =  cumsum(fraction_protected))
+
+benefit_accumulation_a2 <- rank_complete_a2 %>%
+  select(-colnames(rank_complete_a2)[1:8]) %>%
+  mutate_all(.funs = cumsum) %>%
+  apply(MARGIN = 1,
+        FUN = estimate_delta_catch,
+        e = stocks_info$ex_rate, m = stocks_info$m, r = stocks_info$r, k = stocks_info$k, 
+        effort_assumption = 2) %>%
+  t() %>%
+  as_tibble() %>%
+  rowSums() %>%
+  enframe(name = NULL) %>%
+  set_names("v")
+
+benefit_curve_a2 <- bind_cols(protection_accumulation_a2, benefit_accumulation_a2)
+```
+
+```{r}
+food_curves <- benefit_curve_a2 %>% 
+  mutate(assumption = "A2") %>% 
+  bind_rows(benefit_curve_a1 %>% 
+              mutate(assumption = "A1"))
+
+write_rds(food_curves, 
+          file.path(emLab_project_dir,
+                                 "data/03_output/fish_stocks_and_eez/output/food_curves.rds"))
+```
+
+```{r}
+food_curves <- read_rds(file.path(emLab_project_dir,
+                                 "data/03_output/fish_stocks_and_eez/output/food_curves.rds"))
+
+(food_summary_v2 <- food_curves %>% 
+  group_by(assumption) %>% 
+  summarize(current_mpa_v = last(v[f_highly_mpa > 0.5]),
+            max_delta_v = max(v) - current_mpa_v,
+            optimal_f_protected = min(fraction_protected[v == max(v)]),
+            optim_to_90p_benefits = min(fraction_protected[v > 0.9*max(v)]),
+            delta_v_at_30p = v[which.min(abs(fraction_protected - 0.3))] - current_mpa_v,
+            f_delta_v_at_30p =  delta_v_at_30p/max_delta_v) %>% 
+  mutate_if(is.numeric, round, 3))
+```
+
+```{r}
+food_curves %>% 
+  mutate(v = v/10^6) %>% 
+  ggplot()+
+  geom_line(aes(fraction_protected, v, col = assumption))+
+  labs(x = "Fraction Protected",
+       y = "Change in Global Catch (Million tons)",
+       title = "Contribution to global catch")+
+  geom_rect(aes(xmin = 0,
+                xmax = 2.6/100,
+                ymin = 0,
+                ymax = max(v)),
+            fill = "lightblue", alpha = 0.5)+
+  scale_x_continuous(breaks = c(0,.2,.4,.6,.8,1))+
+  theme_light()+
+  ggsave(filename = file.path(emLab_project_dir,
+                                 "data/03_output/fish_stocks_and_eez/figs/benefit_curves.png"),
+         height = 5, width = 7)
+```
+# Maps
+
+```{r}
+food_raster_a1 <-  ocean_df %>% 
+    left_join(ranking_a1) %>%
+    arrange(pick_order) %>% 
+    mutate(rank = 1 - scales::rescale(base::rank(pick_order, 
+                                                 ties.method = "first", 
+                                                 na.last = F))) %>%
+    select(lon, lat, rank, f_highly_mpa) %>% 
+    rasterFromXYZ(crs = crs(ocean_low_res_moll))
+
+food_raster_a2 <-  ocean_df %>% 
+    left_join(ranking_a2) %>%
+    arrange(pick_order) %>%
+    mutate(rank = 1 - scales::rescale(base::rank(pick_order, 
+                                                 ties.method = "first", 
+                                                 na.last = F)),) %>%
+    select(lon, lat, rank, f_highly_mpa) %>%
+    rasterFromXYZ(crs = crs(ocean_low_res_moll))
+
+food_rasters <- stack(food_raster_a1$rank, food_raster_a2)
+
+names(food_rasters) <- c("assumption_1", "assumption_2", "f_highly_mpa")
+
+raster::writeRaster(food_rasters, 
+                    filename = file.path(emLab_project_dir,
+                                         "data/03_output/fish_stocks_and_eez/output/global_food_rasters.tif"),
+                    overwrite = T)
+```
+
+```{r}
+map_priorities <- function(ranking_raster, 
+                           projection = "+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs",
+                           mpas_shp = highly_mpas,
+                           land_shp = land_50_moll,
+                           caption = "Food priority. Assumption # 2"){
+  
+global_cols <- viridis::viridis(n = 8)
+
+global_breaks <- c(0, 0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 1)
+
+  prj_raster_df <- ranking_raster %>%
+    projectRaster(crs = projection, method = c("ngb"), over = T) %>%
+    as.data.frame(xy = T) %>%
+    set_names(c("lon", "lat", "rank", "f_highly_mpa")) %>%
+    filter(!is.na(rank) | f_highly_mpa > 0)
+  
+  min_mpa_local_rank <- prj_raster_df %>%
+    summarise_at(c("rank"), ~min(.x[f_highly_mpa > 0.5], na.rm = T)) %>%
+    pull(rank)
+  
+  min_mpa_local_rank <- pmin(1, min_mpa_local_rank)
+  
+  mpas_shp <- st_transform(mpas_shp, crs = projection)
+  
+  local_breaks <- sort(unique(c(global_breaks, min_mpa_local_rank)))
+  
+  local_labels <- local_breaks[-1]
+  
+  local_colors <- global_cols
+  
+  local_colors[local_labels > min_mpa_local_rank] <- "lightblue"
+  
+  #local_colors[1:4] <- viridis::viridis(n = 4)
+  
+  local_labels <- 100 - 100*local_labels
+  
+  local_labels[local_labels ==  (100-100*min_mpa_local_rank)] <- " "
+  
+  local_legend_key_widths <- tibble(to = as.numeric(as.character(local_breaks[-1])),
+                                    from = lag(to)) %>%
+    replace_na(list(from = 0)) %>%
+    mutate(range = to - from) %>%
+    mutate(w = range*0.6) %>%
+    mutate(w2 = if_else(to <= 0.8, w/1.5, w))
+
+  map <- prj_raster_df %>%
+    mutate_at(vars("rank"),
+              .funs = ~cut(.x,
+                           breaks = local_breaks,
+                           labels = local_breaks[-1],
+                           include.lowest = T)) %>%
+    replace_na(list(rank = 1)) %>%
+    ggplot(aes(x = lon, y = lat))+
+    geom_raster(aes(fill = rank), alpha = 1)+
+    geom_sf(data =  land_shp,
+            inherit.aes = F, fill = "gray", col = "transparent",linetype = 2, size = 0.5)+
+    scale_fill_manual(na.value = "black",
+                      values  = local_colors,
+                      labels = local_labels,
+                      guide = guide_legend(title = "Top % of EEZ",
+                                           direction = "horizontal",
+                                           keyheight = unit(0.01, "npc"),
+                                           keywidth = unit(rev(local_legend_key_widths$w2), "npc"),
+                                           title.position = 'top',
+                                           title.hjust = 0.5,
+                                           label.hjust = -.02,
+                                           nrow = 1,
+                                           byrow = T,
+                                           reverse = T,
+                                           label.position = "bottom"))+
+    theme(text = element_text(color = "gray30",
+                            size = 9),
+        plot.title = element_text(size = rel(1.25),
+                              hjust = 0,
+                              face = "bold"),
+        plot.title.position = "plot",
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        legend.text = element_text(size = 9),
+        legend.text.align = 0,
+        legend.position = "bottom",
+        legend.background = element_blank(),
+        plot.background = element_blank(),
+        plot.caption = element_text(hjust = 0.7),
+        strip.background = element_rect(fill = "transparent"),
+        legend.key = element_rect(colour = NA, fill = NA)
+        )+
+    labs(caption = caption)
+  
+  return(map) 
+  
+}
+```
+
+```{r}
+food_rasters <- stack(file.path(emLab_project_dir,
+                                "data/03_output/fish_stocks_and_eez/output/global_food_rasters.tif"))
+
+names(food_rasters) <- c("assumption_1", "assumption_2", "f_highly_mpa")
+```
+
+```{r}
+map_a1 <- map_priorities(subset(food_rasters, c("assumption_1","f_highly_mpa")), 
+                         caption = "Food priority. Assumption # 1") 
+
+map_a2 <- map_priorities(subset(food_rasters, c("assumption_2","f_highly_mpa")), 
+                        caption = "Food priority. Assumption # 2") 
+
+map_a2 %>% 
+  ggsave(filename  = file.path(emLab_project_dir,
+                                 "data/03_output/fish_stocks_and_eez/figs/global_food_ranking_a2.png"),
+         height = 5, width = 7)
+
+map_a1 %>% 
+  ggsave(filename  = file.path(emLab_project_dir,
+                                 "data/03_output/fish_stocks_and_eez/figs/global_food_ranking_a1.png"),
+         height = 5, width = 7)
+```

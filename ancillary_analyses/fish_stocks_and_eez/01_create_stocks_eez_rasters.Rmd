@@ -1,0 +1,221 @@
+---
+title: "Create stock rasters"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+---
+
+
+```{r setup, message=F, warning=F}
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',message = FALSE, warning = FALSE)
+
+library(raster)
+library(tidyverse)
+library(sf)
+library(furrr)
+library(doParallel)
+library(parallel)
+library(foreach)
+
+source(here::here("common.R"))
+
+```
+
+```{r}
+eez_and_land <- sf::st_read(file.path(emLab_shrd_data_dir, 
+                                      "marine-regions-EEZ-land-union-v3-202003", "EEZ_Land_v3_202030.shp"))
+
+eez_and_land <- eez_and_land %>% 
+  sf::st_make_valid() %>% 
+  janitor::clean_names()
+
+stocks <- read_rds(file.path(emLab_project_dir, "data", "02_processed", "food_provision", "Cleanmegacell.rds"))
+
+cells <- read_rds(file.path(emLab_project_dir, "data", "02_processed", "food_provision", "CleanCoordmegacell.rds"))
+```
+
+```{r}
+stocks_distributions <- merge(cells, stocks, 
+                              by="row.names") %>% 
+  select(-Row.names) %>% 
+  select(lon, lat, everything()) %>% 
+  gather(stock_id, suitability, -lon, -lat) %>% 
+  filter(suitability > 0)
+```
+
+```{r}
+stocks_distributions_sf <- stocks_distributions %>% 
+  mutate(lon_d = lon, lat_d = lat) %>% 
+  sf::st_as_sf(coords = c("lon_d", "lat_d"), 
+               crs = 4326) 
+```
+
+# join EEZ
+
+```{r}
+stocks_distributions_df_with_eez <- stocks_distributions_sf %>% 
+  st_join(eez_and_land %>% 
+            select(name = union, iso_ter1, mrgid_eez), left = T) %>% 
+  st_drop_geometry()
+```
+
+```{r}
+# stocks_distributions_df_with_eez %>%
+#   filter(is.na(name)) %>%
+#   group_by(lon, lat) %>%
+#   summarize(suitability = sum(suitability)) %>%
+#   ggplot()+
+#   geom_raster(aes(lon,lat, fill = suitability))
+
+# Here we assign a code to the high seas
+
+stocks_distributions_df_with_eez <- stocks_distributions_df_with_eez %>% 
+  replace_na(list(mrgid_eez = "0000")) 
+```
+
+```{r}
+stocks_distributions_df_with_eez <- stocks_distributions_df_with_eez %>% 
+  mutate(new_stock_id = paste(stock_id, mrgid_eez, sep = "-"))
+```
+
+# Inspect stocks
+
+```{r}
+fraction_of_k_per_stock_eez <- stocks_distributions_df_with_eez %>% 
+  group_by(stock_id, iso_ter1, new_stock_id) %>% 
+  summarize(eez_suitability = sum(suitability),
+            eez_cells = n_distinct(paste(lon,lat))) %>% 
+  left_join(stocks_distributions_df_with_eez %>% 
+              group_by(stock_id) %>% 
+              summarize(total_suitability = sum(suitability),
+                        n_cells = n_distinct(paste(lon,lat)))) %>% 
+  mutate(f_suitability = eez_suitability/total_suitability,
+         f_cells = eez_cells/n_cells) 
+```
+
+```{r}
+fraction_of_k_per_stock_eez %>% 
+  filter(f_suitability > .01 &
+           eez_cells > 1) %>% 
+  arrange((eez_cells))
+```
+
+# Stocks info
+
+```{r}
+stocks_info <-read_rds(file.path(emLab_project_dir,
+                                  "data", "02_processed", "food_provision", "MegaData_Ray.rds")) %>%
+    select(stock_id = stockid, k = Kfin, ex_rate = ExploitationRate_BAU1_Ray, m = m_fin, r = r_fin, managed = Manage)
+
+stocks_info$managed <- as.logical(stocks_info$managed)
+
+stocks_info$ex_rate[stocks_info$ex_rate >= 1] <- 0.99999
+
+stocks_eez_info <- fraction_of_k_per_stock_eez %>% 
+  left_join(stocks_info)
+
+stocks_eez_info$k_eez <- stocks_eez_info$k*stocks_eez_info$f_suitability
+```
+
+```{r}
+stocks_eez_info <- stocks_eez_info %>% 
+  filter(!stock_id %in% stocks_info$stock_id[stocks_info$managed]) %>% 
+  ungroup() %>% 
+  select(stock_id = new_stock_id, k = k_eez, ex_rate, m, r, eez_suitability, eez_cells, f_suitability, f_cells) %>% 
+  filter(eez_cells > 1) %>% 
+  bind_rows(stocks_info %>% 
+              filter(managed)) %>% 
+  replace_na(list(managed = F))
+```
+
+```{r}
+sum(stocks_eez_info$k)/10^6
+```
+
+```{r}
+stocks_eez_info %>% 
+  write_rds(file.path(emLab_project_dir, "data/03_output/fish_stocks_and_eez/data/stocks_eez_info.rds"))
+```
+
+# Generate stock rasters
+
+## Managed
+
+```{r}
+managed_stock_ids <- unique(stocks_eez_info$stock_id[stocks_eez_info$managed])
+```
+
+```{r}
+empty_raster <- raster(resolution = 0.5)
+
+registerDoParallel(60) #register cores
+
+foreach(stock = managed_stock_ids) %dopar% { 
+  
+  stock_data <- stocks_distributions_df_with_eez %>% 
+    filter(stock_id == stock) %>% 
+    select(lon, lat, suitability)
+  
+  cells <- cellFromXY(empty_raster, as.matrix(stock_data[,1:2]))
+  
+  stock_raster <- empty_raster
+  
+  stock_raster[cells] <- pull(stock_data, suitability)
+  
+  stock_raster <- projectRaster(stock_raster, ocean_low_res_moll)
+  
+  stock_raster <- mask(stock_raster, ocean_low_res_moll)
+  
+  raster::writeRaster(stock_raster, 
+                      file.path(emLab_project_dir, 
+                                paste0("data/03_output/fish_stocks_and_eez/stock_eez_rasters/", stock, ".tif")),
+                      overwrite = T)
+}
+```
+
+```{r}
+length(file.path(emLab_project_dir, "data/03_output/fish_stocks_and_eez/stock_eez_rasters/") %>% list.files())
+```
+
+## Unmanaged
+
+```{r}
+unmanaged_stock_ids <- unique(stocks_eez_info$stock_id[!stocks_eez_info$managed])
+```
+
+```{r}
+empty_raster <- raster(resolution = 0.5)
+
+registerDoParallel(60) #register cores
+
+foreach(stock = unmanaged_stock_ids) %dopar% { 
+  
+  stock_data <- stocks_distributions_df_with_eez %>% 
+    filter(new_stock_id == stock) %>% 
+    select(lon, lat, suitability)
+  
+  cells <- cellFromXY(empty_raster, as.matrix(stock_data[,1:2]))
+  
+  stock_raster <- empty_raster
+  
+  stock_raster[cells] <- pull(stock_data, suitability)
+  
+  stock_raster <- projectRaster(stock_raster, ocean_low_res_moll)
+  
+  stock_raster <- mask(stock_raster, ocean_low_res_moll)
+  
+  raster::writeRaster(stock_raster, 
+                      file.path(emLab_project_dir, 
+                                paste0("data/03_output/fish_stocks_and_eez/stock_eez_rasters/", stock, ".tif")),
+                      overwrite = T)
+}
+```
+
+
