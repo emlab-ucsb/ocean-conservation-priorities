@@ -64,9 +64,9 @@ food_curves_v2 <- read_rds(file.path(emLab_project_dir,
                                  "data/03_output/fish_stocks_and_eez/output/food_curves.rds"))
 
 food_rasters_v2 <- stack(file.path(emLab_project_dir,
-                                "data/03_output/fish_stocks_and_eez/output/global_food_rasters.tif"))
+                          "data/03_output/fish_stocks_and_eez/output/global_food_rasters.tiff"))
 
-names(food_rasters_v2) <- c("assumption_1", "assumption_2", "f_highly_mpa")
+names(food_rasters_v2) <- c("assumption_1", "assumption_2")
 
 food_curves_v2$model <- "Local"
 
@@ -99,9 +99,11 @@ food_summaries %>%
   geom_col(aes(x = assumption,  y  = max_delta_v/10^6, fill = model), position = "dodge")+
   theme_light()+
   labs(y  =  "Maximum change in catch (MMT)", fill = "Model", x = "Effort assumption")+
-  paletteer::scale_fill_paletteer_d("awtools::spalette")+
-  ggsave(file.path(emLab_project_dir,
-                   "data/03_output/fish_stocks_and_eez/figs/max_delta_barplot.png"), width = 7, height = 5)
+  paletteer::scale_fill_paletteer_d("awtools::spalette")
+
+ggsave(file.path(emLab_project_dir,
+                   "data/03_output/fish_stocks_and_eez/figs/max_delta_barplot.png"),
+         width = 7, height = 5)
 ```
 
 ```{r}
@@ -127,10 +129,13 @@ bind_rows(food_curves_v1,
                 ymax = max(v)),
             fill = "#7E6C6C", alpha = 0.5)+
   scale_x_continuous(breaks = c(0,.2,.4,.6,.8,1))+
-  theme_light()+
-  scale_colour_manual(values = cols)+
-  ggsave(file.path(emLab_project_dir, 
-                   "data/03_output/fish_stocks_and_eez/figs/food_curves.png"), width = 7, height = 5)
+  theme_light() +
+  scale_colour_manual(values = cols)
+
+ggsave(file = file.path(emLab_project_dir, 
+                   "data/03_output/fish_stocks_and_eez/figs/food_curves.png"), 
+         width = 7, 
+         height = 5)
 ```
 
 ```{r}
